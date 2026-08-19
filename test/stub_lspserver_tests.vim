@@ -1485,6 +1485,143 @@ def g:Test_LspAutoFix_Range_MultiServer_WaitsForAllReplies()
   :bw!
 enddef
 
+# Set up a buffer that looks the way it does right after the user pressed
+# Enter with 'autoindent' on: the new line holds only the indent Vim copied
+# from the previous line and the cursor sits after it.  Returns a stub server
+# replying to textDocument/onTypeFormatting with 'edits'.
+def MakeOnTypeFormatServer(edits: list<dict<any>>,
+			   requests: list<dict<any>>): dict<any>
+  def MockOnTypeFormatRpc(method: string, params: any,
+			  opts: dict<any> = {}): dict<any>
+    requests->add({method: method, params: params->deepcopy()})
+    return {result: edits->deepcopy()}
+  enddef
+
+  var lspserver = MakeTestLspServer([])
+  lspserver.running = true
+  lspserver.ready = true
+  lspserver.isDocumentOnTypeFormattingProvider = true
+  lspserver.onTypeFormattingTriggers = ["\n"]
+  lspserver.posEncoding = 32
+  lspserver.featureEnabled = (_) => true
+  lspserver.rpc = MockOnTypeFormatRpc
+  return lspserver
+enddef
+
+# On-type formatting on a newline must not throw away the indent that
+# 'autoindent' just inserted.  Formatters that strip trailing whitespace see
+# the new line as whitespace-only and reply with an edit deleting the indent,
+# which would drop the cursor back to column 1.
+def g:Test_OnTypeFormat_KeepsAutoindent()
+  silent! edit XOnTypeFormatAutoindent.c
+  setlocal noexpandtab shiftwidth=8 tabstop=8
+  # In insert mode the cursor sits one past the auto-indent
+  setlocal virtualedit=onemore
+  setline(1, ['int f1() {', "\tint i;", "\t", '}'])
+  cursor(3, 2)
+
+  var requests: list<dict<any>> = []
+  # The server deletes the whitespace-only line's indentation.
+  var lspserver = MakeOnTypeFormatServer([{
+	range: {start: {line: 2, character: 0},
+		end: {line: 2, character: 1}},
+	newText: ''
+      }], requests)
+
+  buf.BufLspServerSet(bufnr(), lspserver)
+  lspserver.textDocOnTypeFormat("\n")
+
+  assert_equal('textDocument/onTypeFormatting', requests[0].method)
+  assert_equal("\n", requests[0].params.ch)
+  assert_equal(['int f1() {', "\tint i;", "\t", '}'], getline(1, '$'))
+  assert_equal([3, 2], [line('.'), col('.')])
+
+  buf.BufLspServerRemove(bufnr(), lspserver)
+  setlocal virtualedit=
+  :%bw!
+enddef
+
+# Same as above, but the server reformats the previous line and strips the
+# indent of the new line with a single edit spanning both lines.  The
+# reformatting has to be applied, the indent kept.
+def g:Test_OnTypeFormat_KeepsAutoindent_MultilineEdit()
+  silent! edit XOnTypeFormatAutoindentMultiline.c
+  setlocal noexpandtab shiftwidth=8 tabstop=8
+  setlocal virtualedit=onemore
+  setline(1, ['int f1() {', 'int i;', "\t", '}'])
+  cursor(3, 2)
+
+  var requests: list<dict<any>> = []
+  var lspserver = MakeOnTypeFormatServer([{
+	range: {start: {line: 1, character: 0},
+		end: {line: 2, character: 1}},
+	newText: "\tint i;\n"
+      }], requests)
+
+  buf.BufLspServerSet(bufnr(), lspserver)
+  lspserver.textDocOnTypeFormat("\n")
+
+  assert_equal(['int f1() {', "\tint i;", "\t", '}'], getline(1, '$'))
+  assert_equal([3, 2], [line('.'), col('.')])
+
+  buf.BufLspServerRemove(bufnr(), lspserver)
+  setlocal virtualedit=
+  :%bw!
+enddef
+
+# A server that supplies its own indentation for the new line is still
+# obeyed: only edits that would leave the line without any indent are
+# fixed up.
+def g:Test_OnTypeFormat_ServerIndentIsApplied()
+  silent! edit XOnTypeFormatServerIndent.c
+  setlocal noexpandtab shiftwidth=8 tabstop=8
+  setlocal virtualedit=onemore
+  setline(1, ['int f1() {', "\tif (1) {", "\t", '}', '}'])
+  cursor(3, 2)
+
+  var requests: list<dict<any>> = []
+  var lspserver = MakeOnTypeFormatServer([{
+	range: {start: {line: 2, character: 0},
+		end: {line: 2, character: 1}},
+	newText: "\t\t"
+      }], requests)
+
+  buf.BufLspServerSet(bufnr(), lspserver)
+  lspserver.textDocOnTypeFormat("\n")
+
+  assert_equal(['int f1() {', "\tif (1) {", "\t\t", '}', '}'],
+	       getline(1, '$'))
+  assert_equal([3, 3], [line('.'), col('.')])
+
+  buf.BufLspServerRemove(bufnr(), lspserver)
+  setlocal virtualedit=
+  :%bw!
+enddef
+
+# Text on the line means there is no auto-indent to protect: an edit that
+# removes leading whitespace is applied as-is.
+def g:Test_OnTypeFormat_NonBlankLineIsFormatted()
+  silent! edit XOnTypeFormatNonBlank.c
+  setlocal noexpandtab shiftwidth=8 tabstop=8
+  setline(1, ['int f1() {', "\t\tint i;", '}'])
+  cursor(2, 3)
+
+  var requests: list<dict<any>> = []
+  var lspserver = MakeOnTypeFormatServer([{
+	range: {start: {line: 1, character: 0},
+		end: {line: 1, character: 2}},
+	newText: "\t"
+      }], requests)
+
+  buf.BufLspServerSet(bufnr(), lspserver)
+  lspserver.textDocOnTypeFormat(';')
+
+  assert_equal(['int f1() {', "\tint i;", '}'], getline(1, '$'))
+
+  buf.BufLspServerRemove(bufnr(), lspserver)
+  :%bw!
+enddef
+
 # Only here to because the test runner needs it
 def g:StartLangServer(): bool
   return true

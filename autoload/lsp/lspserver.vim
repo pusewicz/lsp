@@ -1533,6 +1533,44 @@ def AdjustPositionForOnTypeEdits(origPos: dict<number>,
 	  character: adjustedOnOrigLine ? character : origPos.character}
 enddef
 
+# When the user presses <Enter>, Vim's 'autoindent' (or 'indentexpr') inserts
+# the indent for the new line right away, but as far as the language server is
+# concerned that line holds nothing but whitespace.  Formatters that strip
+# trailing whitespace (clang-format based servers, for example) therefore
+# reply with an edit that deletes the indent, which drops the cursor back to
+# the first column and undoes the auto-indent the user was about to type
+# into.  Put the whitespace such an edit removes back into its replacement
+# text, so the rest of the formatting is still applied but the indent Vim
+# chose survives.  Edits supplying an indent of their own are left alone.
+def PreserveAutoIndent(bnr: number, curLine: number, edits: list<dict<any>>)
+  var lineText = bnr->getbufline(curLine + 1)->get(0, '')
+  if lineText !~ '^\s\+$'
+    # The line is empty or has text on it: no auto-indent to preserve
+    return
+  endif
+
+  for e in edits
+    var estart: dict<number> = e.range.start
+    var eend: dict<number> = e.range.end
+
+    if eend.line != curLine || eend.character == 0
+      # The edit doesn't remove the indent of the current line
+      continue
+    endif
+    if estart.line == curLine && estart.character > 0
+      # Only a part of the indent is replaced; the server is reindenting
+      # the line rather than stripping it
+      continue
+    endif
+    if e.newText->split("\n", true)[-1] != ''
+      # The server supplies the indent for the line itself
+      continue
+    endif
+
+    e.newText ..= lineText->strcharpart(0, eend.character)
+  endfor
+enddef
+
 # Request on-type formatting edits for the character just typed and apply
 # them to the buffer, then place the cursor after any inserted text so that
 # typing can continue naturally.
@@ -1579,6 +1617,10 @@ def TextDocOnTypeFormat(lspserver: dict<any>, ch: string)
     })
     lspserver.decodePosition(bnr, origPos)
   endif
+
+  # Don't let the server's edits wipe out the indent 'autoindent' just
+  # inserted on the line the user is typing on.
+  PreserveAutoIndent(bnr, origPos.line, reply.result)
 
   var newPos = AdjustPositionForOnTypeEdits(origPos, reply.result)
 

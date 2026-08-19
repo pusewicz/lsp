@@ -2495,6 +2495,12 @@ trigger characters the language server designates (for example, clangd
 reindents the current line when you press <Enter>).  This option is disabled
 by default, since it edits the buffer while you are typing.
 
+When you press <Enter>, the new line contains only the indent inserted by
+'autoindent' (or 'indentexpr').  Some language servers strip that whitespace,
+as they would for any blank line.  The indent is kept in that case, so that
+the auto-indent is not lost while you type.  Indentation that the language
+server supplies itself for the line is used as-is.
+
 ==============================================================================
 							*lsp-call-hierarchy*
 11. Call Hierarchy~
