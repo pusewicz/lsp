@@ -559,6 +559,13 @@ def AddBufListener(lspserver: dict<any>, bnr: number): void
   # Add a per-buffer listener so incremental text changes are pushed to the
   # server and pull diagnostics are debounced from edits.
   var listenerId = listener_add((_bnr: number, start: number, end: number, added: number, changes: list<dict<number>>) => {
+    # The server may have crashed and restarted since this listener was
+    # added (RemoveBufListener only runs on an explicit detach); in that
+    # case the document is no longer open on the (new) server instance and
+    # must not be sent a didChange for it.
+    if !lspserver.isDocumentOpen(bnr)
+      return
+    endif
     lspserver.textdocDidChange(bnr)
     if lspserver.isDiagnosticsProvider
       lspserver.queuePullDiagnostics(bnr)

@@ -85,9 +85,16 @@ export def InlayHintsReply(lspserver: dict<any>, inlayHints: any,
   endfor
 enddef
 
-# Timer callback to display the inlay hints.
-def InlayHintsTimerCb(lspserver: dict<any>, bnr: number, timerid: number)
-  lspserver.inlayHintsShow(bnr)
+# Timer callback to display the inlay hints.  The server is re-resolved here
+# rather than captured at schedule time: by the time the timer fires (up to
+# 300ms later), the buffer may have detached or the server may have
+# restarted, and a stale lspserver dict would send a request for a document
+# that is no longer open on it.
+def InlayHintsTimerCb(bnr: number, timerid: number)
+  var lspserver: dict<any> = buf.BufLspServerGet(bnr, 'inlayHint')
+  if !lspserver->empty()
+    lspserver.inlayHintsShow(bnr)
+  endif
   setbufvar(bnr, 'LspInlayHintsNeedsUpdate', false)
 enddef
 
@@ -110,9 +117,9 @@ def LspInlayHintsUpdate(bnr: number)
 
   if get(g:, 'LSPTest')
     # When running tests, update the inlay hints immediately
-    InlayHintsTimerCb(lspserver, bnr, -1)
+    InlayHintsTimerCb(bnr, -1)
   else
-    timerid = timer_start(300, function('InlayHintsTimerCb', [lspserver, bnr]))
+    timerid = timer_start(300, function('InlayHintsTimerCb', [bnr]))
     setbufvar(bnr, 'LspInlayHintsTimer', timerid)
   endif
 enddef

@@ -60,6 +60,11 @@ def Exit_cb(lspserver: dict<any>, job: job, status: number): void
   lspserver.pendingPullBufnrs = {}
   lspserver.running = false
   lspserver.ready = false
+  # No buffer is open on this (now dead) server instance anymore.  Without
+  # this, a later restart would leave stale entries claiming a document is
+  # open when the new server process was never sent a didOpen for it.
+  lspserver.cachedBufferContent = {}
+  lspserver.diagnosticResultIds = {}
 enddef
 
 # Start a LSP server
@@ -158,6 +163,12 @@ def ServerInitReply(lspserver: dict<any>, initResult: dict<any>,
   if exists($'#LSPBufferAutocmds#User#LspServerReady_{lspserver.id}')
     exe $'doautocmd <nomodeline> LSPBufferAutocmds User LspServerReady_{lspserver.id}'
   endif
+
+  # Re-open any buffer that was already attached to this server (from
+  # before a crash/restart) but isn't open on the new server process.  Must
+  # run after the doautocmd above, so a buffer attaching for the first time
+  # gets exactly one didOpen, not two.
+  lspserver.reopenAttachedBuffers()
 
   # set the server debug trace level
   if lspserver.traceLevel != 'off'
@@ -598,6 +609,12 @@ def SemanticHighlightUpdate(lspserver: dict<any>, bnr: number)
     return
   endif
 
+  # A queued timer callback can fire after the buffer was detached or the
+  # server was restarted; the document may no longer be open on this server.
+  if !lspserver.isDocumentOpen(bnr)
+    return
+  endif
+
   # Send the pending buffer changes to the language server
   bnr->listener_flush()
 
@@ -718,6 +735,48 @@ def TextdocDidClose(lspserver: dict<any>, bnr: number): void
   if lspserver.pendingPullBufnrs->has_key(bnr)
     lspserver.pendingPullBufnrs->remove(bnr)
   endif
+enddef
+
+# Returns true if buffer "bnr" is currently open on this server, i.e. a
+# textDocument/didOpen was sent and no textDocument/didClose (or server
+# restart) followed.  Requests and notifications that reference a specific
+# document should check this before sending, since a stale timer callback or
+# listener can otherwise fire after the buffer was detached or the server was
+# restarted, producing errors like clangd's "non-added document".
+def IsDocumentOpen(lspserver: dict<any>, bnr: number): bool
+  return lspserver.running && lspserver.ready
+      && lspserver.cachedBufferContent->has_key(bnr)
+enddef
+
+# After a server (re)start, re-send textDocument/didOpen for every buffer
+# that is already attached to this server but whose document isn't open on
+# it (e.g. because the previous server process crashed: Exit_cb wipes
+# cachedBufferContent for all buffers, but never detaches them).  Buffers
+# attaching for the very first time are handled separately by the
+# "LspServerReady_{id}" ++once autocmd (see AddFile() in lsp.vim), which
+# already ran by the time this is called, so IsDocumentOpen() makes this a
+# no-op for them.  Only loaded buffers are considered: an unloaded (e.g.
+# :bdelete'd) buffer is still registered but has no lines to open with.
+def ReopenAttachedBuffers(lspserver: dict<any>): void
+  for binfo in getbufinfo()
+    if !binfo.loaded
+	|| buf.BufLspServerGetById(binfo.bufnr, lspserver.id)->empty()
+	|| lspserver.isDocumentOpen(binfo.bufnr)
+      continue
+    endif
+
+    var ftype: string = binfo.bufnr->getbufvar('&filetype')
+    lspserver.textdocDidOpen(binfo.bufnr, ftype)
+    if lspserver.isDiagnosticsProvider
+      lspserver.pullDiagnostics(binfo.bufnr)
+    endif
+    if lspserver.isSemanticTokensProvider
+      # The new server process has no delta history for this buffer; a
+      # stale LspSemanticResultId would ask it to diff against a result id
+      # it never issued.
+      semantichighlight.SemanticHighlightCleanup(binfo.bufnr)
+    endif
+  endfor
 enddef
 
 def RestartDiagnosticPullTimer(lspserver: dict<any>)
@@ -1719,9 +1778,16 @@ enddef
 # Request: "textDocument/inlayHint"
 # Inlay hints.
 def InlayHintsShow(lspserver: dict<any>, bnr: number)
-  # Check whether LSP server supports type hierarchy
+  # Check whether the LSP server supports inlay hints
   if !lspserver.isInlayHintProvider && !lspserver.isClangdInlayHintsProvider
     util.ErrMsg('LSP server does not support inlay hint')
+    return
+  endif
+
+  # A queued timer callback can fire after the buffer was detached or the
+  # server was restarted; the document may no longer be open on this server.
+  # (E.g. clangd replies with "trying to get AST for non-added document".)
+  if !lspserver.isDocumentOpen(bnr)
     return
   endif
 
@@ -2618,6 +2684,8 @@ export def NewLspServer(serverParams: dict<any>): dict<any>
     featureEnabled: function(FeatureEnabled, [lspserver]),
     textdocDidOpen: function(TextdocDidOpen, [lspserver]),
     textdocDidClose: function(TextdocDidClose, [lspserver]),
+    isDocumentOpen: function(IsDocumentOpen, [lspserver]),
+    reopenAttachedBuffers: function(ReopenAttachedBuffers, [lspserver]),
     textdocDidChange: function(TextdocDidChange, [lspserver]),
     sendInitializedNotif: function(SendInitializedNotif, [lspserver]),
     sendWorkspaceConfig: function(SendWorkspaceConfig, [lspserver]),

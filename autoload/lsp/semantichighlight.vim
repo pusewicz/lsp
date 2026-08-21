@@ -208,11 +208,19 @@ def ClearSemanticHighlightProps(bnr: number)
   endif
 enddef
 
-def SemanticHighlightTimerCb(lspserver: dict<any>, bnr: number, _: number)
+# The server is re-resolved here rather than captured at schedule time: by
+# the time the timer fires, the buffer may have detached or the server may
+# have restarted, and a stale lspserver dict would send a request for a
+# document that is no longer open on it.
+def SemanticHighlightTimerCb(bnr: number, _: number)
   if !bufexists(bnr)
     return
   endif
   setbufvar(bnr, 'LspSemanticTimer', 0)
+  var lspserver: dict<any> = buf.BufLspServerGet(bnr, 'semanticTokens')
+  if lspserver->empty()
+    return
+  endif
   lspserver.semanticHighlightUpdate(bnr)
 enddef
 
@@ -224,7 +232,10 @@ def StopSemanticHighlightTimer(bnr: number)
   endif
 enddef
 
-def SemanticHighlightCleanup(bnr: number)
+# Clear the per-buffer semantic-tokens delta state.  Exported so it can be
+# called when a document is re-opened on a different (or restarted) server
+# process, which has no history to compute a delta against.
+export def SemanticHighlightCleanup(bnr: number)
   setbufvar(bnr, 'LspSemanticTokensData', [])
   setbufvar(bnr, 'LspSemanticResultId', '')
 enddef
@@ -301,7 +312,7 @@ def LspUpdateSemanticHighlight(bnr: number)
 
   # Start new debounced timer
   var timerId = timer_start(opt.lspOptions.semanticHighlightDelay,
-    function('SemanticHighlightTimerCb', [lspserver, bnr]))
+    function('SemanticHighlightTimerCb', [bnr]))
   setbufvar(bnr, 'LspSemanticTimer', timerId)
 enddef
 
