@@ -1815,12 +1815,15 @@ def InlayHintsShow(lspserver: dict<any>, bnr: number)
 
   lspserver.encodeRange(bnr, param.range)
 
+  # Prefer the standard LSP 3.17 method when the server supports it; only
+  # fall back to clangd's older, non-standard extension for clangd builds
+  # that advertise clangdInlayHintsProvider but not inlayHintProvider.
   var msg: string
-  if lspserver.isClangdInlayHintsProvider
-    # clangd-style inlay hints
-    msg = 'clangd/inlayHints'
-  else
+  if lspserver.isInlayHintProvider
     msg = 'textDocument/inlayHint'
+  else
+    # clangd-style inlay hints (legacy extension)
+    msg = 'clangd/inlayHints'
   endif
   var reply = lspserver.rpc_a(msg, param, (_, reply, error) => {
     inlayhints.InlayHintsReply(lspserver, reply, error, bnr)
