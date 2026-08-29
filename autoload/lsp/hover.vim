@@ -164,12 +164,12 @@ def HoverShowInPopup(hoverText: list<any>, hoverKind: string)
     padding: [0, 1, 0, 1]
   }
   var hoverPopupBuf = bufadd(null_string)
-  setbufvar(hoverPopupBuf, '&bufhidden', 'wipe')
-  setbufvar(hoverPopupBuf, '&buftype', 'popup')
-  setbufvar(hoverPopupBuf, '&filetype', hoverKind)
   popupAttrs = opt.PopupConfigure('Hover', popupAttrs)
   hoverPopupWin = hoverPopupBuf->popup_atcursor(popupAttrs)
   hoverPopupWin->popup_settext(hoverText)
+  win_execute(hoverPopupWin, 'setlocal bufhidden=wipe')
+  win_execute(hoverPopupWin, 'setlocal buftype=popup')
+  win_execute(hoverPopupWin, $'setlocal filetype={hoverKind}')
 enddef
 
 # Render 'hoverText' to the user.  Dispatches to HoverShowEmpty when there is
@@ -340,8 +340,8 @@ def HoverWinFilterKey(hoverWin: number, key: string): bool
   elseif key == 'K'
     execute 'pbuffer' hoverWin->winbufnr()
     wincmd P
+    setlocal buftype=nofile bufhidden=delete nolist
     hoverWin->popup_close()
-    setlocal nolist
     keyHandled = true
   elseif key == "\<Esc>"
     hoverWin->popup_close()
