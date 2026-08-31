@@ -866,24 +866,26 @@ def TextdocDidChange(lspserver: dict<any>, bnr: number): void
   # Params: DidChangeTextDocumentParams
 
   # Nothing to do when the server doesn't want change notifications.
-  if lspserver.textDocumentSync == 0
+  var textDocumentSync = lspserver.textDocumentSync
+  if textDocumentSync == 0
     return
   endif
 
   var contentChanges: list<dict<any>>
 
-  if lspserver.textDocumentSync == 1 || !opt.lspOptions.incrementalSync
+  if textDocumentSync == 1 || !opt.lspOptions.incrementalSync
     # TextDocumentSyncKind: Full — send the entire buffer on every change.
     contentChanges = [{text: BufferText(bnr)}]
   elseif exists_compiled('*diff')
     # TextDocumentSyncKind: Incremental — send only the changed lines.
     var newBufLines = bnr->getbufline(1, '$')
     var hasEol = bnr->getbufvar('&eol')
-    if lspserver.cachedBufferContent->has_key(bnr)
+    var cachedBufferContent = lspserver.cachedBufferContent
+    if cachedBufferContent->has_key(bnr)
       # Compute line-level diffs against the last snapshot and convert each
       # hunk into an LSP TextDocumentContentChangeEvent.
       contentChanges = []
-      var diffs = diff(lspserver.cachedBufferContent[bnr], newBufLines,
+      var diffs = diff(cachedBufferContent[bnr], newBufLines,
 		       {output: 'indices'})
       for hunk in diffs
 	contentChanges->add({
@@ -898,7 +900,7 @@ def TextdocDidChange(lspserver: dict<any>, bnr: number): void
       # No cached snapshot available; fall back to a full-text change.
       contentChanges = [{text: LinesText(newBufLines, hasEol)}]
     endif
-    lspserver.cachedBufferContent[bnr] = newBufLines
+    cachedBufferContent[bnr] = newBufLines
   endif
 
   if contentChanges->empty()
@@ -1219,11 +1221,10 @@ def DidSaveFile(lspserver: dict<any>, bnr: number): void
   # Params: DidSaveTextDocumentParams
   var params: dict<any> = {textDocument: {uri: util.LspBufnrToUri(bnr)}}
 
-  if lspserver.caps.textDocumentSync->type() == v:t_dict
-      && lspserver.caps.textDocumentSync->has_key('save')
-    if lspserver.caps.textDocumentSync.save->type() == v:t_dict
-	&& lspserver.caps.textDocumentSync.save->has_key('includeText')
-	&& lspserver.caps.textDocumentSync.save.includeText
+  var textDocumentSync = lspserver.caps.textDocumentSync
+  if textDocumentSync->type() == v:t_dict && textDocumentSync->has_key('save')
+    var save = textDocumentSync.save
+    if save->type() == v:t_dict && save->has_key('includeText') && save.includeText
       params.text = BufferText(bnr)
     endif
   endif
@@ -2014,9 +2015,10 @@ def GetCodeActionParams(lspserver: dict<any>, fname_arg: string, line1: number,
   # Diagnostics are scoped per-server so each provider gets context that
   # matches its own diagnostic namespace and offset encoding.
   var d: list<dict<any>> = []
+  var needOffsetEncoding = lspserver.needOffsetEncoding
   for lnum in range(line1, line2)
     var diagsInfo: list<dict<any>> = diag.GetDiagsByLine(bnr, lnum, lspserver)->deepcopy()
-    if lspserver.needOffsetEncoding
+    if needOffsetEncoding
       diagsInfo->map((_, di) => {
 	  lspserver.encodeRange(bnr, di.range)
 	  return di
@@ -2226,11 +2228,19 @@ enddef
 def AddWorkspaceFolder(lspserver: dict<any>, dirName_arg: string): void
   var dirName = dirName_arg->fnamemodify(':p')
 
-  if !lspserver.caps->has_key('workspace')
-	  || !lspserver.caps.workspace->has_key('workspaceFolders')
-	  || !lspserver.caps.workspace.workspaceFolders->has_key('supported')
-	  || !lspserver.caps.workspace.workspaceFolders.supported
-      util.ErrMsg('LSP server does not support workspace folders')
+  var caps = lspserver.caps
+  if !caps->has_key('workspace')
+    util.ErrMsg('LSP server does not support workspace folders')
+    return
+  endif
+  var workspace = caps.workspace
+  if !workspace->has_key('workspaceFolders')
+    util.ErrMsg('LSP server does not support workspace folders')
+    return
+  endif
+  var workspaceFolders = workspace.workspaceFolders
+  if !workspaceFolders->has_key('supported') || !workspaceFolders.supported
+    util.ErrMsg('LSP server does not support workspace folders')
     return
   endif
 
@@ -2251,11 +2261,19 @@ enddef
 def RemoveWorkspaceFolder(lspserver: dict<any>, dirName_arg: string): void
   var dirName = dirName_arg->fnamemodify(':p')
 
-  if !lspserver.caps->has_key('workspace')
-	  || !lspserver.caps.workspace->has_key('workspaceFolders')
-	  || !lspserver.caps.workspace.workspaceFolders->has_key('supported')
-	  || !lspserver.caps.workspace.workspaceFolders.supported
-      util.ErrMsg('LSP server does not support workspace folders')
+  var caps = lspserver.caps
+  if !caps->has_key('workspace')
+    util.ErrMsg('LSP server does not support workspace folders')
+    return
+  endif
+  var workspace = caps.workspace
+  if !workspace->has_key('workspaceFolders')
+    util.ErrMsg('LSP server does not support workspace folders')
+    return
+  endif
+  var workspaceFolders = workspace.workspaceFolders
+  if !workspaceFolders->has_key('supported') || !workspaceFolders.supported
+    util.ErrMsg('LSP server does not support workspace folders')
     return
   endif
 

@@ -225,14 +225,15 @@ enddef
 
 def DiagSevToSymbolText(severity: number): string
   var lspOpts = opt.lspOptions
+  var hintText = lspOpts.diagSignHintText
   var typeMap: list<string> = [
     lspOpts.diagSignErrorText,
     lspOpts.diagSignWarningText,
     lspOpts.diagSignInfoText,
-    lspOpts.diagSignHintText
+    hintText
   ]
   if severity < 1 || severity > 4
-    return lspOpts.diagSignHintText
+    return hintText
   endif
   return typeMap[severity - 1]
 enddef
@@ -274,8 +275,12 @@ export def DiagsRefresh(bnr: number, all: bool = false)
 
   RemoveDiagVisualsForBuffer(bnr, all)
 
-  if !diagsMap->has_key(bnr) ||
-      diagsMap[bnr].sortedDiagnostics->empty()
+  if !diagsMap->has_key(bnr)
+    return
+  endif
+  var bufferDiags = diagsMap[bnr]
+  var diags: list<dict<any>> = bufferDiags.sortedDiagnostics
+  if diags->empty()
     return
   endif
 
@@ -283,12 +288,13 @@ export def DiagsRefresh(bnr: number, all: bool = false)
   var diag_align: string = 'above'
   var diag_wrap: string = 'truncate'
   var diag_symbol: string = '┌─'
+  var virtualTextAlign = lspOpts.diagVirtualTextAlign
 
-  if lspOpts.diagVirtualTextAlign == 'below'
+  if virtualTextAlign == 'below'
     diag_align = 'below'
     diag_wrap = 'truncate'
     diag_symbol = '└─'
-  elseif lspOpts.diagVirtualTextAlign == 'after'
+  elseif virtualTextAlign == 'after'
     diag_align = 'after'
     diag_wrap = 'wrap'
     diag_symbol = 'E>'
@@ -299,7 +305,6 @@ export def DiagsRefresh(bnr: number, all: bool = false)
   endif
 
   var signs: list<dict<any>> = []
-  var diags: list<dict<any>> = diagsMap[bnr].sortedDiagnostics
   var inlineHLprops: list<list<list<number>>> = [[], [], [], [], []]
   for diag in diags
     # TODO: prioritize most important severity if there are multiple
@@ -577,8 +582,15 @@ def DiagsUpdateLocList(bnr: number, calledByCmd: bool = false): bool
     LspQfId = 0
   endif
 
-  if !diagsMap->has_key(bnr) ||
-      diagsMap[bnr].sortedDiagnostics->empty()
+  if !diagsMap->has_key(bnr)
+    if LspQfId != 0
+      setloclist(0, [], 'r', {id: LspQfId, items: []})
+    endif
+    return false
+  endif
+  var bufferDiags = diagsMap[bnr]
+  var diags: list<dict<any>> = bufferDiags.sortedDiagnostics
+  if diags->empty()
     if LspQfId != 0
       setloclist(0, [], 'r', {id: LspQfId, items: []})
     endif
@@ -588,7 +600,6 @@ def DiagsUpdateLocList(bnr: number, calledByCmd: bool = false): bool
   var qflist: list<dict<any>> = []
   var text: string
 
-  var diags = diagsMap[bnr].sortedDiagnostics
   for diag in diags
     var d_range = diag.range
     var d_start = d_range.start
@@ -808,13 +819,16 @@ export def LspDiagsJump(which: string, a_count: number = 0): void
   endif
   var bnr: number = bufnr()
 
-  if !diagsMap->has_key(bnr) ||
-      diagsMap[bnr].sortedDiagnostics->empty()
+  if !diagsMap->has_key(bnr)
     util.WarnMsg($'No diagnostic messages found for {fname}')
     return
   endif
-
-  var diags = diagsMap[bnr].sortedDiagnostics
+  var bufferDiags = diagsMap[bnr]
+  var diags = bufferDiags.sortedDiagnostics
+  if diags->empty()
+    util.WarnMsg($'No diagnostic messages found for {fname}')
+    return
+  endif
 
   if which == 'first'
     JumpDiag(diags[0])
@@ -879,12 +893,16 @@ enddef
 # buffer.  A copy of the diagnostics is returned so that the caller can modify
 # the diagnostics.
 export def GetDiagsForBuf(bnr: number = bufnr()): list<dict<any>>
-  if !diagsMap->has_key(bnr) ||
-      diagsMap[bnr].sortedDiagnostics->empty()
+  if !diagsMap->has_key(bnr)
+    return []
+  endif
+  var bufferDiags = diagsMap[bnr]
+  var diags = bufferDiags.sortedDiagnostics
+  if diags->empty()
     return []
   endif
 
-  return diagsMap[bnr].sortedDiagnostics->deepcopy()
+  return diags->deepcopy()
 enddef
 
 # Return the diagnostic text from the LSP server for the current mouse line to

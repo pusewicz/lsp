@@ -647,28 +647,29 @@ def BufferInit(lspserverId: number, bnr: number): void
       # It's only possible to initialize the features when the server
       # capabilities of all the registered language servers for this file type
       # are known.
+      var serverId = lspsrv.id
       var completionServer = buf.BufLspServerGet(bnr, 'completion')
-      if !completionServer->empty() && lspsrv.id == completionServer.id
+      if !completionServer->empty() && serverId == completionServer.id
         completion.BufferInit(lspsrv, bnr, ftype)
       endif
 
       var signatureServer = buf.BufLspServerGet(bnr, 'signatureHelp')
-      if !signatureServer->empty() && lspsrv.id == signatureServer.id
+      if !signatureServer->empty() && serverId == signatureServer.id
 	signature.BufferInit(lspsrv)
       endif
 
       var inlayHintServer = buf.BufLspServerGet(bnr, 'inlayHint')
-      if !inlayHintServer->empty() && lspsrv.id == inlayHintServer.id
+      if !inlayHintServer->empty() && serverId == inlayHintServer.id
 	inlayhints.BufferInit(lspsrv, bnr)
       endif
 
       var semanticServer = buf.BufLspServerGet(bnr, 'semanticTokens')
-      if !semanticServer->empty() && lspsrv.id == semanticServer.id
+      if !semanticServer->empty() && serverId == semanticServer.id
 	semantichighlight.BufferInit(lspserver, bnr)
       endif
 
       var onTypeFormatServer = buf.BufLspServerGet(bnr, 'documentOnTypeFormatting')
-      if !onTypeFormatServer->empty() && lspsrv.id == onTypeFormatServer.id
+      if !onTypeFormatServer->empty() && serverId == onTypeFormatServer.id
 	ontypeformat.BufferInit(lspsrv, bnr)
       endif
     endfor
@@ -747,11 +748,12 @@ export def AddFile(bnr: number): void
       # when the server is ready.
       # The user event is server-id scoped, so each delayed init is tied to the
       # exact server instance attached to this buffer.
+      var serverId = lspserver.id
       autocmd_add([{group: 'LSPBufferAutocmds',
                    event: 'User',
-                   pattern: $'LspServerReady_{lspserver.id}',
+                   pattern: $'LspServerReady_{serverId}',
                    once: true,
-                   cmd: $'BufferInit({lspserver.id}, {bnr})'}])
+                   cmd: $'BufferInit({serverId}, {bnr})'}])
     endif
   endfor
 enddef
@@ -777,11 +779,12 @@ export def RemoveFile(bnr: number): void
     if lspserver->empty()
       continue
     endif
+    var serverId = lspserver.id
     try
       autocmd_delete([{group: 'LSPBufferAutocmds',
                      event: 'User',
-                     pattern: $'LspServerReady_{lspserver.id}',
-                     cmd: $'BufferInit({lspserver.id}, {bnr})'}])
+                     pattern: $'LspServerReady_{serverId}',
+                     cmd: $'BufferInit({serverId}, {bnr})'}])
     catch /E367:/
       # The tests can call RemoveFile() without creating this augroup.
     endtry
