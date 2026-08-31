@@ -2094,6 +2094,18 @@ incrementalSync		|Boolean| option.  Specifies the method used to
 
 			Default: |false|
 
+						*lsp-opt-workspaceIgnoredPaths*
+workspaceIgnoredPaths	|List| option.  Directory paths that are never
+			used as the workspace root for any language server.
+			If the resolved workspace root matches an entry, a
+			null root is sent to the server so it only analyzes
+			the current buffer.  Glob patterns are supported.
+
+			Default:
+ 			['/', $"{$HOME}", $"{$HOME}/.cargo", $"{$HOME}/.cargo/**",
+ 			$"{$HOME}/.rustup", $"{$HOME}/.rustup/**", $"{$HOME}/pkg/mod",
+ 			$"{$HOME}/pkg/mod/**"]
+
 For example, to disable the automatic placement of signs for the LSP
 diagnostic messages, you can add the following line to your .vimrc file: >
 

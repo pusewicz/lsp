@@ -243,7 +243,10 @@ export var lspOptions: dict<any> = {
   documentationFormat: ['markdown', 'plaintext'],
 
   # incremental text document sync with the server
-  incrementalSync: false
+  incrementalSync: false,
+
+  # list of directories that should never be used as workspace root
+  workspaceIgnoredPaths: ['/', $"{$HOME}", $"{$HOME}/.cargo", $"{$HOME}/.cargo/**", $"{$HOME}/.rustup", $"{$HOME}/.rustup/**", $"{$HOME}/pkg/mod", $"{$HOME}/pkg/mod/**"]
 }
 
 # set the LSP plugin options from the user provided option values

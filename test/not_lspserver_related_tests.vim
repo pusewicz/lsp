@@ -4,6 +4,7 @@ vim9script
 import '../autoload/lsp/completion.vim' as completion
 import '../autoload/lsp/buffer.vim' as buf
 import '../autoload/lsp/capabilities.vim' as capabilities
+import '../autoload/lsp/util.vim' as util
 
 # Test for no duplicates in helptags
 def g:Test_Helptags()
@@ -308,6 +309,37 @@ enddef
 # Only here to because the test runner needs it
 def g:StartLangServer(): bool
   return true
+enddef
+
+# Regression test for $HOME as workspace root being ignored
+def g:Test_WorkspaceIgnoredPaths_HomeRoot()
+  var ignored: list<string> = [$"{$HOME}"]
+  var root: string = $HOME
+  assert_true(util.IsIgnoredRoot(root, ignored))
+enddef
+
+# Glob pattern matches children even under a symlink
+def g:Test_WorkspaceIgnoredPaths_GlobSymlink()
+  var tmpdir: string = tempname()
+  var real: string = $'{tmpdir}/real'
+  var link: string = $'{tmpdir}/link'
+  mkdir($'{real}/.cargo/registry/src/index', 'p')
+  system($'ln -s {shellescape(real)} {shellescape(link)}')
+  assert_equal(0, v:shell_error)
+  var ignored: list<string> = [$'{link}/.cargo/**']
+  var root: string = $'{real}/.cargo/registry/src/index/package'
+  try
+    assert_true(util.IsIgnoredRoot(root, ignored))
+  finally
+    delete(tmpdir, 'rf')
+  endtry
+enddef
+
+# Root not ignored if it doesn't exist in the list
+def g:Test_WorkspaceIgnoredPaths_NormalRoot()
+  var ignored: list<string> = [$"{$HOME}"]
+  var root: string = $"{$HOME}/project"
+  assert_false(util.IsIgnoredRoot(root, ignored))
 enddef
 
 # vim: tabstop=8 shiftwidth=2 softtabstop=2 noexpandtab

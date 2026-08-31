@@ -210,15 +210,26 @@ def InitServer(lspserver: dict<any>, bnr: number)
   endif
 
   rootPath = rootPath->fnamemodify(':p')
-  lspserver.workspaceFolders = [rootPath]
 
-  var rootUri = util.LspFileToUri(rootPath)
-  initparams.rootPath = rootPath
-  initparams.rootUri = rootUri
-  initparams.workspaceFolders = [{
-	name: rootPath->fnamemodify(':t'),
-	uri: rootUri
-     }]
+  if util.IsIgnoredRoot(rootPath, opt.lspOptions.workspaceIgnoredPaths)
+    rootPath = ''
+  endif
+
+  if rootPath->empty()
+    lspserver.workspaceFolders = []
+    initparams.rootPath = v:null
+    initparams.rootUri = v:null
+    initparams.workspaceFolders = []
+  else
+    lspserver.workspaceFolders = [rootPath]
+    var rootUri = util.LspFileToUri(rootPath)
+    initparams.rootPath = rootPath
+    initparams.rootUri = rootUri
+    initparams.workspaceFolders = [{
+      name: rootPath->fnamemodify(':t'),
+      uri: rootUri
+    }]
+  endif
 
   initparams.trace = 'off'
   initparams.capabilities = capabilities.GetClientCaps()
