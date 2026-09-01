@@ -11,6 +11,7 @@ vim9script
 import './options.vim' as opt
 import './handlers.vim'
 import './util.vim'
+import './protocol.vim'
 import './capabilities.vim'
 import './offset.vim'
 import './diag.vim'
@@ -855,13 +856,14 @@ def TextdocDidChange(lspserver: dict<any>, bnr: number): void
   # Params: DidChangeTextDocumentParams
 
   # Nothing to do when the server doesn't want change notifications.
-  if lspserver.textDocumentSync == 0
+  if lspserver.textDocumentSync == protocol.TextDocumentSyncKind.None
     return
   endif
 
   var contentChanges: list<dict<any>>
 
-  if lspserver.textDocumentSync == 1 || !opt.lspOptions.incrementalSync
+  if lspserver.textDocumentSync == protocol.TextDocumentSyncKind.Full
+	|| !opt.lspOptions.incrementalSync
     # TextDocumentSyncKind: Full — send the entire buffer on every change.
     contentChanges = [{text: BufferText(bnr)}]
   elseif exists_compiled('*diff')
@@ -966,7 +968,7 @@ def GetCompletion(lspserver: dict<any>, triggerKind_arg: number, triggerChar: st
   var params = lspserver.getTextDocPosition(false)
   #   interface CompletionContext
   params.context = {triggerKind: triggerKind_arg}
-  if triggerKind_arg == 2 && !triggerChar->empty()
+  if triggerKind_arg == protocol.CompletionTriggerKind.TriggerCharacter && !triggerChar->empty()
     params.context.triggerCharacter = triggerChar
   endif
 
@@ -1335,13 +1337,11 @@ def DocHighlightReply(lspserver: dict<any>, docHighlightReply: any,
 
   for docHL in docHighlightReply
     lspserver.decodeRange(bnr, docHL.range)
-    var kind: number = docHL->get('kind', 1)
+    var kind: number = docHL->get('kind', protocol.DocumentHighlightKind.Text)
     var propName: string
-    if kind == 2
-      # Read-access
+    if kind == protocol.DocumentHighlightKind.Read
       propName = 'LspReadRef'
-    elseif kind == 3
-      # Write-access
+    elseif kind == protocol.DocumentHighlightKind.Write
       propName = 'LspWriteRef'
     else
       # textual reference
