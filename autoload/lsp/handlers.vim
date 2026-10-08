@@ -665,6 +665,13 @@ export def ProcessMessage(lspserver: dict<any>): void
   endif
 
   if msgKind == 'response'
+    if msg.id->type() == v:t_number && lspserver.syncRpcReplies->has_key(msg.id)
+      # Vim passes the reply to a synchronous request to the channel callback
+      # if it arrives while the callback handles other messages.  Pass it
+      # back to the waiting request.
+      lspserver.syncRpcReplies[msg.id] = msg
+      return
+    endif
     # A response with an unknown id can happen for canceled or timed-out
     # requests. Ignore it and only trace for debugging.
     lspserver.traceLog($'Ignored response with unknown id from LSP server: {msg->string()}')

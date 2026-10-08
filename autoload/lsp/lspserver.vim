@@ -438,34 +438,67 @@ def ProcessLspServerError(method: string, responseError: dict<any>)
   util.ErrMsg($'request {method} failed ({emsg})')
 enddef
 
+# The ID of the first synchronous request to a language server.  Vim numbers
+# the requests sent with ch_sendexpr() from 1, so synchronous requests, which
+# are numbered by the plugin, use a range of their own.
+const SYNC_RPC_FIRST_ID = 1000000000
+
 # Send a sync RPC request message to the LSP server and return the received
 # reply.  In case of an error, an empty Dict is returned.
+#
+# ch_evalexpr() isn't used: while waiting for the reply, Vim invokes the
+# channel callback for the other messages from the server, and in the "lsp"
+# mode it can pass it the awaited reply too.  ch_evalexpr() then times out.
+# So the request has an ID chosen here, the reply is waited for with
+# ch_read(), and a reply that the channel callback gets is passed back through
+# "lspserver.syncRpcReplies" (see handlers.ProcessMessage()).
 def Rpc(lspserver: dict<any>, method: string, params: any, opts: dict<any> = {}): dict<any>
-  var req = {
-    method: method,
-    params: params
-  }
-
   var job = lspserver.job
   if job->job_status() != 'run'
     # LSP server has exited
     return {}
   endif
 
-  var ch_opts = {}
-  var timeout: number = opts->get('timeout', -1)
-  if timeout != -1
-    ch_opts.timeout = timeout
-  endif
+  var id = lspserver.nextSyncRpcId
+  lspserver.nextSyncRpcId += 1
+  var req = {
+    id: id,
+    method: method,
+    params: params
+  }
 
-  # Do the synchronous RPC call
-  var reply = job->ch_evalexpr(req, ch_opts)
+  # Wait for the reply as long as ch_evalexpr() would
+  var timeout: number = opts->get('timeout',
+				  job->job_getchannel()->ch_info().out_timeout)
+
+  var reply: dict<any> = {}
+  lspserver.syncRpcReplies[id] = {}
+  try
+    job->ch_sendexpr(req)
+    if lspserver.debug
+      lspserver.traceLog($'Sent request {req->json_encode()}')
+    endif
+
+    var start = reltime()
+    while job->job_status() == 'run'
+      var msg: any = job->ch_read({id: id, timeout: 10})
+      if msg->type() == v:t_dict
+	reply = msg
+	break
+      endif
+      if !lspserver.syncRpcReplies[id]->empty()
+	reply = lspserver.syncRpcReplies[id]
+	break
+      endif
+      if start->reltime()->reltimefloat() * 1000 >= timeout
+	break
+      endif
+    endwhile
+  finally
+    lspserver.syncRpcReplies->remove(id)
+  endtry
 
   if lspserver.debug
-    if reply->has_key('id')
-      req = {id: reply.id}->extend(req)
-    endif
-    lspserver.traceLog($'Sent request {req->json_encode()}')
     lspserver.traceLog($'Got response {reply->json_encode()}')
   endif
 
@@ -2642,6 +2675,8 @@ export def NewLspServer(serverParams: dict<any>): dict<any>
     omniCompletePending: false,
     completeItemsIsIncomplete: false,
     completionRequestCount: 0,
+    nextSyncRpcId: SYNC_RPC_FIRST_ID,
+    syncRpcReplies: {},
     peekSymbolFilePopup: -1,
     peekSymbolPopup: -1,
     processDiagHandler: serverParams.processDiagHandler,
