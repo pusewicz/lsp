@@ -234,11 +234,6 @@ def ApplyTextDocumentEdit(lspserver: dict<any>, textDocEdit: dict<any>): string
   return ''
 enddef
 
-# Returns the number of the buffer for file "fname", or 0 if there is none.
-def FileBufnr(fname: string): number
-  return fname->bufexists() ? fname->bufadd() : 0
-enddef
-
 # Reloads buffer "bnr", which is loaded and has no unsaved changes, from its
 # file after the file was changed.  Unlike ":edit!" this works for a hidden
 # buffer too, and like it, it keeps the undo history (see 'undoreload').
@@ -278,7 +273,7 @@ def FileCreate(createFile: dict<any>): string
     endif
   endif
 
-  var bnr: number = FileBufnr(fname)
+  var bnr: number = util.BufnrExact(fname)
   if bnr > 0 && bnr->getbufvar('&modified')
     return $'File create failed, {fname} has unsaved changes'
   endif
@@ -319,7 +314,7 @@ def FileDelete(deleteFile: dict<any>): string
     return $'File delete failed, {path} does not exist'
   endif
 
-  var bnrs: list<number> = [FileBufnr(path)]->filter((_, bnr) => bnr > 0)
+  var bnrs: list<number> = [util.BufnrExact(path)]->filter((_, bnr) => bnr > 0)
 			   + DirBuffers(path)
   for bnr in bnrs
     if bnr->getbufvar('&modified')
@@ -431,7 +426,7 @@ def FileRename(renameFile: dict<any>): string
   # The buffer of each renamed file ("bnr") and of the file it replaces
   # ("tbnr").  When a file that replaces a loaded buffer has no loaded buffer,
   # its buffer is loaded to take the place of that buffer.
-  var moves: list<dict<any>> = [{bnr: FileBufnr(oldPath), from: oldPath,
+  var moves: list<dict<any>> = [{bnr: util.BufnrExact(oldPath), from: oldPath,
 				 to: newPath}]
   for bnr in DirBuffers(oldPath)
     var name: string = bnr->getbufinfo()[0].name
@@ -439,15 +434,15 @@ def FileRename(renameFile: dict<any>): string
 		to: newPath .. name->strpart(oldPath->len())})
   endfor
   for move in moves
-    var tbnr: number = FileBufnr(move.to)
-    move.tbnr = tbnr == move.bnr ? 0 : tbnr
+    var tbnr: number = util.BufnrExact(move.to)
+    move.tbnr = tbnr == move.bnr ? -1 : tbnr
     if move.tbnr > 0 && move.tbnr->getbufvar('&modified')
       return $'File rename failed, {move.to} has unsaved changes'
     endif
   endfor
   for move in moves
     if move.tbnr > 0 && move.tbnr->bufloaded()
-	&& (move.bnr == 0 || !move.bnr->bufloaded())
+	&& (move.bnr <= 0 || !move.bnr->bufloaded())
       move.bnr = move.from->bufadd()
       move.bnr->bufload()
     endif
