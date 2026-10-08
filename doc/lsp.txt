@@ -2257,6 +2257,24 @@ behavior by modifying the "completionMatcher" option. This option allows you
 to switch between case-insensitive or fuzzy comparison methods as per your
 preference and requirements for completion matching.
 
+						       *g:LspCompleteSource()*
+Vim's own auto-completion ('autocomplete', |ins-autocompletion|) and
+|i_CTRL-N| collect matches from the sources in the 'complete' option.  To
+add the language server to these sources, use the |g:LspCompleteSource()|
+function with the "F" flag in place of the plugin's auto-completion: >
+
+    vim9script
+    g:LspOptionsSet({autoComplete: false})
+    set autocomplete
+    set complete=.^5,Fg:LspCompleteSource^7,w^5,b^5,u^5
+<
+A language server may return only some of the matching items and mark the
+list as incomplete; clangd, for example, returns at most 100 items by
+default.  |g:LspCompleteSource()| then asks Vim to call it again whenever the
+typed text changes, so that the server can supply the items it left out.
+The "o" flag in 'complete' uses 'omnifunc' instead, which does not do this:
+as you type, Vim only filters the items of the first reply.
+
 In addition to automatic completion and omni completion, there is a
 possibility to utilize external completion engines with the LSP client. This
 can be achieved by repurposing the |g:LspOmniFunc| function. The external
