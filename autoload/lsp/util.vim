@@ -235,6 +235,16 @@ export def LspBufnrToUri(bnr: number): string
   return LspFileToUri(bnr->bufname())
 enddef
 
+# Returns true if writing buffer "bnr" ends the file with a newline.  Vim
+# writes one after the last line when 'endofline' is set, or when
+# 'fixendofline' is set and 'binary' is not.  The document text sent to the
+# language server must follow the same rule, so that the server sees what
+# will be saved.
+export def BufWritesEol(bnr: number): bool
+  return bnr->getbufvar('&endofline')
+    || (bnr->getbufvar('&fixendofline') && !bnr->getbufvar('&binary'))
+enddef
+
 # Returns the byte number of the specified LSP position in buffer "bnr".
 # LSP's line and characters are 0-indexed.
 # Vim's line and columns are 1-indexed.
