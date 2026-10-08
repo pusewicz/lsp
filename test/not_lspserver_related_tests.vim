@@ -1034,6 +1034,30 @@ def TextEditCompletionCases(): list<dict<any>>
     }],
     pick: 1,
     expected: 'foo.name|;',
+  }, {
+    name: 'InsertReplace edit with UTF-16 position offsets',
+    text: '/* 😀 */ foo.na',
+    after: 'm𠀀;',
+    posEncoding: 16,
+    items: [{
+      label: 'name?', filterText: 'name',
+      textEdit: {insert: FirstLineRange(13, 15),
+		 replace: FirstLineRange(13, 18), newText: 'name'},
+    }],
+    pick: 1,
+    expected: '/* 😀 */ foo.name|;',
+  }, {
+    name: 'InsertReplace edit with UTF-8 position offsets',
+    text: '/* 😀 */ foo.na',
+    after: 'm𠀀;',
+    posEncoding: 8,
+    items: [{
+      label: 'name?', filterText: 'name',
+      textEdit: {insert: FirstLineRange(15, 17),
+		 replace: FirstLineRange(15, 22), newText: 'name'},
+    }],
+    pick: 1,
+    expected: '/* 😀 */ foo.name|;',
   }]
 enddef
 
@@ -1118,6 +1142,45 @@ enddef
 
 def g:Test_Completion_TextEdit_AutoComplete()
   CheckTextEditCompletion(false)
+enddef
+
+# The additional text edits of a completion item, like the auto-import edits
+# of typescript-language-server, are applied at their positions in the
+# negotiated position encoding.
+def g:Test_Completion_AdditionalTextEdits_PositionEncoding()
+  var saveAutoComplete = g:LspOptionsGet().autoComplete
+  var saveCompleteopt = &g:completeopt
+  g:LspOptionsSet({autoComplete: true})
+  # The offset after "𠀀" in the import in each position encoding
+  var importEnd = {8: 20, 16: 17, 32: 16}
+  try
+    for posEncoding in [8, 16, 32]
+      silent! edit XCompletionAdditionalEdits.ts
+      setline(1, ['import { café, 𠀀 } from "./m";', 'fo'])
+      var lspserver = MakeTextEditServer({posEncoding: posEncoding, items: [{
+	label: 'foo',
+	additionalTextEdits: [{
+	  range: FirstLineRange(importEnd[posEncoding], importEnd[posEncoding]),
+	  newText: ', foo'}],
+      }]})
+      buf.BufLspServerSet(bufnr(), lspserver)
+      try
+	completion.BufferInit(lspserver, bufnr(), &filetype)
+	setlocal completeopt=menuone,noinsert,noselect
+	inoremap <buffer> <F5> <ScriptCmd>completion.LspComplete(true)<CR>
+	cursor(2, 2)
+	feedkeys("a\<F5>\<C-N>\<C-Y>\<Esc>", 'xt')
+	assert_equal(['import { café, 𠀀, foo } from "./m";', 'foo'],
+		     getline(1, '$'), $'UTF-{posEncoding}')
+      finally
+	buf.BufLspServerRemove(bufnr(), lspserver)
+	:%bw!
+      endtry
+    endfor
+  finally
+    g:LspOptionsSet({autoComplete: saveAutoComplete})
+    &g:completeopt = saveCompleteopt
+  endtry
 enddef
 
 # Regression test for documentOnTypeFormattingProvider trigger char capture.

@@ -364,10 +364,13 @@ def ApplyCompletionListItemDefaults(cItems: any, items: list<dict<any>>): list<d
   return items->map((_, item) => ApplyCompletionItemDefaults(item, itemDefaults))
 enddef
 
-# For InsertReplaceEdit, compute the replace-only tail length that should be
-# deleted after accepting the completion item.
-def GetInsertReplaceTailDeleteChars(bnr: number, cItem: dict<any>,
-                                    curLine: number): number
+# For the InsertReplaceEdit of the completion item "cItem" from "lspserver",
+# return the number of characters after the cursor that only its replace
+# range covers, to delete after accepting the item.  The insert range ends at
+# the cursor, and as the text before the cursor was completed since the
+# request, only the text after it still matches the positions of the edit.
+def GetInsertReplaceTailDeleteChars(lspserver: dict<any>,
+				    cItem: dict<any>): number
   if !cItem->has_key('textEdit') || cItem.textEdit->type() != v:t_dict
     return 0
   endif
@@ -389,47 +392,43 @@ def GetInsertReplaceTailDeleteChars(bnr: number, cItem: dict<any>,
   endif
 
   # Validate that both edits are on the same line as the cursor
+  var curLine = line('.') - 1
   if insertEnd->get('line', -1) != curLine || replaceEnd->get('line', -1) != curLine
     return 0
   endif
 
-  var insertEndCol = util.GetCharIdxWithoutCompChar(bnr, insertEnd)
-  var replaceEndCol = util.GetCharIdxWithoutCompChar(bnr, replaceEnd)
-  return max([0, replaceEndCol - insertEndCol])
+  var tailLen = replaceEnd.character - insertEnd.character
+  if tailLen <= 0
+    return 0
+  endif
+  return offset.DecodeCharacter(lspserver,
+				getline('.')->strpart(col('.') - 1), tailLen)
 enddef
 
-# Apply the replace-only tail deletion for an InsertReplaceEdit completion.
-def ApplyInsertReplaceTailDelete(bnr: number, tailDeleteChars: number)
+# Delete the first "tailDeleteChars" characters after the cursor, counting
+# composing characters separately, that an InsertReplaceEdit completion
+# replaces.
+def ApplyInsertReplaceTailDelete(tailDeleteChars: number)
   if tailDeleteChars <= 0
     return
   endif
 
   var ltext = getline('.')
-  var lnum = line('.') - 1
-  var curCharCol = charcol('.') - 1
+  var curByte = col('.') - 1
+  var tail = ltext->strpart(curByte)
+  var tailLen = tail->byteidxcomp(tailDeleteChars)
+  if tailLen < 0
+    tailLen = tail->len()
+  endif
 
   # Only delete identifier tail chars. Do not remove punctuation or
   # following text (for example: ': 0,').
-  var substr = ltext->strcharpart(curCharCol)
-  var identTailLen = max([0, matchend(substr, '^\k\+')])
-  var deleteLen = min([tailDeleteChars, identTailLen])
+  var deleteLen = min([tailLen, max([0, tail->matchend('^\k\+')])])
   if deleteLen <= 0
     return
   endif
 
-  var endCharCol = min([ltext->strcharlen(), curCharCol + deleteLen])
-  var startChar = util.GetCharIdxWithCompChar(ltext, curCharCol)
-  var endChar = util.GetCharIdxWithCompChar(ltext, endCharCol)
-
-  var editRange = {
-    start: {line: lnum, character: startChar},
-    end: {line: lnum, character: endChar},
-  }
-
-  textedit.ApplyTextEdits(bnr, [{
-    range: editRange,
-    newText: '',
-  }])
+  setline('.', ltext->strpart(0, curByte) .. tail->strpart(deleteLen))
 enddef
 
 # Apply the text edit of the completion item "cItem" from "lspserver" after
@@ -1306,12 +1305,15 @@ def LspCompleteDone(bnr: number)
     endif
   endif
 
-  var tailDeleteChars =
-    GetInsertReplaceTailDeleteChars(bnr, completionData, line('.') - 1)
-  ApplyInsertReplaceTailDelete(bnr, tailDeleteChars)
+  ApplyInsertReplaceTailDelete(
+    GetInsertReplaceTailDeleteChars(lspserver, completionData))
 
   if !completionData->get('additionalTextEdits', {})->empty()
-    textedit.ApplyTextEdits(bnr, completionData.additionalTextEdits)
+    var additionalTextEdits = completionData.additionalTextEdits->deepcopy()
+    for textEdit in additionalTextEdits
+      offset.DecodeRange(lspserver, bnr, textEdit.range)
+    endfor
+    textedit.ApplyTextEdits(bnr, additionalTextEdits)
   endif
 
   if completionData->has_key('command')
