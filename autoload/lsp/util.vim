@@ -300,6 +300,12 @@ enddef
 # without counting the composing characters.  The LSP server counts composing
 # characters as separate characters whereas Vim string indexing ignores the
 # composing characters.
+#
+# A position past the end of the line is at the end of the line, as the LSP
+# specification requires, so the returned character index is at most the
+# number of characters in the line.  When the line is not available, because
+# it is past the end of the buffer or the buffer cannot be loaded, the
+# character index is returned unchanged.
 export def GetCharIdxWithoutCompChar(bnr: number, pos: dict<number>): number
   var col: number = pos.character
   # When on the first character, nothing to do.
@@ -310,14 +316,15 @@ export def GetCharIdxWithoutCompChar(bnr: number, pos: dict<number>): number
   # Need a loaded buffer to read the line and compute the offset
   :silent! bnr->bufload()
 
-  var ltext: string = bnr->getbufline(pos.line + 1)->get(0, '')
-  if ltext->empty()
+  var lines: list<string> = bnr->getbufline(pos.line + 1)
+  if lines->empty()
     return col
   endif
 
   # Convert the character index that includes composing characters as separate
   # characters to a byte index and then back to a character index ignoring the
   # composing characters.
+  var ltext: string = lines[0]
   var byteIdx = ltext->byteidxcomp(col)
   if byteIdx != -1
     if byteIdx == ltext->strlen()
@@ -328,16 +335,21 @@ export def GetCharIdxWithoutCompChar(bnr: number, pos: dict<number>): number
     endif
   endif
 
-  return col
+  return ltext->strcharlen()
 enddef
 
-# Get the index of the character at [pos.line, pos.character] in buffer "bnr"
-# counting the composing characters as separate characters.  The LSP server
-# counts composing characters as separate characters whereas Vim string
-# indexing ignores the composing characters.
+# Convert the character index "charIdx" in the line "ltext", which doesn't
+# count the composing characters separately, to a character index that counts
+# them as separate characters.  The LSP server counts composing characters as
+# separate characters whereas Vim string indexing ignores the composing
+# characters.
+#
+# A character index past the end of the line is at the end of the line, so
+# the returned character index is at most the number of characters in the
+# line, counting the composing characters separately.
 export def GetCharIdxWithCompChar(ltext: string, charIdx: number): number
   # When on the first character, nothing to do.
-  if charIdx <= 0 || ltext->empty()
+  if charIdx <= 0
     return charIdx
   endif
 
@@ -353,7 +365,7 @@ export def GetCharIdxWithCompChar(ltext: string, charIdx: number): number
     endif
   endif
 
-  return charIdx
+  return ltext->strchars()
 enddef
 
 # push the current location on to the tag stack
