@@ -492,6 +492,7 @@ enddef
 # the keyword before the cursor and replies with at most "limit" items,
 # setting "isIncomplete" when it truncated the list.  delays[n] is the reply
 # delay in milliseconds for the n-th request; later requests reply at once.
+# A cancelled request gets no reply.
 def MakeTruncatingServer(limit: number, delays: list<number> = []): dict<any>
   var lspserver: dict<any> = {
     id: 9003,
@@ -524,6 +525,11 @@ def MakeTruncatingServer(limit: number, delays: list<number> = []): dict<any>
     else
       Reply(0)
     endif
+  }
+  lspserver.cancelCompletion = () => {
+    for timer in lspserver.timers
+      timer_stop(timer)
+    endfor
   }
   return lspserver
 enddef
