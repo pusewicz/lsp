@@ -323,6 +323,92 @@ def g:Test_Rpc_StaleRequestReplyIsNotAnError()
   endtry
 enddef
 
+# Test that the maps and lists in the server dict that grow with the number of
+# open documents, pending requests and messages keep their type when they are
+# emptied.  Before patch 9.2.1144, Vim goes through all the values of one that
+# has no type on every server method call.
+def g:Test_ServerState_StaysTyped()
+  var types = {
+    messages: 'list<string>',
+    syncRpcReplies: 'dict<dict<any>>',
+    supersedableRequests: 'dict<dict<number>>',
+    diagnosticResultIds: 'dict<string>',
+    pendingPullBufnrs: 'dict<bool>',
+    workDoneProgressTokens: 'dict<bool>',
+    cachedBufferContent: 'dict<list<string>>',
+    cachedBufferEol: 'dict<bool>',
+    docVersions: 'dict<number>'
+  }
+  # typename() gives the type of an empty dict or list only when it has one.
+  var AssertTyped = (lspserver: dict<any>, when: string) => {
+    for [key, type] in types->items()
+      assert_equal(type, typename(lspserver[key]), $'{key} {when}')
+    endfor
+  }
+
+  var lspserver = MakeTestLspServer([])
+  AssertTyped(lspserver, 'when created')
+
+  silent! edit XServerStateTyped.txt
+  setline(1, ['text'])
+  var bnr = bufnr()
+  lspserver.textdocDidOpen(bnr, 'text')
+  lspserver.textdocDidClose(bnr)
+
+  for i in range(700)
+    lspserver.addMessage('Log', $'message {i}')
+  endfor
+  assert_equal(500, lspserver.messages->len())
+  assert_match('message 699$', lspserver.messages[-1])
+  lspserver.messages->remove(0, -1)
+
+  lspserver.running = true
+  lspserver.ready = true
+  lspserver.isDiagnosticsProvider = true
+  var pulled: list<number> = []
+  lspserver.pullDiagnostics = (pullBnr: number) => {
+    pulled->add(pullBnr)
+  }
+  buf.BufLspServerSet(bnr, lspserver)
+  try
+    lspserver.queuePullDiagnostics(bnr)
+    g:WaitForAssert(() => assert_equal([bnr], pulled))
+  finally
+    buf.BufLspServerRemove(bnr, lspserver)
+  endtry
+  AssertTyped(lspserver, 'after a document was closed and the queued pulls were sent')
+
+  # Start the server asynchronously, as outside the tests, and let it exit.
+  lspserver.running = false
+  lspserver.path = 'sh'
+  lspserver.args = ['-c', 'exec cat >/dev/null']
+  g:LSPTest = false
+  try
+    lspserver.startServer(bnr)
+    job_stop(lspserver.job)
+    g:WaitForAssert(() => assert_false(lspserver.running))
+  finally
+    g:LSPTest = true
+  endtry
+  AssertTyped(lspserver, 'after the server was started and exited')
+  :%bw!
+enddef
+
+# Test that a message from the server isn't kept in the server dict once it is
+# processed, as Vim may go through all of it on every server method call.
+def g:Test_ProcessMessage_DoesNotKeepMessage()
+  var lspserver = MakeTestLspServer([])
+  var notifs: list<dict<any>> = []
+  lspserver.processNotif = (msg: dict<any>) => {
+    notifs->add(msg)
+  }
+  var notif = {jsonrpc: '2.0', method: 'test/notification', params: {}}
+  lspserver.data = notif
+  lspserver.processMessage()
+  assert_equal([notif], notifs)
+  assert_equal('', lspserver.data)
+enddef
+
 # Returns a running test language server that records the notifications and
 # the requests it is sent in "messages", in the order they are sent.
 def MakeRecordingLspServer(messages: list<dict<any>>): dict<any>
