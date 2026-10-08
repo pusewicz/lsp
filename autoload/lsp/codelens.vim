@@ -4,18 +4,12 @@ import './codeaction.vim'
 
 # Functions related to handling LSP code lens
 
-export def ProcessCodeLens(lspserver: dict<any>, bnr: number, codeLensItems: list<dict<any>>)
+# Let the user select one of the resolved code lens items "codeLensItems" in
+# the current buffer and run its command.
+export def ProcessCodeLens(lspserver: dict<any>, codeLensItems: list<dict<any>>)
   var text: list<string> = []
   for i in codeLensItems->len()->range()
     var item = codeLensItems[i]
-    if !item->has_key('command')
-      # resolve the code lens
-      item = lspserver.resolveCodeLens(bnr, item)
-      if item->empty()
-	continue
-      endif
-      codeLensItems[i] = item
-    endif
     text->add(printf("%d. %s\t| L%s:%s", i + 1, item.command.title,
 			item.range.start.line + 1,
 			getline(item.range.start.line + 1)))

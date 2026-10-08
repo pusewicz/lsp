@@ -21,29 +21,42 @@ def CallHierarchyTreeItemRefresh(idx: number)
     return
   endif
 
-  if !treeItem->has_key('children')
-    # First time retrieving the children for the item at index "idx"
-    var lspserver = buf.BufLspServerGet(w:LspBufnr, 'callHierarchy')
-    if lspserver->empty() || !lspserver.running
+  if treeItem->has_key('children')
+    CallHierarchyTreeItemExpand(treeItem)
+    return
+  endif
+
+  # First time retrieving the children for the item at index "idx"
+  var lspserver = buf.BufLspServerGet(w:LspBufnr, 'callHierarchy')
+  if lspserver->empty() || !lspserver.running
+    return
+  endif
+
+  var winid = win_getid()
+  var incoming: bool = w:LspCallHierIncoming
+  var AddChildren = (calls: list<dict<any>>) => {
+    # Drop the calls when the user left the tree window, or the item is not
+    # displayed in it any more or already has its children
+    if win_getid() != winid || w:LspCallHierIncoming != incoming
+	|| treeItem->has_key('children')
+	|| w:LspCallHierItemMap->indexof((_, v) => v is treeItem) == -1
       return
     endif
 
-    var reply: any
-    if w:LspCallHierIncoming
-      reply = lspserver.getIncomingCalls(treeItem.item)
-    else
-      reply = lspserver.getOutgoingCalls(treeItem.item)
-    endif
-
-    treeItem.children = []
-    if !reply->empty()
-      for item in reply
-	treeItem.children->add({item: w:LspCallHierIncoming ? item.from :
-				item.to, open: false})
-      endfor
-    endif
+    treeItem.children = calls->mapnew((_, c) =>
+      ({item: incoming ? c.from : c.to, open: false}))
+    CallHierarchyTreeItemExpand(treeItem)
+  }
+  if incoming
+    lspserver.getIncomingCalls(treeItem.item, AddChildren)
+  else
+    lspserver.getOutgoingCalls(treeItem.item, AddChildren)
   endif
+enddef
 
+# Display the children of "treeItem" in the call hierarchy tree in the
+# current window.
+def CallHierarchyTreeItemExpand(treeItem: dict<any>)
   # Clear and redisplay the tree in the window
   treeItem.open = true
   var save_cursor = getcurpos()
@@ -163,36 +176,63 @@ def CallHierarchyTreeShow(incoming: bool, prepareItem: dict<any>,
   :setlocal nomodifiable
 enddef
 
-export def IncomingCalls(lspserver: dict<any>)
-  var prepareReply = lspserver.prepareCallHierarchy()
-  if prepareReply->empty()
-    util.WarnMsg('No incoming calls')
-    return
+# Let the user select one of the call hierarchy items "items" and return it,
+# or an empty Dict when there are none or the user cancels.
+def SelectCallHierarchyItem(items: list<dict<any>>): dict<any>
+  if items->len() <= 1
+    return items->get(0, {})
   endif
 
-  var reply = lspserver.getIncomingCalls(prepareReply)
-  if reply->empty()
-    util.WarnMsg('No incoming calls')
-    return
+  var choices: list<string> = ['Select a Call Hierarchy Item:']
+  for i in items->len()->range()
+    choices->add(printf("%d. %s", i + 1, items[i].name))
+  endfor
+  var choice = choices->inputlist()
+  if choice < 1 || choice >= choices->len()
+    return {}
   endif
-
-  CallHierarchyTreeShow(true, prepareReply, reply)
+  return items[choice - 1]
 enddef
 
+# Display the tree of the incoming calls to the symbol under the cursor if
+# "incoming" is true, otherwise of the outgoing calls from it.  Nothing is
+# displayed when the user moves on before the replies arrive.
+def ShowCalls(lspserver: dict<any>, incoming: bool)
+  var noCallsMsg = incoming ? 'No incoming calls' : 'No outgoing calls'
+  var reqctx = util.RequestContextGet('cursor')
+  lspserver.prepareCallHierarchy((items: list<dict<any>>) => {
+    var prepareItem = SelectCallHierarchyItem(items)
+    if prepareItem->empty()
+      util.WarnMsg(noCallsMsg)
+      return
+    endif
+
+    var ShowTree = (calls: list<dict<any>>) => {
+      if !util.RequestContextMatches(reqctx)
+	return
+      endif
+      if calls->empty()
+	util.WarnMsg(noCallsMsg)
+	return
+      endif
+      CallHierarchyTreeShow(incoming, prepareItem, calls)
+    }
+    if incoming
+      lspserver.getIncomingCalls(prepareItem, ShowTree)
+    else
+      lspserver.getOutgoingCalls(prepareItem, ShowTree)
+    endif
+  })
+enddef
+
+# Display the tree of the incoming calls to the symbol under the cursor.
+export def IncomingCalls(lspserver: dict<any>)
+  ShowCalls(lspserver, true)
+enddef
+
+# Display the tree of the outgoing calls from the symbol under the cursor.
 export def OutgoingCalls(lspserver: dict<any>)
-  var prepareReply = lspserver.prepareCallHierarchy()
-  if prepareReply->empty()
-    util.WarnMsg('No outgoing calls')
-    return
-  endif
-
-  var reply = lspserver.getOutgoingCalls(prepareReply)
-  if reply->empty()
-    util.WarnMsg('No outgoing calls')
-    return
-  endif
-
-  CallHierarchyTreeShow(false, prepareReply, reply)
+  ShowCalls(lspserver, false)
 enddef
 
 # vim: tabstop=8 shiftwidth=2 softtabstop=2 noexpandtab

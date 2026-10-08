@@ -144,8 +144,20 @@ export def OpenLinkAtCursor(lspserver: dict<any>, links: list<dict<any>>,
   endif
 
   if link->get('target', '')->empty()
-    link = lspserver.resolveDocumentLink(bufnr(), link)
+    var reqctx = util.RequestContextGet('cursor')
+    lspserver.resolveDocumentLink(bufnr(), link, (resolved: dict<any>) => {
+      if util.RequestContextMatches(reqctx)
+	OpenLinkTarget(resolved, cmdmods)
+      endif
+    })
+    return
   endif
+
+  OpenLinkTarget(link, cmdmods)
+enddef
+
+# Open the target of the document link "link", as OpenLinkAtCursor() does.
+def OpenLinkTarget(link: dict<any>, cmdmods: string)
   var target: string = link->get('target', '')
   if target->empty()
     util.WarnMsg('Document link target is not found')

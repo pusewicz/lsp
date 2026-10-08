@@ -69,6 +69,10 @@ def FilterSymbols(lspserver: dict<any>, popupID: number, key: string): bool
     key_handled = true
   endif
 
+  # Update the workspace symbol query string, which the reply to a query must
+  # still match
+  lspserver.workspaceSymbolQuery = query
+
   if update_popup
     # Update the popup with the new list of symbol names
     popupID->popup_settext('')
@@ -79,9 +83,6 @@ def FilterSymbols(lspserver: dict<any>, popupID: number, key: string): bool
     endif
     :echo $'Symbol: {query}'
   endif
-
-  # Update the workspace symbol query string
-  lspserver.workspaceSymbolQuery = query
 
   if key_handled
     return true
