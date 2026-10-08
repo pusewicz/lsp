@@ -128,12 +128,8 @@ export def BufferInit(lspserver: dict<any>, bnr: number)
     {event: 'InsertEnter', cmd: 'OnInsertEnter()'},
     {event: 'InsertCharPre', cmd: $'OnInsertCharPre({bnr})'},
     {event: 'TextChangedI', cmd: $'OnTypeFormat({bnr})'},
+    {event: 'KeyInputPre', cmd: $'OnKeyInputPre({bnr})'},
   ]
-  # Without the KeyInputPre event (added in Vim 9.1.0563), a typed newline
-  # can't be detected.
-  if exists('##KeyInputPre')
-    acmds->add({event: 'KeyInputPre', cmd: $'OnKeyInputPre({bnr})'})
-  endif
   autocmd_add(acmds->map((_, acmd) => acmd->extend({bufnr: bnr,
 						    replace: true,
 						    group: 'LspOnTypeFormatting'})))

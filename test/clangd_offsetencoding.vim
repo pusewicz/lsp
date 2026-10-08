@@ -3,11 +3,6 @@ vim9script
 
 source common.vim
 
-if !has('patch-9.0.1629')
-  g:LSPTest_skip = 'Vim patch 9.0.1629 is needed to encode/decode UTF-16 offsets'
-  finish
-endif
-
 # Start the C language server.  Returns true on success and false on failure.
 def g:StartLangServer(): bool
   return g:StartLangServerWithFile('Xtest.c')

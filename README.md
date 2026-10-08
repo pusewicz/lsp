@@ -1,6 +1,6 @@
 [![unit-tests](https://github.com/pusewicz/lsp/workflows/unit-tests/badge.svg?branch=main)](https://github.com/pusewicz/lsp/actions/workflows/unitests.yml?query=branch%3Amain)
 
-Language Server Protocol (LSP) plugin for Vim. You need Vim version 9.0 or above to use this plugin.  This plugin is written using only the Vim9 script.
+Language Server Protocol (LSP) plugin for Vim. You need Vim version 9.2 or above to use this plugin.  This plugin is written using only the Vim9 script.
 
 ## Installation
 

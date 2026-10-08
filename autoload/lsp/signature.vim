@@ -390,25 +390,7 @@ export def GetSignatureHelpContext(lspserver: dict<any>, triggerKind: number,
   return context
 enddef
 
-# Mapping fallback path for typed trigger characters on older Vim versions.
-def g:LspShowSignatureTriggerChar(ch: string): string
-  var lspserver: dict<any> = buf.CurbufGetServer('signatureHelp')
-  if lspserver->empty()
-    return ''
-  endif
-
-  # Clean up stale state so retrigger semantics only apply when signature UI
-  # is actually active.
-  CleanupStaleSignatureSession(lspserver)
-
-  if GetSignatureTriggerKind(lspserver, ch) < 0
-    return ''
-  endif
-
-  return g:LspShowSignature(SIG_TRIGGER_KIND_TRIGGER_CHAR, ch)
-enddef
-
-# Autocmd path for typed trigger characters using KeyInputPre.
+# Handle a typed trigger character, detected with the KeyInputPre autocmd.
 def g:LspHandleSignatureTriggerChar(ch: string): void
   var lspserver: dict<any> = buf.CurbufGetServer('signatureHelp')
   if lspserver->empty()
@@ -693,20 +675,12 @@ enddef
 def GetByteOffsets(text: string, start_utf16: number, end_utf16: number): dict<number>
   var result = {start: 0, len: 0}
 
-  if has('patch-9.0.1629')
-    # Modern Vim: Use native UTF-16 aware byteidx
-    var start_byte = text->byteidx(start_utf16, true)
-    var end_byte = text->byteidx(end_utf16, true)
+  var start_byte = text->byteidx(start_utf16, true)
+  var end_byte = text->byteidx(end_utf16, true)
 
-    if start_byte >= 0 && end_byte > start_byte
-      result.start = start_byte
-      result.len = end_byte - start_byte
-    endif
-  else
-    # Legacy/Compatibility: Fallback to raw offsets as byte positions
-    # Note: This may misalign on non-ASCII characters in older versions
-    result.start = start_utf16
-    result.len = end_utf16 - start_utf16
+  if start_byte >= 0 && end_byte > start_byte
+    result.start = start_byte
+    result.len = end_byte - start_byte
   endif
 
   return result
@@ -857,16 +831,6 @@ enddef
 # Setup And Entry Points
 # -----------------------------------------------------------------------------
 
-# Register a per-buffer insert mapping for a trigger character.
-# Only used in older vim versions without the KeyInputPre autocmd support.
-def MapSignatureTriggerCharacter(ch: string)
-  var mapChar = ch
-  if ch =~ ' '
-    mapChar = '<Space>'
-  endif
-  exe $"inoremap <buffer> <silent> {mapChar} {mapChar}<C-R>=g:LspShowSignatureTriggerChar({string(ch)})<CR>"
-enddef
-
 # Add or replace a buffer-local signature autocmd in the shared group.
 def AddSignatureAutocmd(event: string, cmd: string)
   autocmd_add([{bufnr: bufnr(),
@@ -876,21 +840,9 @@ def AddSignatureAutocmd(event: string, cmd: string)
 		cmd: cmd}])
 enddef
 
-# Vim 9.1.0563+ supports KeyInputPre for trigger-char detection.
-def HasKeyInputPreSupport(): bool
-  return v:version > 901 || (v:version == 901 && has('patch0563'))
-enddef
-
-# Configure initial trigger-character detection using mappings or KeyInputPre.
+# Configure trigger-character detection using the KeyInputPre autocmd.
 def SetupSignatureTriggerChars(lspserver: dict<any>,
                                autoTriggerChars: list<string>)
-  if !HasKeyInputPreSupport()
-    for ch in autoTriggerChars
-      MapSignatureTriggerCharacter(ch)
-    endfor
-    return
-  endif
-
   if !autoTriggerChars->empty()
     # detect the trigger chars and show the signature
     var cmd =<< trim eval END
@@ -980,7 +932,7 @@ export def InitOnce()
   hlset([{name: 'LspSigActiveParameter', default: true, linksto: 'LineNr'}])
 enddef
 
-# Initialize signature trigger mappings/autocmds for the current buffer.
+# Initialize signature trigger autocmds for the current buffer.
 export def BufferInit(lspserver: dict<any>)
   if !lspserver.isSignatureHelpProvider
     # no support for signature help

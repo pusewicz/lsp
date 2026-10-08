@@ -1037,10 +1037,6 @@ enddef
 # each line, across all the servers, gets virtual text.  Signs and inline
 # highlights are still placed for every diagnostic.
 def g:Test_DiagVirtualTextMostSevere()
-  if !has('patch-9.0.1157')
-    # Doesn't support virtual text
-    return
-  endif
   DiagInitOnce()
   silent! edit XDiagVirtualTextMostSevere.txt
   setline(1, ['int alpha = beta + gamma;', 'int delta = epsilon;',
@@ -1263,10 +1259,6 @@ enddef
 # Changing the alignment or the wrapping of the diagnostic virtual text
 # re-places the virtual text without waiting for new diagnostics.
 def g:Test_DiagOptionsChanged_VirtualTextAlignAndWrap()
-  if !has('patch-9.0.1157')
-    # Doesn't support virtual text
-    return
-  endif
   DiagInitOnce()
   silent! edit XDiagOptionsVirtualText.txt
   setline(1, ['int alpha;', 'int beta;'])
@@ -1311,10 +1303,6 @@ enddef
 # current one is indented to the diagnostic column of that buffer's line,
 # with tabs expanded with that buffer's 'tabstop' and 'vartabstop'.
 def g:Test_DiagVirtualTextPadding_NonCurrentBuffer()
-  if !has('patch-9.0.1157')
-    # Doesn't support virtual text
-    return
-  endif
   DiagInitOnce()
   var saveHidden = &hidden
   :set hidden
@@ -1355,8 +1343,7 @@ def g:Test_DiagOptionsChanged_SignText()
   silent! edit XDiagOptionsSignText.txt
   setline(1, ['int alpha;', 'int beta;', 'int gamma;', 'int delta;'])
   var bnr = bufnr()
-  var hasVirtualText: bool = has('patch-9.0.1157') == 1
-  g:LspOptionsSet({showDiagWithVirtualText: hasVirtualText,
+  g:LspOptionsSet({showDiagWithVirtualText: true,
 		   diagVirtualTextAlign: 'after'})
   var diags = [MakeDiag(0, 4, 1, 'error'), MakeDiag(1, 4, 2, 'warning'),
 	       MakeDiag(2, 4, 3, 'info'), MakeDiag(3, 4, 4, 'hint')]
@@ -1369,10 +1356,8 @@ def g:Test_DiagOptionsChanged_SignText()
 	       ['LspDiagError', 'LspDiagWarning', 'LspDiagInfo', 'LspDiagHint']
 		 ->mapnew((_, name) => sign_getdefined(name)[0].text))
   assert_equal(4, DiagSignCount())
-  if hasVirtualText
-    assert_equal(['e! error', 'w! warning', 'i! info', 'h! hint'],
-		 DiagVirtualTextLayout()->mapnew((_, v) => v[1]))
-  endif
+  assert_equal(['e! error', 'w! warning', 'i! info', 'h! hint'],
+	       DiagVirtualTextLayout()->mapnew((_, v) => v[1]))
 
   g:LspOptionsSet({diagSignErrorText: 'E>', diagSignWarningText: 'W>',
 		   diagSignInfoText: 'I>', diagSignHintText: 'H>',
@@ -1406,12 +1391,10 @@ def g:Test_DiagOptionsChanged_ShowAndHide()
   g:LspOptionsSet({highlightDiagInline: true})
   assert_equal(2, PropCount('^LspDiagInline'))
 
-  if has('patch-9.0.1157')
-    g:LspOptionsSet({showDiagWithVirtualText: true})
-    assert_equal(2, PropCount('^LspDiagVirtualText'))
-    g:LspOptionsSet({showDiagWithVirtualText: false})
-    assert_equal(0, PropCount('^LspDiagVirtualText'))
-  endif
+  g:LspOptionsSet({showDiagWithVirtualText: true})
+  assert_equal(2, PropCount('^LspDiagVirtualText'))
+  g:LspOptionsSet({showDiagWithVirtualText: false})
+  assert_equal(0, PropCount('^LspDiagVirtualText'))
 
   g:LspOptionsSet({autoHighlightDiags: false})
   assert_equal([0, 0], [DiagSignCount(), PropCount('^LspDiag')])

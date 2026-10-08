@@ -115,9 +115,6 @@ const kindHighlightLinks: dict<string> = {
   Folder:         'Directory',
 }
 
-# The "kind_hlgroup" complete-item field needs Vim 9.1.0690 or later.
-const kindHlGroupSupported: bool = has('patch-9.1.0690')
-
 # Define the default highlight groups for the completion item kinds.
 export def InitOnce()
   hlset(kindHighlightLinks->items()->mapnew((_, kv) => ({
@@ -666,7 +663,7 @@ def BuildCompletionMenuItem(item: dict<any>, lspserver: dict<any>,
     # map LSP kind to complete-item-kind
     d.kind = LspCompleteItemKindChar(item.kind)
     var kindName = CompletionItemKindName(item.kind)
-    if kindHlGroupSupported && !kindName->empty()
+    if !kindName->empty()
       d.kind_hlgroup = $'LspCompletionKind{kindName}'
     endif
   endif

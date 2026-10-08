@@ -406,12 +406,8 @@ def g:Test_Completion_Kind()
   assert_equal(['f', "", '', ''],
                items[0 : 3]->mapnew((_, v) => v.kind))
   assert_false(items[4]->has_key('kind'))
-  if has('patch-9.1.0690')
-    assert_equal('LspCompletionKindFunction', items[0].kind_hlgroup)
-    assert_equal('LspCompletionKindStruct', items[1].kind_hlgroup)
-  else
-    assert_false(items[0]->has_key('kind_hlgroup'))
-  endif
+  assert_equal('LspCompletionKindFunction', items[0].kind_hlgroup)
+  assert_equal('LspCompletionKindStruct', items[1].kind_hlgroup)
   assert_false(items[2]->has_key('kind_hlgroup'))
   assert_false(items[3]->has_key('kind_hlgroup'))
 
@@ -551,11 +547,6 @@ def TeardownTruncatingServerBuffer(lspserver: dict<any>)
     timer_stop(timer)
   endfor
   test_override('char_avail', 0)
-  # 'autocomplete' is global before patch 9.1.1779, so ":setlocal" sets it for
-  # the following tests too.
-  if exists('+autocomplete')
-    set noautocomplete
-  endif
   buf.BufLspServerRemove(bufnr(), lspserver)
   :%bw!
 enddef
@@ -643,9 +634,6 @@ enddef
 # Typing after CTRL-N must reach a match the server left out of its first,
 # truncated reply.
 def g:Test_CompleteSource_CtrlN_IncompleteList()
-  if !exists('+autocomplete')
-    return
-  endif
   var lspserver = SetupTruncatingServerBuffer('', 2)
   try
     SetupFeedkeysCompletion()
@@ -662,9 +650,6 @@ enddef
 # Same with Vim's 'autocomplete', which calls the source from the first typed
 # character.
 def g:Test_CompleteSource_Autocomplete_IncompleteList()
-  if !exists('+autocomplete')
-    return
-  endif
   var lspserver = SetupTruncatingServerBuffer('', 2)
   try
     SetupFeedkeysCompletion()
@@ -682,9 +667,6 @@ enddef
 # than that, Vim interrupts the source and calls it again on the next
 # keystroke, from where refreshing must carry on.
 def g:Test_CompleteSource_Autocomplete_SlowFirstReply()
-  if !exists('+autocomplete')
-    return
-  endif
   var lspserver = SetupTruncatingServerBuffer('', 2, [600])
   try
     SetupFeedkeysCompletion()
@@ -795,9 +777,6 @@ const sdlLogDocRendered = {
 # markdown in the info popup, which overrides the preview window even with
 # completionInPreview (that sets 'completeopt' only for autoComplete).
 def g:Test_Completion_MarkdownDoc_InfoPopup()
-  if !exists('+autocomplete')
-    return
-  endif
   g:LspOptionsSet({autoComplete: false, omniComplete: true})
   try
     for inPreview in [false, true]
@@ -815,9 +794,6 @@ enddef
 # Without "popup" in 'completeopt' the documentation is shown and rendered as
 # markdown in the preview window.
 def g:Test_Completion_MarkdownDoc_PreviewWindow()
-  if !exists('+autocomplete')
-    return
-  endif
   g:LspOptionsSet({autoComplete: false, omniComplete: true,
 		   closePreviewOnComplete: false})
   try
@@ -834,9 +810,6 @@ enddef
 # completion reply is rendered as markdown only once, which keeps the syntax
 # highlighting of its code blocks.
 def g:Test_Completion_MarkdownDoc_LazyDocRenderedOnce()
-  if !exists('+autocomplete')
-    return
-  endif
   g:LspOptionsSet({autoComplete: false, omniComplete: true})
   try
     assert_equal({
@@ -852,9 +825,6 @@ enddef
 # Same without "popup" in 'completeopt': the documentation is shown and
 # rendered in the preview window.
 def g:Test_Completion_MarkdownDoc_LazyDocPreviewWindow()
-  if !exists('+autocomplete')
-    return
-  endif
   g:LspOptionsSet({autoComplete: false, omniComplete: true,
 		   closePreviewOnComplete: false})
   try
@@ -1128,9 +1098,6 @@ def CheckTextEditCompletion(omni: bool)
     for matcher in ['case', 'icase', 'fuzzy']
       g:LspOptionsSet({completionMatcher: matcher})
       for testCase in TextEditCompletionCases()
-	if testCase->get('posEncoding', 32) != 32 && !has('patch-9.0.1629')
-	  continue
-	endif
 	assert_equal(testCase.expected, CompleteTextEditCase(testCase, omni),
 		     $'{testCase.name} with the "{matcher}" matcher')
       endfor
