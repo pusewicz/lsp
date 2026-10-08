@@ -228,9 +228,8 @@ def ProcessApplyEditReq(lspserver: dict<any>, request: dict<any>)
   endif
 
   try
-    textedit.ApplyWorkspaceEdit(workspaceEditParams.edit)
-    # TODO: Need to return the proper result of the edit operation
-    lspserver.sendResponse(request, {applied: true}, {})
+    var result = textedit.ApplyWorkspaceEdit(workspaceEditParams.edit)
+    lspserver.sendResponse(request, result, {})
   catch
     SendInternalError(lspserver, request,
       $'Failed to apply workspace edit: {v:exception}')

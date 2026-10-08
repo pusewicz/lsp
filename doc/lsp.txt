@@ -1348,6 +1348,10 @@ server asks for the operation to be ignored.  An operation also fails when it
 would change or remove a buffer with unsaved changes, as |:edit| does without
 "!": write or undo the changes first.
 
+The changes of a workspace edit are applied in order.  When one fails, its
+error is shown and the changes after it are not applied, while the changes
+before it stay applied.
+
 ------------------------------------------------------------------------------
 							*lsp-hierarchy-cmds*
 5.6 Hierarchies (Call & Type)~

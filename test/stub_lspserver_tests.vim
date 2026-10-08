@@ -1981,6 +1981,28 @@ def g:Test_ProcessApplyEditReq_SuccesssfulEdit()
   assert_equal(1, responses[0].error->empty())
 enddef
 
+# The response to a workspace/applyEdit request whose edit fails tells which
+# change failed and why.
+def g:Test_ProcessApplyEditReq_FailedEdit()
+  var responses: list<dict<any>> = []
+  var lspserver = MakeRequestTestLspServer(responses)
+  lspserver.data = {
+    jsonrpc: '2.0',
+    id: 1,
+    method: 'workspace/applyEdit',
+    params: {
+      edit: {documentChanges: [{kind: 'copy'}]}
+    }
+  }
+  lspserver.processMessage()
+
+  assert_equal(1, responses->len())
+  assert_equal({applied: false, failedChange: 0,
+		failureReason: 'Unsupported change in workspace edit [copy]'},
+	       responses[0].result)
+  assert_true(responses[0].error->empty())
+enddef
+
 def g:Test_ProcessApplyEditReq_MissingEdit()
   var lspserver = MakeTestLspServer([])
   var responses: list<dict<any>> = []
@@ -3758,6 +3780,51 @@ def g:Test_ApplyWorkspaceEdit_DeleteDirectory()
     assert_false(isdirectory(dname))
   finally
     delete(dname, 'rf')
+    :%bwipe!
+  endtry
+enddef
+
+# The changes of a workspace edit are applied in order up to the first one
+# that fails, which is reported.  The result tells which change failed and
+# why.
+def g:Test_ApplyWorkspaceEdit_AbortsAtFailedChange()
+  var created = 'XWorkspaceEditAbortCreated.txt'
+  var existing = 'XWorkspaceEditAbortExisting.txt'
+  var createdUri = util.LspFileToUri(created)
+  var insert = MakeInsertEdit(createdUri, "text\n")
+  var edit = {documentChanges: [
+    {kind: 'create', uri: createdUri},
+    {kind: 'create', uri: util.LspFileToUri(existing)},
+    insert
+  ]}
+  try
+    writefile(['old'], existing)
+    var reason = 'File create failed, '
+      .. $'{fnamemodify(existing, ":p")} already exists'
+    assert_equal({applied: false, failureReason: reason, failedChange: 1},
+		 textedit.ApplyWorkspaceEdit(edit))
+    assert_equal($'Error: {reason}', LastMessage())
+    assert_equal([], readfile(created))
+    assert_equal(['old'], readfile(existing))
+
+    edit = {documentChanges: [insert]}
+    assert_equal({applied: true}, textedit.ApplyWorkspaceEdit(edit))
+    assert_equal(['text'], getbufline(bufadd(created), 1, '$'))
+
+    edit = {documentChanges: [{kind: 'copy'}]}
+    reason = 'Unsupported change in workspace edit [copy]'
+    assert_equal({applied: false, failureReason: reason, failedChange: 0},
+		 textedit.ApplyWorkspaceEdit(edit))
+
+    # A change that throws an error fails with the error.
+    edit = {documentChanges: [
+      {kind: 'create', uri: util.LspFileToUri($'{existing}/file.txt')}]}
+    var result = textedit.ApplyWorkspaceEdit(edit)
+    assert_equal([false, 0], [result.applied, result.failedChange])
+    assert_match('E739:', result.failureReason)
+  finally
+    delete(created)
+    delete(existing)
     :%bwipe!
   endtry
 enddef

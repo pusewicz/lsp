@@ -206,13 +206,14 @@ export def ApplyTextEdits(bnr: number, text_edits: list<dict<any>>): void
 enddef
 
 # interface TextDocumentEdit
-def ApplyTextDocumentEdit(textDocEdit: dict<any>)
+# Returns why the edit failed, or an empty string when it did not.
+def ApplyTextDocumentEdit(textDocEdit: dict<any>): string
   var bnr: number = util.LspUriToBufnr(textDocEdit.textDocument.uri)
   if bnr <= 0
-    util.ErrMsg($'Text Document edit, buffer {textDocEdit.textDocument.uri} is not found')
-    return
+    return $'Text Document edit, buffer {textDocEdit.textDocument.uri} is not found'
   endif
   ApplyTextEdits(bnr, textDocEdit.edits)
+  return ''
 enddef
 
 # Returns the number of the buffer for file "fname", or 0 if there is none.
@@ -236,8 +237,9 @@ enddef
 # interface CreateFile
 # Create the "createFile.uri" file.  An existing file is emptied only when
 # "overwrite" is set, and then its loaded buffer too, unless it has unsaved
-# changes.
-def FileCreate(createFile: dict<any>)
+# changes.  Returns why the operation failed, or an empty string when it did
+# not.
+def FileCreate(createFile: dict<any>): string
   var fname: string = util.LspUriToFile(createFile.uri)
   var opts: dict<bool> = createFile->get('options', {})
   var ignoreIfExists: bool = opts->get('ignoreIfExists', false)
@@ -246,22 +248,20 @@ def FileCreate(createFile: dict<any>)
   # LSP Spec: Overwrite wins over `ignoreIfExists`
   if !fname->getftype()->empty()
     if !overwrite
-      if !ignoreIfExists
-	util.ErrMsg($'File create failed, {fname} already exists')
+      if ignoreIfExists
+	return ''
       endif
-      return
+      return $'File create failed, {fname} already exists'
     endif
     # A file cannot be created at a path that is already a directory.
     if fname->isdirectory()
-      util.ErrMsg($'File create failed, {fname} is a directory')
-      return
+      return $'File create failed, {fname} is a directory'
     endif
   endif
 
   var bnr: number = FileBufnr(fname)
   if bnr > 0 && bnr->getbufvar('&modified')
-    util.ErrMsg($'File create failed, {fname} has unsaved changes')
-    return
+    return $'File create failed, {fname} has unsaved changes'
   endif
 
   fname->fnamemodify(':p:h')->mkdir('p')
@@ -271,13 +271,15 @@ def FileCreate(createFile: dict<any>)
   else
     fname->bufadd()
   endif
+  return ''
 enddef
 
 # interface DeleteFile
 # Delete file or directory "deleteFile.uri" and wipe out the buffers of the
 # deleted files, unless one of them has unsaved changes.  A directory that is
-# not empty is deleted only when "recursive" is set.
-def FileDelete(deleteFile: dict<any>)
+# not empty is deleted only when "recursive" is set.  Returns why the
+# operation failed, or an empty string when it did not.
+def FileDelete(deleteFile: dict<any>): string
   var path: string = UriToPath(deleteFile.uri)
   var opts: dict<bool> = deleteFile->get('options', {})
   var recursive: bool = opts->get('recursive', false)
@@ -285,10 +287,10 @@ def FileDelete(deleteFile: dict<any>)
 
   var ftype: string = path->getftype()
   if ftype->empty()
-    if !ignoreIfNotExists
-      util.ErrMsg($'File delete failed, {path} does not exist')
+    if ignoreIfNotExists
+      return ''
     endif
-    return
+    return $'File delete failed, {path} does not exist'
   endif
 
   var bnrs: list<number> = [FileBufnr(path)]->filter((_, bnr) => bnr > 0)
@@ -296,19 +298,18 @@ def FileDelete(deleteFile: dict<any>)
   for bnr in bnrs
     if bnr->getbufvar('&modified')
       var name: string = bnr->getbufinfo()[0].name
-      util.ErrMsg($'File delete failed, {name} has unsaved changes')
-      return
+      return $'File delete failed, {name} has unsaved changes'
     endif
   endfor
 
   var flags: string = ftype != 'dir' ? '' : recursive ? 'rf' : 'd'
   if path->delete(flags) != 0
-    util.ErrMsg($'File delete failed for {path}')
-    return
+    return $'File delete failed for {path}'
   endif
   for bnr in bnrs
     exe $'bwipe {bnr}'
   endfor
+  return ''
 enddef
 
 # Returns the name of the file or directory with URI "uri", without a
@@ -400,8 +401,8 @@ enddef
 # Rename file or directory "renameFile.oldUri" to "renameFile.newUri".  An
 # existing file is replaced only when "overwrite" is set, and then not when
 # its buffer has unsaved changes.  The buffers of the renamed files follow
-# them.
-def FileRename(renameFile: dict<any>)
+# them.  Returns why the operation failed, or an empty string when it did not.
+def FileRename(renameFile: dict<any>): string
   var oldPath: string = UriToPath(renameFile.oldUri)
   var newPath: string = UriToPath(renameFile.newUri)
 
@@ -410,21 +411,20 @@ def FileRename(renameFile: dict<any>)
   var ignoreIfExists: bool = opts->get('ignoreIfExists', false)
 
   if oldPath->getftype()->empty()
-    util.ErrMsg($'File rename failed, {oldPath} does not exist')
-    return
+    return $'File rename failed, {oldPath} does not exist'
   endif
   if oldPath ==# newPath
-    return
+    return ''
   endif
 
   # LSP Spec: Overwrite wins over `ignoreIfExists`
   # As macOS ignores the case of file names, when only the case of the name
   # changes, the new name is of the same file.
   if !newPath->getftype()->empty() && oldPath !=? newPath && !overwrite
-    if !ignoreIfExists
-      util.ErrMsg($'File rename failed, {newPath} already exists')
+    if ignoreIfExists
+      return ''
     endif
-    return
+    return $'File rename failed, {newPath} already exists'
   endif
 
   # The buffer of each renamed file ("bnr") and of the file it replaces
@@ -441,8 +441,7 @@ def FileRename(renameFile: dict<any>)
     var tbnr: number = FileBufnr(move.to)
     move.tbnr = tbnr == move.bnr ? 0 : tbnr
     if move.tbnr > 0 && move.tbnr->getbufvar('&modified')
-      util.ErrMsg($'File rename failed, {move.to} has unsaved changes')
-      return
+      return $'File rename failed, {move.to} has unsaved changes'
     endif
   endfor
   for move in moves
@@ -455,8 +454,7 @@ def FileRename(renameFile: dict<any>)
 
   newPath->fnamemodify(':h')->mkdir('p')
   if oldPath->rename(newPath) != 0
-    util.ErrMsg($'File rename failed, {oldPath} to {newPath}')
-    return
+    return $'File rename failed, {oldPath} to {newPath}'
   endif
 
   for move in moves
@@ -471,44 +469,59 @@ def FileRename(renameFile: dict<any>)
     endif
     MoveUndoFile(move.from, move.to)
   endfor
+  return ''
+enddef
+
+# Apply "change", one of the "documentChanges" of a workspace edit.  Returns
+# why the change failed, or an empty string when it did not.
+def ApplyDocumentChange(change: dict<any>): string
+  var kind: string = change->get('kind', '')
+  try
+    if kind->empty()
+      return ApplyTextDocumentEdit(change)
+    elseif kind == 'create'
+      return FileCreate(change)
+    elseif kind == 'delete'
+      return FileDelete(change)
+    elseif kind == 'rename'
+      return FileRename(change)
+    endif
+  catch
+    return v:exception
+  endtry
+  return $'Unsupported change in workspace edit [{kind}]'
 enddef
 
 # interface WorkspaceEdit
-export def ApplyWorkspaceEdit(workspaceEdit: dict<any>)
+# Apply the changes of workspace edit "workspaceEdit" in order, up to the
+# first one that fails, which is reported (the "abort" failure handling).
+# Returns the ApplyWorkspaceEditResult.
+export def ApplyWorkspaceEdit(workspaceEdit: dict<any>): dict<any>
   if workspaceEdit->has_key('documentChanges')
-    for change in workspaceEdit.documentChanges
-      if change->has_key('kind')
-	if change.kind == 'create'
-	  FileCreate(change)
-	elseif change.kind == 'delete'
-	  FileDelete(change)
-	elseif change.kind == 'rename'
-	  FileRename(change)
-	else
-	  util.ErrMsg($'Unsupported change in workspace edit [{change.kind}]')
-	endif
-      else
-	ApplyTextDocumentEdit(change)
+    var documentChanges: list<dict<any>> = workspaceEdit.documentChanges
+    for idx in documentChanges->len()->range()
+      var failureReason: string = ApplyDocumentChange(documentChanges[idx])
+      if !failureReason->empty()
+	util.ErrMsg(failureReason)
+	return {applied: false, failureReason: failureReason,
+		failedChange: idx}
       endif
     endfor
-    return
+    return {applied: true}
   endif
 
-  if !workspaceEdit->has_key('changes')
-    return
-  endif
-
-  for [uri, changes] in workspaceEdit.changes->items()
+  for [uri, changes] in workspaceEdit->get('changes', {})->items()
     var bnr: number = util.LspUriToBufnr(uri)
     if bnr == 0
-      # file is not present
-      util.ErrMsg($'Text edit, buffer {uri} is not found')
-      continue
+      var failureReason: string = $'Text edit, buffer {uri} is not found'
+      util.ErrMsg(failureReason)
+      return {applied: false, failureReason: failureReason}
     endif
 
     # interface TextEdit
     ApplyTextEdits(bnr, changes)
   endfor
+  return {applied: true}
 enddef
 
 # vim: tabstop=8 shiftwidth=2 softtabstop=2 noexpandtab
