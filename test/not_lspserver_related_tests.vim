@@ -1254,6 +1254,84 @@ def g:Test_DocumentLink_ParseFileUri()
   assert_equal([uri, 1, 1], documentlink.ParseFileUri($'{uri}#section'))
 enddef
 
+# Returns what checking buffer "bnr" in a hidden popup window could change.
+def BufCheckState(bnr: number): dict<any>
+  var info: dict<any> = getbufinfo(bnr)->get(0, {})
+  return {winid: win_getid(), layout: winlayout(), alt: bufnr('#'),
+	  jumps: getjumplist(), curpos: getcurpos(), modified: &modified,
+	  popups: popup_list(),
+	  buf: info->filter((k, _) => k !~ '^\%(lastused\|variables\)$')}
+enddef
+
+# util.BufIsEmpty() tells a buffer without lines apart from a buffer with one
+# empty line when the buffer is not in a window too.  Checking it leaves no
+# trace: it triggers no autocommand, the buffer stays loaded whatever its
+# 'bufhidden' is, and the windows, the alternate file, the jumps and the
+# cursor stay as they are.
+def g:Test_BufIsEmpty_BufferInNoWindow()
+  writefile([], 'XBufIsEmptyNoLines.txt')
+  writefile([''], 'XBufIsEmptyOneLine.txt')
+  silent! edit XBufIsEmptyAlt.txt
+  silent! edit XBufIsEmptyCur.txt
+  setline(1, ['a', 'b', 'c'])
+  :normal! G
+  g:BufIsEmptyEvents = []
+  augroup XBufIsEmpty
+    for ev in ['BufAdd', 'BufNew', 'BufEnter', 'BufLeave', 'BufWinEnter',
+	       'BufWinLeave', 'BufHidden', 'BufUnload', 'BufDelete',
+	       'BufWipeout', 'BufReadPre', 'BufReadPost', 'WinNew', 'WinEnter',
+	       'WinLeave', 'WinClosed', 'OptionSet', 'TextChanged',
+	       'CursorMoved']
+      exe $'autocmd {ev} * g:BufIsEmptyEvents->add("{ev}")'
+    endfor
+  augroup END
+  # OptionSet is not triggered while Vim is starting
+  test_override('starting', 1)
+  try
+    for [fname, isEmpty] in [['XBufIsEmptyNoLines.txt', true],
+			     ['XBufIsEmptyOneLine.txt', false]]
+      for bufhidden in ['', 'hide', 'unload', 'delete', 'wipe']
+	var bnr = bufadd(fname)
+	bnr->bufload()
+	# Setting the option shows that the autocommands are triggered.
+	g:BufIsEmptyEvents = []
+	setbufvar(bnr, '&bufhidden', bufhidden)
+	assert_equal(['OptionSet'], g:BufIsEmptyEvents)
+	g:BufIsEmptyEvents = []
+	var before = BufCheckState(bnr)
+	var msg = $'{fname}, bufhidden={bufhidden}'
+	assert_equal(isEmpty, util.BufIsEmpty(bnr), msg)
+	assert_equal([], g:BufIsEmptyEvents, msg)
+	assert_equal(before, BufCheckState(bnr), msg)
+	assert_equal(bufhidden, getbufvar(bnr, '&bufhidden'), msg)
+	exe $'bwipe! {bnr}'
+      endfor
+    endfor
+  finally
+    test_override('starting', 0)
+    autocmd_delete([{group: 'XBufIsEmpty'}])
+    unlet g:BufIsEmptyEvents
+    :%bw!
+    delete('XBufIsEmptyNoLines.txt')
+    delete('XBufIsEmptyOneLine.txt')
+  endtry
+enddef
+
+# util.BufIsEmpty() does not load an unloaded buffer to check it: the buffer
+# is taken to have lines.
+def g:Test_BufIsEmpty_UnloadedBuffer()
+  writefile([], 'XBufIsEmptyUnloaded.txt')
+  var bnr = bufadd('XBufIsEmptyUnloaded.txt')
+  try
+    assert_false(util.BufIsEmpty(bnr))
+    assert_false(bnr->bufloaded())
+    assert_equal([], popup_list())
+  finally
+    exe $'bwipe! {bnr}'
+    delete('XBufIsEmptyUnloaded.txt')
+  endtry
+enddef
+
 # Only here to because the test runner needs it
 def g:StartLangServer(): bool
   return true

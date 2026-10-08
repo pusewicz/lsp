@@ -249,8 +249,8 @@ enddef
 # A buffer without lines (a new buffer, or one with all its lines deleted) has
 # no text, but getbufline() returns one empty line for it, like for a buffer
 # with one empty line, which is written as a newline.  Only wordcount() tells
-# them apart, and only for a buffer in a window: a buffer that is not in any
-# window is taken to have lines.
+# them apart.  An unloaded buffer is not loaded to find out: it is taken to
+# have lines.
 export def BufIsEmpty(bnr: number): bool
   if bnr->getbufline(1, 2) != ['']
     return false
@@ -261,11 +261,32 @@ export def BufIsEmpty(bnr: number): bool
   if bnr == bufnr()
     return wordcount().bytes == 0
   endif
-  var winids = bnr->win_findbuf()
-  if winids->empty()
-    return false
+  return ExecuteInBuffer(bnr, 'echo wordcount().bytes')->trim() == '0'
+enddef
+
+# Executes Ex command "cmd" with loaded buffer "bnr" as the current buffer and
+# returns its output.  The command runs in a window that shows the buffer, or
+# else in a hidden popup window that leaves no trace: opening and closing it
+# triggers no autocommands, and closing it does not unload the buffer
+# whatever its 'bufhidden' is.
+export def ExecuteInBuffer(bnr: number, cmd: string): string
+  var winids: list<number> = bnr->win_findbuf()
+  if !winids->empty()
+    return win_execute(winids[0], cmd)
   endif
-  return win_execute(winids[0], 'echo wordcount().bytes')->trim() == '0'
+
+  var bufhidden: string = bnr->getbufvar('&bufhidden')
+  noautocmd setbufvar(bnr, '&bufhidden', '')
+  var winid: number
+  noautocmd winid = popup_create(bnr, {hidden: true})
+  var output: string
+  try
+    output = win_execute(winid, cmd)
+  finally
+    noautocmd popup_close(winid)
+    noautocmd setbufvar(bnr, '&bufhidden', bufhidden)
+  endtry
+  return output
 enddef
 
 # Returns the byte number of the specified LSP position in buffer "bnr".

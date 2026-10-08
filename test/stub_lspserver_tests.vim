@@ -3023,6 +3023,16 @@ def g:Test_TextdocDidOpen_BufferWithoutLines()
   lspserver.textdocDidOpen(bnr, 'text')
   assert_equal("\n", notifications[-1].params.textDocument.text)
 
+  # The buffer in no window
+  setbufvar(bnr, '&bufhidden', 'hide')
+  :only
+  assert_equal([], win_findbuf(bnr))
+  lspserver.textdocDidOpen(bnr, 'text')
+  assert_equal("\n", notifications[-1].params.textDocument.text)
+  deletebufline(bnr, 1, '$')
+  lspserver.textdocDidOpen(bnr, 'text')
+  assert_equal('', notifications[-1].params.textDocument.text)
+
   :%bw!
 enddef
 
@@ -3100,32 +3110,106 @@ def MakeTextEdit(sline: number, schar: number, eline: number, echar: number,
 	  newText: text}
 enddef
 
+# Returns the text that Vim writes for the current buffer.
+def WrittenText(): string
+  var fname = 'XWrittenText.txt'
+  exe $'silent noautocmd keepalt write! {fname}'
+  var text = readfile(fname, 'b')->join("\n")
+  delete(fname)
+  return text
+enddef
+
 # getbufline() returns one empty line both for a buffer without lines and for
-# a buffer with one empty line.  When Vim writes a newline at the end, the
-# empty line is taken to be the one after that newline, unless an edit
-# reaches the line after it, so that edits for the empty document and for the
-# document "\n" both apply.  Otherwise the document is empty, and a newline
-# inserted at its end leaves an empty last line.
+# a buffer with one empty line.  The first one is the empty document.  When
+# Vim writes a newline at the end, the second one is the document "\n";
+# otherwise it is the empty document too, and a newline inserted at its end
+# leaves an empty last line.  Edits past the end of the empty document are
+# for the document "\n".
 def g:Test_ApplyTextEdits_EmptyBuffer()
   silent! edit XApplyTextEditsEmpty.txt
   var bnr = bufnr()
+  # The edits, and the lines after them in a buffer without lines and in a
+  # buffer with one empty line
   var withEol: list<list<any>> = [
-    [[MakeTextEdit(0, 0, 0, 0, "foo\n")], ['foo']],
-    [[MakeTextEdit(0, 0, 0, 0, 'foo')], ['foo']],
-    [[MakeTextEdit(0, 0, 1, 0, "foo\n")], ['foo']],
-    [[MakeTextEdit(0, 0, 1, 0, '')], ['']],
-    [[MakeTextEdit(1, 0, 1, 0, "foo\n")], ['', 'foo']],
-    [[MakeTextEdit(1, 0, 1, 0, 'foo')], ['', 'foo']],
+    [[MakeTextEdit(0, 0, 0, 0, "foo\n")], ['foo'], ['foo', '']],
+    [[MakeTextEdit(0, 0, 0, 0, 'foo')], ['foo'], ['foo']],
+    [[MakeTextEdit(0, 0, 1, 0, "foo\n")], ['foo'], ['foo']],
+    [[MakeTextEdit(0, 0, 1, 0, '')], [''], ['']],
+    [[MakeTextEdit(1, 0, 1, 0, "foo\n")], ['', 'foo'], ['', 'foo']],
+    [[MakeTextEdit(1, 0, 1, 0, 'foo')], ['', 'foo'], ['', 'foo']],
     [[MakeTextEdit(0, 0, 0, 0, "a\n"), MakeTextEdit(0, 0, 0, 0, "b\n")],
-     ['a', 'b']],
+     ['a', 'b'], ['a', 'b', '']],
     [[MakeTextEdit(0, 0, 0, 0, 'a'), MakeTextEdit(1, 0, 1, 0, "b\n")],
-     ['a', 'b']],
+     ['a', 'b'], ['a', 'b']],
   ]
   var withoutEol: list<list<any>> = [
-    [[MakeTextEdit(0, 0, 0, 0, "foo\n")], ['foo', '']],
-    [[MakeTextEdit(0, 0, 0, 0, 'foo')], ['foo']],
+    [[MakeTextEdit(0, 0, 0, 0, "foo\n")], ['foo', ''], ['foo', '']],
+    [[MakeTextEdit(0, 0, 0, 0, 'foo')], ['foo'], ['foo']],
     [[MakeTextEdit(0, 0, 0, 0, "a\n"), MakeTextEdit(0, 0, 0, 0, "b\n")],
-     ['a', 'b', '']],
+     ['a', 'b', ''], ['a', 'b', '']],
+  ]
+  var cases: list<list<any>> = [
+    ['eol fixeol nobinary', withEol],
+    ['noeol fixeol nobinary', withEol],
+    ['eol nofixeol nobinary', withEol],
+    ['eol fixeol binary', withEol],
+    ['noeol nofixeol nobinary', withoutEol],
+    ['noeol fixeol binary', withoutEol],
+  ]
+  for [opts, editCases] in cases
+    for [textEdits, expectedNoLines, expectedOneEmptyLine] in editCases
+      for oneEmptyLine in [false, true]
+	:%d
+	if oneEmptyLine
+	  setline(1, '')
+	endif
+	exe $'setlocal {opts}'
+	textedit.ApplyTextEdits(bnr, textEdits)
+	assert_equal(oneEmptyLine ? expectedOneEmptyLine : expectedNoLines,
+		     getline(1, '$'),
+		     $'{opts}, one empty line: {oneEmptyLine}, {textEdits}')
+      endfor
+    endfor
+  endfor
+
+  :%bw!
+enddef
+
+# The empty last line of a buffer with lines ['abc', ''] is a line of the
+# document, followed by the empty line after the newline that Vim writes at
+# the end, if it writes one.  Edits at it, before it and replacing it apply
+# to that document, with the text that Vim writes after them as expected.
+def g:Test_ApplyTextEdits_EmptyLastLine()
+  silent! edit XApplyTextEditsEmptyLast.txt
+  var bnr = bufnr()
+  # Document "abc\n\n"
+  var withEol: list<list<any>> = [
+    # Insert at the empty line
+    [[MakeTextEdit(1, 0, 1, 0, "x\n")], "abc\nx\n\n"],
+    [[MakeTextEdit(1, 0, 1, 0, 'x')], "abc\nx\n"],
+    # Insert before it
+    [[MakeTextEdit(0, 3, 0, 3, "\nx")], "abc\nx\n\n"],
+    [[MakeTextEdit(0, 3, 1, 0, "\nx\n")], "abc\nx\n\n"],
+    [[MakeTextEdit(0, 0, 1, 0, '')], "\n"],
+    # Replace it
+    [[MakeTextEdit(1, 0, 2, 0, "x\n")], "abc\nx\n"],
+    [[MakeTextEdit(1, 0, 2, 0, '')], "abc\n"],
+    [[MakeTextEdit(0, 3, 1, 0, '')], "abc\n"],
+    # Span into the line after the newline at the end
+    [[MakeTextEdit(0, 1, 2, 0, "x\ny\n")], "ax\ny\n"],
+    [[MakeTextEdit(1, 0, 2, 0, "x\ny\n")], "abc\nx\ny\n"],
+    [[MakeTextEdit(0, 0, 2, 0, "x\n\n")], "x\n\n"],
+    [[MakeTextEdit(0, 0, 2, 0, '')], ''],
+  ]
+  # Document "abc\n"
+  var withoutEol: list<list<any>> = [
+    [[MakeTextEdit(1, 0, 1, 0, "x\n")], "abc\nx\n"],
+    [[MakeTextEdit(1, 0, 1, 0, 'x')], "abc\nx"],
+    [[MakeTextEdit(0, 3, 0, 3, "\nx")], "abc\nx\n"],
+    [[MakeTextEdit(0, 3, 1, 0, "\nx\n")], "abc\nx\n"],
+    [[MakeTextEdit(0, 3, 1, 0, '')], 'abc'],
+    [[MakeTextEdit(0, 1, 1, 0, "x\ny\n")], "ax\ny\n"],
+    [[MakeTextEdit(0, 0, 1, 0, '')], ''],
   ]
   var cases: list<list<any>> = [
     ['eol fixeol nobinary', withEol],
@@ -3137,16 +3221,55 @@ def g:Test_ApplyTextEdits_EmptyBuffer()
   ]
   for [opts, editCases] in cases
     for [textEdits, expected] in editCases
-      for oneEmptyLine in [false, true]
-	:%d
-	if oneEmptyLine
-	  setline(1, '')
-	endif
-	exe $'setlocal {opts}'
-	textedit.ApplyTextEdits(bnr, textEdits)
-	assert_equal(expected, getline(1, '$'),
-		     $'{opts}, one empty line: {oneEmptyLine}, {textEdits}')
-      endfor
+      :%d
+      setline(1, ['abc', ''])
+      exe $'setlocal {opts}'
+      textedit.ApplyTextEdits(bnr, textEdits)
+      assert_equal(expected, WrittenText(), $'{opts}, {textEdits}')
+    endfor
+  endfor
+
+  :%bw!
+enddef
+
+# Edits past the end of the document are for the document with one more line
+# break at its end, and a position on a later line is at the start of the
+# line after that line break.  Checked for a buffer with line 'abc'.
+def g:Test_ApplyTextEdits_PastEndOfDocument()
+  silent! edit XApplyTextEditsPastEnd.txt
+  var bnr = bufnr()
+  # Document "abc\n"
+  var withEol: list<list<any>> = [
+    [[MakeTextEdit(2, 0, 2, 0, "x\n")], "abc\n\nx\n"],
+    [[MakeTextEdit(5, 2, 5, 2, "x\n")], "abc\n\nx\n"],
+    [[MakeTextEdit(0, 1, 3, 0, "x\n")], "ax\n"],
+    [[MakeTextEdit(2, 0, 2, 0, 'x'), MakeTextEdit(2, 0, 2, 0, "y\n")],
+     "abc\n\nxy\n"],
+  ]
+  # Document "abc"
+  var withoutEol: list<list<any>> = [
+    [[MakeTextEdit(1, 0, 1, 0, "x\n")], "abc\nx\n"],
+    [[MakeTextEdit(1, 0, 1, 0, 'x')], "abc\nx"],
+    [[MakeTextEdit(0, 0, 1, 0, "x\n")], "x\n"],
+    [[MakeTextEdit(0, 1, 1, 0, 'x')], 'ax'],
+    [[MakeTextEdit(1, 0, 1, 0, 'x'), MakeTextEdit(1, 0, 1, 0, 'y')],
+     "abc\nxy"],
+  ]
+  var cases: list<list<any>> = [
+    ['eol fixeol nobinary', withEol],
+    ['noeol fixeol nobinary', withEol],
+    ['eol nofixeol nobinary', withEol],
+    ['eol fixeol binary', withEol],
+    ['noeol nofixeol nobinary', withoutEol],
+    ['noeol fixeol binary', withoutEol],
+  ]
+  for [opts, editCases] in cases
+    for [textEdits, expected] in editCases
+      :%d
+      setline(1, 'abc')
+      exe $'setlocal {opts}'
+      textedit.ApplyTextEdits(bnr, textEdits)
+      assert_equal(expected, WrittenText(), $'{opts}, {textEdits}')
     endfor
   endfor
 
