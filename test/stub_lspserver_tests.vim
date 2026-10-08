@@ -593,6 +593,54 @@ def g:Test_ShowHoverInfo_ContentModifiedIsNotCached()
   :%bw!
 enddef
 
+# Test that, with 'hoverFallback' enabled, an empty hover result runs
+# 'keywordprg' only for a request that is not silent: the automatic hover on
+# CursorHold is silent and must not run it, while an explicit hover at the same
+# position, answered from the cache, still falls back.
+def g:Test_HoverReply_FallbackOnlyWhenNotSilent()
+  silent! edit XHoverFallback.txt
+  setline(1, 'fallbackword')
+  command! -nargs=* XHoverFallback g:HoverFallbackArg = <q-args>
+  setlocal keywordprg=:XHoverFallback
+  g:LspOptionsSet({hoverFallback: true})
+  var lspserver = MakeTestLspServer([])
+  try
+    var reqctx = hover.HoverRequestContextGet(lspserver)
+    hover.HoverReply(lspserver, {contents: ''}, {}, 'silent', reqctx)
+    assert_false(exists('g:HoverFallbackArg'))
+
+    assert_true(hover.HoverShowCached(reqctx, lspserver, ''))
+    assert_equal('fallbackword', g:HoverFallbackArg)
+  finally
+    g:LspOptionsSet({hoverFallback: false})
+    delcommand XHoverFallback
+    unlet! g:HoverFallbackArg
+  endtry
+  :%bw!
+enddef
+
+# Test that ':silent LspHover' in a buffer without a language server does not
+# fall back to 'keywordprg', while ':LspHover' does.
+def g:Test_Hover_NoServerFallbackOnlyWhenNotSilent()
+  :enew!
+  setline(1, 'fallbackword')
+  command! -nargs=* XHoverFallback g:HoverFallbackArg = <q-args>
+  setlocal keywordprg=:XHoverFallback
+  g:LspOptionsSet({hoverFallback: true})
+  try
+    lsp.Hover('silent')
+    assert_false(exists('g:HoverFallbackArg'))
+
+    lsp.Hover('')
+    assert_equal('fallbackword', g:HoverFallbackArg)
+  finally
+    g:LspOptionsSet({hoverFallback: false})
+    delcommand XHoverFallback
+    unlet! g:HoverFallbackArg
+  endtry
+  :%bw!
+enddef
+
 # Returns the last message in the message history.
 def LastMessage(): string
   return execute('messages')->split("\n")[-1]
