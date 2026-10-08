@@ -1,6 +1,8 @@
 vim9script
 # Unit tests for language server protocol offset encoding using clangd
 
+import '../autoload/lsp/buffer.vim' as buf
+
 source common.vim
 
 # Start the C language server.  Returns true on success and false on failure.
@@ -105,6 +107,39 @@ def g:Test_LspDocumentLink_multibyte()
   delete('Xdoclink😊.h')
 enddef
 
+# Returns [type, lnum, col, length] of the text properties highlighting the
+# range and the name of the symbol selected in the :LspDocumentSymbol popup.
+def SymbolHighlightProps(): list<list<any>>
+  return prop_list(1, {end_lnum: line('$'),
+		       types: ['LspSymbolRangeProp', 'LspSymbolNameProp']})
+	->mapnew((_, p) => [p.type, p.lnum, p.col, p.length])
+enddef
+
+# Test for highlighting the range and the name of the selected symbol in the
+# :LspDocumentSymbol popup when using multibyte and composing characters
+def g:Test_LspDocumentSymbol_multibyte()
+  :silent! edit XLspDocumentSymbol_mb.c
+  sleep 200m
+  setline(1, ['/* ééé */ int 😊😊 = 1;', "/* 😊 */ int a\u0301b\u0301 = 2;"])
+  g:WaitForServerFileLoad(0)
+
+  var expected: list<list<list<any>>> = [
+    [['LspSymbolRangeProp', 1, 14, 16], ['LspSymbolNameProp', 1, 18, 8]],
+    [['LspSymbolRangeProp', 2, 12, 14], ['LspSymbolNameProp', 2, 16, 6]]
+  ]
+  for lnum in [1, 2]
+    cursor(lnum, 1)
+    :LspDocumentSymbol
+    g:WaitForAssert(() => assert_equal(expected[lnum - 1],
+				       SymbolHighlightProps()))
+    feedkeys("\<Esc>", 'xt')
+    assert_equal([], SymbolHighlightProps())
+  endfor
+
+  popup_clear()
+  :%bw!
+enddef
+
 def g:Test_LspFormat_multibyte()
   :silent! edit XLspFormat_mb.c
   sleep 200m
@@ -128,6 +163,36 @@ def g:Test_LspFormat_multibyte()
     }
   END
   assert_equal(expected, getline(1, '$'))
+  :%bw!
+enddef
+
+# Test for formatting a range of lines with :LspFormat when the last line has
+# composing characters.  The range ends at the end of the last line.
+def g:Test_LspFormat_range_multibyte()
+  :silent! edit XLspFormatRange_mb.c
+  sleep 200m
+  setline(1, ['int   x;', "int   a\u0301b\u0301   =   1;", 'int   y;'])
+  g:WaitForServerFileLoad(0)
+  var lspserver = buf.CurbufGetServer()
+  var SavedRpc: func = lspserver.rpc
+  var params: dict<any> = {}
+  lspserver.rpc = (method: string, p: dict<any>): dict<any> => {
+    params = p
+    return SavedRpc(method, p)
+  }
+  try
+    :2LspFormat
+  finally
+    lspserver.rpc = SavedRpc
+  endtry
+
+  # Length of the second line in the UTF-8, UTF-16 and UTF-32 encodings
+  var lineLen: dict<number> = {8: 21, 16: 19, 32: 19}
+  assert_equal({start: {line: 1, character: 0},
+		end: {line: 1, character: lineLen[lspserver.posEncoding]}},
+	       params.range)
+  assert_equal(['int   x;', "int a\u0301b\u0301 = 1;", 'int   y;'],
+	       getline(1, '$'))
   :%bw!
 enddef
 

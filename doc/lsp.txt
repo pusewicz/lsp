@@ -1322,6 +1322,36 @@ Commands to modify, rename, or format your code using the language server.
 			successively to shrink the current symbol visual
 			region.
 
+							*lsp-workspace-edit*
+Besides changing text, the workspace edit of a rename, of a code action or
+sent by the language server can create, rename and delete files.  The buffer
+of such a file follows it:
+
+- Creating a file over an existing one, which the language server asks for
+  with the "overwrite" option, empties its buffer too.  The buffer keeps its
+  undo history (see 'undoreload').
+- Renaming a file gives its buffer the new name.  The buffer keeps its text,
+  its undo history and its unsaved changes, and the language servers get it
+  as the document with the new name.  When the renamed file replaces a file,
+  the buffer of the replaced file is wiped out, and its windows show the
+  renamed buffer instead.  Renaming a directory renames the buffers of the
+  files in it.  A renamed buffer with unsaved changes has not been written
+  with its new name yet: the first time, write it with ":write!" (see |E13|).
+- Deleting a file wipes out its buffer, and deleting a directory wipes out
+  the buffers of the files in it.  A directory that is not empty is deleted
+  only when the language server asks for it with the "recursive" option.
+
+Creating or renaming a file over one that exists fails, unless the language
+server asks for the file to be overwritten or for the operation to be
+ignored.  So does deleting a file that does not exist, unless the language
+server asks for the operation to be ignored.  An operation also fails when it
+would change or remove a buffer with unsaved changes, as |:edit| does without
+"!": write or undo the changes first.
+
+The changes of a workspace edit are applied in order.  When one fails, its
+error is shown and the changes after it are not applied, while the changes
+before it stay applied.
+
 ------------------------------------------------------------------------------
 							*lsp-hierarchy-cmds*
 5.6 Hierarchies (Call & Type)~
@@ -2205,11 +2235,8 @@ incrementalSync		|Boolean| option.  Specifies the method used to
 			Either way, the language server gets the text that Vim
 			writes for the buffer: it ends with a newline as
 			'endofline', 'fixendofline' and 'binary' decide, and
-			it is empty for a buffer without lines.  Vim tells a
-			buffer without lines apart from a buffer with one
-			empty line only when it is in a window, so an empty
-			buffer that is not in any window is sent as one empty
-			line.
+			it is empty for a buffer without lines.  Text edits
+			from the server apply to that same text.
 
 			Default: |false|
 
@@ -2766,7 +2793,10 @@ LspAttached			A |User| autocommand fired after all the
 LspDetached			A |User| autocommand fired when a buffer is
 				removed from all the attached language
 				servers. This can happen when a buffer is
-				wiped out, when |LspDisable()| removes the
+				wiped out, when a buffer is renamed (with
+				|:file| or |:saveas|, after which it is
+				attached to the language servers for its new
+				name), or when |LspDisable()| removes the
 				buffer from all the attached servers.
 
 				This autocommand is fired once per buffer
