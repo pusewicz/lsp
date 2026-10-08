@@ -258,6 +258,41 @@ export def BufIsEmpty(bnr: number): bool
   return ExecuteInBuffer(bnr, 'echo wordcount().bytes')->trim() == '0'
 enddef
 
+# Returns a snapshot of the editor state that the reply to an asynchronous
+# request is for, so that a reply arriving after the user moved on can be
+# dropped (see RequestContextMatches()).  "scope" is one of:
+#   'buffer'	the text of buffer "bnr"
+#   'window'	also the current window, which shows buffer "bnr"
+#   'cursor'	also the cursor position in that window
+export def RequestContextGet(scope: string, bnr: number = bufnr()): dict<number>
+  var reqctx: dict<number> = {
+    bnr: bnr,
+    changedtick: bnr->getbufvar('changedtick', -1)
+  }
+  if scope == 'window' || scope == 'cursor'
+    reqctx.winid = win_getid()
+  endif
+  if scope == 'cursor'
+    reqctx.lnum = line('.')
+    reqctx.col = charcol('.')
+  endif
+  return reqctx
+enddef
+
+# Returns true when the editor state in "reqctx", as returned by
+# RequestContextGet(), did not change.
+export def RequestContextMatches(reqctx: dict<number>): bool
+  if reqctx.changedtick != reqctx.bnr->getbufvar('changedtick', -1)
+    return false
+  endif
+  if reqctx->has_key('winid')
+      && (reqctx.winid != win_getid() || reqctx.bnr != bufnr())
+    return false
+  endif
+  return !reqctx->has_key('lnum')
+    || (reqctx.lnum == line('.') && reqctx.col == charcol('.'))
+enddef
+
 # Executes Ex command "cmd" with loaded buffer "bnr" as the current buffer and
 # returns its output.  The command runs in a window that shows the buffer, or
 # else in a hidden popup window that leaves no trace: opening and closing it
