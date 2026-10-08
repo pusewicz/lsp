@@ -49,6 +49,7 @@ def LspInitOnce()
   prop_type_add('LspReadRef', {highlight: 'LspReadRef', override: override})
   prop_type_add('LspWriteRef', {highlight: 'LspWriteRef', override: override})
 
+  completion.InitOnce()
   diag.InitOnce()
   inlayhints.InitOnce()
   signature.InitOnce()
