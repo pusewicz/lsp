@@ -84,8 +84,10 @@ def g:Test_LspCodeAction_CreateFile_Subdir()
     g:WaitForServerFileLoad(1)
     cursor(1, 1)
     :LspCodeAction 2
-    g:WaitForServerFileLoad(0)
-    assert_true(filereadable('baz/mod.rs'))
+    # Don't wait for the server to clear the diagnostic: rust-analyzer watches
+    # each directory on its own and can miss a file created right after its
+    # directory, as on macOS.
+    g:WaitForAssert(() => assert_true(filereadable('baz/mod.rs')))
     :%bw!
     delete('baz', 'rf')
   finally
