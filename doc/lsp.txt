@@ -527,9 +527,9 @@ The commands don't wait for the language server: Vim stays responsive, and
 the reply is processed when it arrives.  A reply that arrives after you moved
 on is dropped: when the buffer was changed, when you went to another window
 for a command that acts on the current window, or when the cursor moved for a
-command about the symbol under the cursor.  |:LspFormat| in an autocommand,
-e.g. for |BufWritePre|, waits for the reply, so that the file is formatted
-before it is written.
+command about the symbol under the cursor.  |:LspFormat!|, and |:LspFormat|
+in an autocommand, e.g. for |BufWritePre|, wait for the reply, so that the
+file is formatted before what follows, e.g. writing it.
 
 :LspCodeAction		Request code actions from all eligible language
 			servers attached to the current buffer and apply
@@ -1293,6 +1293,13 @@ Commands to modify, rename, or format your code using the language server.
 			With |formatFallback| enabled (disabled by default),
 			falls back to |gq|. See |lsp-opt-formatFallback|.
 
+							*:LspFormat!*
+:[range]LspFormat!	Like |:LspFormat|, but wait for the reply, so that the
+			text is formatted when the command is done.  Use this
+			when another command follows, e.g. to format and
+			write the file: >
+				:LspFormat! | write
+<
 							*:LspRename*
 :LspRename [newName]	Rename the current symbol.
 
@@ -2745,9 +2752,16 @@ The |:LspFormat| command can be used to format either the entire file or a
 selected range of lines using the language server.  The 'shiftwidth' and
 'expandtab' values set for the current buffer are used when format is applied.
 The command doesn't wait for the language server, unless it is run in an
-autocommand.  To format a file before writing it: >
+autocommand or as |:LspFormat!|.  A command that follows ":LspFormat", like
+":LspFormat | write", runs before the text is formatted, and as writing
+changes the buffer, the reply is then dropped.  To format a file before
+writing it: >
 
     autocmd BufWritePre *.c LspFormat
+<
+or in a mapping: >
+
+    nnoremap <Leader>w <Cmd>LspFormat! <Bar> write<CR>
 <
 To format code using the 'gq' command, you can set the 'formatexpr' option: >
 

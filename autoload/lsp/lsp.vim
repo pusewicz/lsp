@@ -1429,11 +1429,12 @@ def DocFormat(fname: string, canFallback: bool, sync: bool)
 enddef
 
 # If 'range_args' is false, then format the entire file.  Otherwise format a
-# range of lines.  In an autocommand, e.g. for BufWritePre, the file is
-# formatted before returning, as what follows needs the formatted text.
-# Otherwise the formatting is applied when the reply from the language server
-# arrives, if the file was not changed in the meantime.
-export def TextDocFormat(range_args: number, line1: number, line2: number)
+# range of lines.  When "wait" is true, or in an autocommand, e.g. for
+# BufWritePre, the file is formatted before returning, as what follows needs
+# the formatted text.  Otherwise the formatting is applied when the reply from
+# the language server arrives, if the file was not changed in the meantime.
+export def TextDocFormat(range_args: number, line1: number, line2: number,
+			 wait: bool = false)
   if !&modifiable
     util.ErrMsg('Current file is not a modifiable file')
     return
@@ -1442,7 +1443,7 @@ export def TextDocFormat(range_args: number, line1: number, line2: number)
   var fname: string = @%
   const canFallback = opt.lspOptions.formatFallback &&
 					&formatexpr !=# 'lsp#lsp#FormatExpr()'
-  var sync = state() =~# 'x'
+  var sync = wait || state() =~# 'x'
   if range_args > 0
     DocRangeFormat(fname, line1, line2, canFallback, sync)
   else
