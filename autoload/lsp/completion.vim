@@ -1090,15 +1090,24 @@ def OmniCompleteStart(lspserver: dict<any>): number
   return line->len() - keyword->len()
 enddef
 
+# Stop waiting for the reply to the omni completion request of "lspserver",
+# which the language server is then asked to cancel.
+def OmniCompleteAbandon(lspserver: dict<any>)
+  lspserver.cancelCompletion()
+  lspserver.omniCompletePending = false
+  lspserver.completeItems = []
+enddef
+
 # Second invocation of the omni complete handlers: wait for the reply to the
 # request sent by OmniCompleteStart() and return the list of matches.  Returns
 # v:none when interrupted by a typed key or when the server doesn't reply in
-# time.
+# time; the request is then cancelled.
 def OmniCompleteMatches(lspserver: dict<any>): any
   # Wait for the list of matches from the LSP server
   var count: number = 0
   while lspserver.omniCompletePending && count < 1000
     if complete_check()
+      OmniCompleteAbandon(lspserver)
       return v:none
     endif
     sleep 2m
@@ -1106,8 +1115,7 @@ def OmniCompleteMatches(lspserver: dict<any>): any
   endwhile
 
   if lspserver.omniCompletePending
-    lspserver.omniCompletePending = false
-    lspserver.completeItems = []
+    OmniCompleteAbandon(lspserver)
     return v:none
   endif
 
