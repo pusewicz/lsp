@@ -323,6 +323,96 @@ def g:Test_Rpc_StaleRequestReplyIsNotAnError()
   endtry
 enddef
 
+# Returns a running test language server that records the notifications and
+# the requests it is sent in "messages", in the order they are sent.
+def MakeRecordingLspServer(messages: list<dict<any>>): dict<any>
+  var lspserver = MakeTestLspServer(messages)
+  lspserver.running = true
+  lspserver.ready = true
+  lspserver.debug = true
+  lspserver.traceLog = (msg: string) => {
+    var request = msg->matchstr('^Sent request \zs.*')
+    if !request->empty()
+      messages->add(request->json_decode())
+    endif
+  }
+  return lspserver
+enddef
+
+# Test that a request made right after a change, before Vim passes the change
+# to the listeners (e.g. in a mapping or an autocmd), is sent after the
+# change, so that the formatting is for the new text.
+def g:Test_Rpc_SendsPendingChangesFirst()
+  silent! edit XRpcPendingChanges.txt
+  setline(1, ['old'])
+  var bnr = bufnr()
+  var messages: list<dict<any>> = []
+  var lspserver = MakeRecordingLspServer(messages)
+  lspserver.isDocumentFormattingProvider = true
+  lspserver.job = StartStubServerJob(
+    [{jsonrpc: '2.0', id: lspserver.nextSyncRpcId, result: []}])
+  buf.BufLspServerSet(bnr, lspserver)
+  var listenerId = listener_add((changedBnr, _, _, _, _) => {
+    lspserver.textdocDidChange(changedBnr)
+  }, bnr)
+  try
+    setline(1, 'new')
+    lspserver.textDocFormat(@%, false, 0, 0)
+
+    assert_equal(['textDocument/didChange', 'textDocument/formatting'],
+		 messages->mapnew((_, msg) => msg.method))
+    assert_equal([{text: "new\n"}], messages[0].params.contentChanges)
+  finally
+    listener_remove(listenerId)
+    job_stop(lspserver.job)
+    buf.BufLspServerRemove(bnr, lspserver)
+    :%bw!
+  endtry
+enddef
+
+# Test that an asynchronous request is sent after the pending changes of all
+# the buffers attached to the language server, not only of the buffer it is
+# about: the reply can depend on them, e.g. for the references in other files.
+def g:Test_AsyncRpc_SendsPendingChangesOfAllBuffersFirst()
+  silent! edit XAsyncRpcPendingChanges1.txt
+  setline(1, ['one'])
+  var bnr1 = bufnr()
+  silent! new XAsyncRpcPendingChanges2.txt
+  var bnr2 = bufnr()
+  var messages: list<dict<any>> = []
+  var lspserver = MakeRecordingLspServer(messages)
+  lspserver.job = StartStubServerJob([])
+  var listenerIds: list<number> = []
+  for bnr in [bnr1, bnr2]
+    buf.BufLspServerSet(bnr, lspserver)
+    listenerIds->add(listener_add((changedBnr, _, _, _, _) => {
+      lspserver.textdocDidChange(changedBnr)
+    }, bnr))
+  endfor
+  # Send the request asynchronously, as outside the tests
+  g:LSPTest = false
+  try
+    setbufline(bnr1, 1, 'ONE')
+    lspserver.rpc_a('workspace/symbol', {query: ''}, (_, _, _) => {
+    })
+
+    assert_equal(['textDocument/didChange', 'workspace/symbol'],
+		 messages->mapnew((_, msg) => msg.method))
+    assert_equal(util.LspBufnrToUri(bnr1),
+		 messages[0].params.textDocument.uri)
+    assert_equal([{text: "ONE\n"}], messages[0].params.contentChanges)
+  finally
+    g:LSPTest = true
+    for id in listenerIds
+      listener_remove(id)
+    endfor
+    job_stop(lspserver.job)
+    buf.BufLspServerRemove(bnr1, lspserver)
+    buf.BufLspServerRemove(bnr2, lspserver)
+    :%bw!
+  endtry
+enddef
+
 # Test that the reply to a semantic tokens request saying that the content was
 # modified leaves the semantic highlighting as it is, without an error.
 def g:Test_SemanticHighlightUpdate_ContentModifiedIsNotAnError()
@@ -2576,9 +2666,10 @@ def g:Test_LspAutoFix_Range_MultiServer_WaitsForAllReplies()
 enddef
 
 def g:Test_TextdocDidChange_IncrementalSync_MultiHunkDeleteAppliesBottomUp()
-  # Regression test for #836: ":%d" produces two diff hunks; emitting them
-  # top-down sends the second hunk's range against a document already
-  # shrunk by the first, desyncing the server.
+  # Regression test for #836: deleting all the lines but an empty one
+  # produces two diff hunks; emitting them top-down sends the second hunk's
+  # range against a document already shrunk by the first, desyncing the
+  # server.  (":%d" leaves no lines, which is sent as a full-text change.)
   if !opt.incrementalSyncSupported
     # incrementalSync needs diff(); options.OptionsSet() forces it back off
     # without it, same as the plugin itself falling back to full sync.
@@ -2596,7 +2687,8 @@ def g:Test_TextdocDidChange_IncrementalSync_MultiHunkDeleteAppliesBottomUp()
   lspserver.cachedBufferContent[bnr] = oldLines
   lspserver.cachedBufferEol[bnr] = true
 
-  :%d
+  :3,$d
+  :1d
   lspserver.textdocDidChange(bnr)
 
   assert_equal(1, notifications->len())
@@ -2829,6 +2921,144 @@ def g:Test_TextdocDidChange_IncrementalSync_WriteRuleToggleSendsFullText()
 
   g:LspOptionsSet({incrementalSync: false})
   :%bw!
+enddef
+
+# Setting 'endofline', 'fixendofline' or 'binary' can add or remove the
+# newline at the end of the document without changing a line or
+# 'changedtick', which the listener doesn't see, so the change is sent when
+# the option is set, with a greater version.
+def g:Test_EolOptionSet_SendsChange()
+  for incrementalSync in (exists('*diff') ? [false, true] : [false])
+    g:LspOptionsSet({incrementalSync: incrementalSync})
+    silent! edit XEolOptionSet.txt
+    setline(1, ['abc', 'def'])
+    setlocal eol fixeol nobinary
+    var bnr = bufnr()
+    var notifications: list<dict<any>> = []
+    var lspserver = MakeTestLspServer(notifications)
+    lspserver.running = true
+    lspserver.ready = true
+    buf.BufLspServerSet(bnr, lspserver)
+    lspserver.textdocDidOpen(bnr, 'text')
+    var listenerId = listener_add((changedBnr, _, _, _, _) => {
+      lspserver.textdocDidChange(changedBnr)
+    }, bnr)
+    var msg = $'incrementalSync: {incrementalSync}'
+    # OptionSet is not triggered while Vim is starting
+    test_override('starting', 1)
+    try
+      # 'fixendofline' still adds the newline
+      setlocal noeol
+      setglobal nofixeol
+      assert_equal([], notifications, msg)
+
+      setlocal nofixeol
+      assert_equal(1, notifications->len(), msg)
+      assert_equal([{text: "abc\ndef"}],
+		   notifications[-1].params.contentChanges, msg)
+      var version = notifications[-1].params.textDocument.version
+      assert_equal(b:changedtick + 1, version, msg)
+
+      # No newline without 'binary' either
+      setlocal binary
+      assert_equal(1, notifications->len(), msg)
+
+      # A pending change is sent first, with the newline
+      setline(1, 'xyz')
+      setlocal eol
+      listener_flush(bnr)
+      assert_equal(2, notifications->len(), msg)
+      assert_equal("xyz\ndef\n",
+		   notifications[-1].params.contentChanges[-1].text, msg)
+      assert_true(notifications[-1].params.textDocument.version > version,
+		  msg)
+      version = notifications[-1].params.textDocument.version
+
+      # Set for the buffer in another window
+      new
+      setbufvar(bnr, '&endofline', false)
+      assert_equal(3, notifications->len(), msg)
+      assert_equal([{text: "xyz\ndef"}],
+		   notifications[-1].params.contentChanges, msg)
+      assert_equal(version + 1,
+		   notifications[-1].params.textDocument.version, msg)
+    finally
+      test_override('starting', 0)
+      setglobal fixeol
+      listener_remove(listenerId)
+      buf.BufLspServerRemove(bnr, lspserver)
+      :%bw!
+    endtry
+  endfor
+  g:LspOptionsSet({incrementalSync: false})
+enddef
+
+# A buffer without lines has no text, but getbufline() returns one empty line
+# for it, like for a buffer with one empty line, which Vim writes as a
+# newline.
+def g:Test_TextdocDidOpen_BufferWithoutLines()
+  silent! edit XDidOpenNoLines.txt
+  var bnr = bufnr()
+  var notifications: list<dict<any>> = []
+  var lspserver = MakeTestLspServer(notifications)
+  lspserver.supportsDidOpenClose = true
+
+  lspserver.textdocDidOpen(bnr, 'text')
+  assert_equal('', notifications[-1].params.textDocument.text)
+
+  setline(1, '')
+  lspserver.textdocDidOpen(bnr, 'text')
+  assert_equal("\n", notifications[-1].params.textDocument.text)
+
+  setline(1, 'abc')
+  :%d
+  lspserver.textdocDidOpen(bnr, 'text')
+  assert_equal('', notifications[-1].params.textDocument.text)
+
+  # The buffer in another window
+  new
+  lspserver.textdocDidOpen(bnr, 'text')
+  assert_equal('', notifications[-1].params.textDocument.text)
+  setbufline(bnr, 1, '')
+  lspserver.textdocDidOpen(bnr, 'text')
+  assert_equal("\n", notifications[-1].params.textDocument.text)
+
+  :%bw!
+enddef
+
+def g:Test_TextdocDidChange_BufferWithoutLines()
+  for incrementalSync in (exists('*diff') ? [false, true] : [false])
+    g:LspOptionsSet({incrementalSync: incrementalSync})
+    silent! edit XDidChangeNoLines.txt
+    setline(1, ['abc', 'def'])
+    var bnr = bufnr()
+    var notifications: list<dict<any>> = []
+    var lspserver = MakeTestLspServer(notifications)
+    lspserver.textdocDidOpen(bnr, 'text')
+    var msg = $'incrementalSync: {incrementalSync}'
+
+    :%d
+    lspserver.textdocDidChange(bnr)
+    assert_equal([{text: ''}], notifications[-1].params.contentChanges, msg)
+
+    setline(1, '')
+    lspserver.textdocDidChange(bnr)
+    assert_equal([{text: "\n"}], notifications[-1].params.contentChanges,
+		 msg)
+
+    :%d
+    setlocal noeol nofixeol
+    lspserver.textdocDidChange(bnr)
+    assert_equal([{text: ''}], notifications[-1].params.contentChanges, msg)
+
+    setline(1, 'abc')
+    lspserver.textdocDidChange(bnr)
+    assert_equal([{text: 'abc'}], notifications[-1].params.contentChanges,
+		 msg)
+
+    :%bw!
+  endfor
+  g:LspOptionsSet({incrementalSync: false})
 enddef
 
 # Text edits are relative to the server's document, which ends with a newline

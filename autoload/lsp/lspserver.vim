@@ -458,6 +458,18 @@ def ProcessLspServerError(method: string, responseError: dict<any>)
   util.ErrMsg($'request {method} failed ({emsg})')
 enddef
 
+# Send the changes made to the buffers attached to "lspserver" that Vim hasn't
+# passed to the listeners yet, so that a request is answered for the current
+# text.  Vim invokes the listeners only before redrawing, which a mapping, an
+# autocmd or a script making a request right after a change doesn't do.
+def SendPendingChanges(lspserver: dict<any>)
+  for bnr in buf.BufGetServerBufnrs(lspserver)
+    if bnr->bufloaded()
+      bnr->listener_flush()
+    endif
+  endfor
+enddef
+
 # The ID of the first synchronous request to a language server.  Vim numbers
 # the requests sent with ch_sendexpr() from 1, so synchronous requests, which
 # are numbered by the plugin, use a range of their own.
@@ -483,6 +495,8 @@ def Rpc(lspserver: dict<any>, method: string, params: any, opts: dict<any> = {})
     # LSP server has exited
     return {}
   endif
+
+  SendPendingChanges(lspserver)
 
   var id = lspserver.nextSyncRpcId
   lspserver.nextSyncRpcId += 1
@@ -615,6 +629,8 @@ def AsyncRpc(lspserver: dict<any>, method: string, params: any, Cbfunc: func): n
     return -1
   endif
 
+  SendPendingChanges(lspserver)
+
   # Do the asynchronous RPC call
   var Fn = function('AsyncRpcCb', [lspserver, method, Cbfunc])
 
@@ -700,9 +716,6 @@ def SemanticHighlightUpdate(lspserver: dict<any>, bnr: number)
     return
   endif
 
-  # Send the pending buffer changes to the language server
-  bnr->listener_flush()
-
   # Capture the current changedtick
   var requestTick = getbufvar(bnr, 'changedtick')
 
@@ -738,16 +751,25 @@ def SendWorkspaceConfig(lspserver: dict<any>)
   lspserver.sendNotification('workspace/didChangeConfiguration', params)
 enddef
 
+# Returns the text of a document with "lines", ending with a newline when
+# "hasEol" is true and there are lines.
 def LinesText(lines: list<string>, hasEol: bool): string
   var text = lines->join("\n")
-  if hasEol
+  if hasEol && !lines->empty()
     text ..= "\n"
   endif
   return text
 enddef
 
+# Returns the lines of the document of buffer "bnr", none when the buffer has
+# no text.
+def BufferLines(bnr: number): list<string>
+  return util.BufIsEmpty(bnr) ? [] : bnr->getbufline(1, '$')
+enddef
+
+# Returns the text of the document of buffer "bnr".
 def BufferText(bnr: number): string
-  return LinesText(bnr->getbufline(1, '$'), util.BufWritesEol(bnr))
+  return LinesText(BufferLines(bnr), util.BufWritesEol(bnr))
 enddef
 
 def HunkText(newBufLines: list<string>, hunk: dict<number>, hasEol: bool): string
@@ -794,10 +816,13 @@ def TextdocDidOpen(lspserver: dict<any>, bnr: number, ftype: string): void
     endtry
   endif
 
-  var newBufLines = bnr->getbufline(1, '$')
+  var newBufLines = BufferLines(bnr)
   var hasEol = util.BufWritesEol(bnr)
   lspserver.cachedBufferContent[bnr] = newBufLines
   lspserver.cachedBufferEol[bnr] = hasEol
+  # Use Vim 'changedtick' as the LSP document version number
+  var version: number = bnr->getbufvar('changedtick')
+  lspserver.docVersions[bnr] = version
 
   if !lspserver.supportsDidOpenClose
     return
@@ -807,8 +832,7 @@ def TextdocDidOpen(lspserver: dict<any>, bnr: number, ftype: string): void
     textDocument: {
       uri: util.LspBufnrToUri(bnr),
       languageId: languageId,
-      # Use Vim 'changedtick' as the LSP document version number
-      version: bnr->getbufvar('changedtick'),
+      version: version,
       text: LinesText(newBufLines, hasEol)
     }
   }
@@ -833,6 +857,9 @@ def TextdocDidClose(lspserver: dict<any>, bnr: number): void
   endif
   if lspserver.cachedBufferEol->has_key(bnr)
     lspserver.cachedBufferEol->remove(bnr)
+  endif
+  if lspserver.docVersions->has_key(bnr)
+    lspserver.docVersions->remove(bnr)
   endif
   if lspserver.diagnosticResultIds->has_key(bnr)
     lspserver.diagnosticResultIds->remove(bnr)
@@ -910,9 +937,6 @@ def PullDiagnostics(lspserver: dict<any>, bnr: number)
     return
   endif
 
-  # Send any pending changes before asking for diagnostics.
-  bnr->listener_flush()
-
   var uri = util.LspBufnrToUri(bnr)
   var params: dict<any> = {
     textDocument: {
@@ -986,18 +1010,19 @@ def TextdocDidChange(lspserver: dict<any>, bnr: number): void
   endif
 
   var contentChanges: list<dict<any>>
+  var hasEol = util.BufWritesEol(bnr)
 
   if textDocumentSync == 1 || !opt.lspOptions.incrementalSync
     # TextDocumentSyncKind: Full — send the entire buffer on every change.
-    contentChanges = [{text: BufferText(bnr)}]
+    contentChanges = [{text: LinesText(BufferLines(bnr), hasEol)}]
   elseif exists_compiled('*diff')
     # TextDocumentSyncKind: Incremental — send only the changed lines.
-    var newBufLines = bnr->getbufline(1, '$')
-    var hasEol = util.BufWritesEol(bnr)
+    var newBufLines = BufferLines(bnr)
     var cachedBufferContent = lspserver.cachedBufferContent
     var cachedBufferEol = lspserver.cachedBufferEol
     if cachedBufferContent->has_key(bnr)
 	&& cachedBufferEol[bnr] == hasEol
+	&& cachedBufferContent[bnr]->empty() == newBufLines->empty()
       # Compute line-level diffs against the last snapshot and convert each
       # hunk into an LSP TextDocumentContentChangeEvent.  Hunks are emitted
       # bottom-up: the LSP spec applies contentChanges entries sequentially,
@@ -1039,13 +1064,14 @@ def TextdocDidChange(lspserver: dict<any>, bnr: number): void
       endfor
     else
       # No cached snapshot available, or its line-ending state doesn't
-      # match the current buffer (the old-document end-of-file math above
-      # would be wrong); fall back to a full-text change.
+      # match the current buffer, or only one of them has no text (the
+      # old-document end-of-file math above would be wrong); fall back to a
+      # full-text change.
       contentChanges = [{text: LinesText(newBufLines, hasEol)}]
     endif
     cachedBufferContent[bnr] = newBufLines
-    cachedBufferEol[bnr] = hasEol
   endif
+  lspserver.cachedBufferEol[bnr] = hasEol
 
   if contentChanges->empty()
     return
@@ -1054,12 +1080,36 @@ def TextdocDidChange(lspserver: dict<any>, bnr: number): void
   var params = {
     textDocument: {
       uri: util.LspBufnrToUri(bnr),
-      # Use Vim 'changedtick' as the LSP document version number
-      version: bnr->getbufvar('changedtick')
+      version: NextDocVersion(lspserver, bnr)
     },
     contentChanges: contentChanges
   }
   lspserver.sendNotification('textDocument/didChange', params)
+enddef
+
+# Returns the version of the next change to the document of buffer "bnr" and
+# records it.  That is Vim's 'changedtick', or one more than the previous
+# version when 'changedtick' didn't change (e.g. when setting 'endofline'
+# removed the newline at the end of the document), as the version of a
+# document must increase with every change.
+def NextDocVersion(lspserver: dict<any>, bnr: number): number
+  var version: number = [bnr->getbufvar('changedtick'),
+			 lspserver.docVersions->get(bnr, 0) + 1]->max()
+  lspserver.docVersions[bnr] = version
+  return version
+enddef
+
+# Send a change notification for buffer "bnr" when setting 'endofline',
+# 'fixendofline' or 'binary' added or removed the newline at the end of its
+# document.  That changes neither a line nor 'changedtick', so the listener
+# doesn't see it.
+def TextdocEolChanged(lspserver: dict<any>, bnr: number): void
+  var cachedBufferEol = lspserver.cachedBufferEol
+  if !cachedBufferEol->has_key(bnr)
+      || cachedBufferEol[bnr] == util.BufWritesEol(bnr)
+    return
+  endif
+  TextdocDidChange(lspserver, bnr)
 enddef
 
 # Return the current cursor position as a LSP position.
@@ -1534,9 +1584,6 @@ def DocHighlight(lspserver: dict<any>, bnr: number, cmdmods: string): void
     return
   endif
 
-  # Send the pending buffer changes to the language server
-  bnr->listener_flush()
-
   # interface DocumentHighlightParams
   #   interface TextDocumentPositionParams
   var params = lspserver.getTextDocPosition(false)
@@ -1710,9 +1757,6 @@ def TextDocOnTypeFormat(lspserver: dict<any>, ch: string)
     return
   endif
 
-  # Send the pending buffer changes to the language server
-  bnr->listener_flush()
-
   # interface DocumentOnTypeFormattingParams
   #   interface TextDocumentIdentifier
   #   interface Position
@@ -1885,9 +1929,6 @@ def InlayHintsShow(lspserver: dict<any>, bnr: number)
     util.ErrMsg('LSP server does not support inlay hint')
     return
   endif
-
-  # Send the pending buffer changes to the language server
-  bnr->listener_flush()
 
   var binfo = bnr->getbufinfo()
   if binfo->empty()
@@ -2832,6 +2873,7 @@ export def NewLspServer(serverParams: dict<any>): dict<any>
     signaturePopup: -1,
     cachedBufferContent: {},
     cachedBufferEol: {},
+    docVersions: {},
     syncInit: serverParams.syncInit,
     traceLevel: serverParams.traceLevel,
     typeHierFilePopup: -1,
@@ -2875,6 +2917,7 @@ export def NewLspServer(serverParams: dict<any>): dict<any>
     textdocDidOpen: function(TextdocDidOpen, [lspserver]),
     textdocDidClose: function(TextdocDidClose, [lspserver]),
     textdocDidChange: function(TextdocDidChange, [lspserver]),
+    textdocEolChanged: function(TextdocEolChanged, [lspserver]),
     sendInitializedNotif: function(SendInitializedNotif, [lspserver]),
     sendWorkspaceConfig: function(SendWorkspaceConfig, [lspserver]),
     getCompletion: function(GetCompletion, [lspserver]),
