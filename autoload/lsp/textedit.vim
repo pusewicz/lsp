@@ -309,26 +309,166 @@ def FileDelete(deleteFile: dict<any>)
   exe $'{bnr}bwipe!'
 enddef
 
+# Returns the name of the file or directory with URI "uri", without a
+# trailing "/".
+def UriToPath(uri: string): string
+  return util.LspUriToFile(uri)->substitute('\(.\)/\+$', '\1', '')
+enddef
+
+# Returns the numbers of the buffers for the files under directory "dir".
+# Like Vim, this ignores the case of file names, as macOS does.
+def DirBuffers(dir: string): list<number>
+  var prefix: string = $'{dir}/'
+  return getbufinfo()
+    ->filter((_, b) => b.name->strpart(0, prefix->len()) ==? prefix)
+    ->map((_, b) => b.bufnr)
+enddef
+
+# Executes Ex command "cmd" with loaded buffer "bnr" as the current buffer and
+# returns its output.  The command runs in a window that shows the buffer, or
+# else in a hidden popup window that leaves no trace: opening and closing it
+# triggers no autocommands, and closing it does not unload the buffer
+# whatever its 'bufhidden' is.
+def ExecuteInBuffer(bnr: number, cmd: string): string
+  var winids: list<number> = bnr->win_findbuf()
+  if !winids->empty()
+    return win_execute(winids[0], cmd)
+  endif
+
+  var bufhidden: string = bnr->getbufvar('&bufhidden')
+  noautocmd setbufvar(bnr, '&bufhidden', '')
+  var winid: number
+  noautocmd winid = popup_create(bnr, {hidden: true})
+  var output: string
+  try
+    output = win_execute(winid, cmd)
+  finally
+    noautocmd popup_close(winid)
+    noautocmd setbufvar(bnr, '&bufhidden', bufhidden)
+  endtry
+  return output
+enddef
+
+# Names loaded buffer "bnr" "fname" after its file was renamed to "fname".
+# The buffer keeps its text, its undo history and its unsaved changes.  When
+# buffer "tbnr" was for the file the renamed file replaced, the windows that
+# showed buffer "tbnr" show buffer "bnr" instead.
+def FollowRename(bnr: number, tbnr: number, fname: string)
+  if tbnr > 0
+    for winid in tbnr->win_findbuf()
+      win_execute(winid, $'buffer {bnr}')
+    endfor
+    if tbnr->bufexists()
+      exe $'bwipe {tbnr}'
+    endif
+  endif
+
+  # ":file" keeps the old name in a new unlisted buffer.
+  var oldName: string = bnr->getbufinfo()[0].name
+  ExecuteInBuffer(bnr, $'keepalt file {fname->fnameescape()}')
+  for b in getbufinfo()
+    if b.bufnr != bnr && b.name ==# oldName
+      exe $'bwipe {b.bufnr}'
+    endif
+  endfor
+
+  # Until it is written, ":write" refuses to write a renamed buffer to the
+  # existing file (E13).  Writing it is not needed for the rename, so a buffer
+  # that cannot be written is left as it is.
+  if !bnr->getbufvar('&modified') && !bnr->getbufvar('&readonly')
+      && bnr->getbufvar('&buftype')->empty()
+    try
+      ExecuteInBuffer(bnr, 'noautocmd write!')
+    catch
+    endtry
+  endif
+enddef
+
+# Moves the undo file of file "from", if there is one, to file "to".
+def MoveUndoFile(from: string, to: string)
+  var undoFrom: string = from->undofile()
+  if undoFrom->filereadable()
+    var undoTo: string = to->undofile()
+    undoTo->fnamemodify(':h')->mkdir('p')
+    undoFrom->rename(undoTo)
+  endif
+enddef
+
 # interface RenameFile
-# Rename file "renameFile.oldUri" to "renameFile.newUri"
+# Rename file or directory "renameFile.oldUri" to "renameFile.newUri".  An
+# existing file is replaced only when "overwrite" is set, and then not when
+# its buffer has unsaved changes.  The buffers of the renamed files follow
+# them.
 def FileRename(renameFile: dict<any>)
-  var old_fname: string = util.LspUriToFile(renameFile.oldUri)
-  var new_fname: string = util.LspUriToFile(renameFile.newUri)
+  var oldPath: string = UriToPath(renameFile.oldUri)
+  var newPath: string = UriToPath(renameFile.newUri)
 
   var opts: dict<bool> = renameFile->get('options', {})
   var overwrite: bool = opts->get('overwrite', false)
-  var ignoreIfExists: bool = opts->get('ignoreIfExists', true)
+  var ignoreIfExists: bool = opts->get('ignoreIfExists', false)
 
-  # LSP Spec: Overwrite wins over `ignoreIfExists`
-  if (new_fname->filereadable() || new_fname->isdirectory()) &&
-      ignoreIfExists && !overwrite
+  if oldPath->getftype()->empty()
+    util.ErrMsg($'File rename failed, {oldPath} does not exist')
+    return
+  endif
+  if oldPath ==# newPath
     return
   endif
 
-  var status: number = old_fname->rename(new_fname)
-  if status != 0
-    util.ErrMsg($'File rename failed, {old_fname} to {new_fname}')
+  # LSP Spec: Overwrite wins over `ignoreIfExists`
+  # As macOS ignores the case of file names, when only the case of the name
+  # changes, the new name is of the same file.
+  if !newPath->getftype()->empty() && oldPath !=? newPath && !overwrite
+    if !ignoreIfExists
+      util.ErrMsg($'File rename failed, {newPath} already exists')
+    endif
+    return
   endif
+
+  # The buffer of each renamed file ("bnr") and of the file it replaces
+  # ("tbnr").  When a file that replaces a loaded buffer has no loaded buffer,
+  # its buffer is loaded to take the place of that buffer.
+  var moves: list<dict<any>> = [{bnr: FileBufnr(oldPath), from: oldPath,
+				 to: newPath}]
+  for bnr in DirBuffers(oldPath)
+    var name: string = bnr->getbufinfo()[0].name
+    moves->add({bnr: bnr, from: name,
+		to: newPath .. name->strpart(oldPath->len())})
+  endfor
+  for move in moves
+    var tbnr: number = FileBufnr(move.to)
+    move.tbnr = tbnr == move.bnr ? 0 : tbnr
+    if move.tbnr > 0 && move.tbnr->getbufvar('&modified')
+      util.ErrMsg($'File rename failed, {move.to} has unsaved changes')
+      return
+    endif
+  endfor
+  for move in moves
+    if move.tbnr > 0 && move.tbnr->bufloaded()
+	&& (move.bnr == 0 || !move.bnr->bufloaded())
+      move.bnr = move.from->bufadd()
+      move.bnr->bufload()
+    endif
+  endfor
+
+  newPath->fnamemodify(':h')->mkdir('p')
+  if oldPath->rename(newPath) != 0
+    util.ErrMsg($'File rename failed, {oldPath} to {newPath}')
+    return
+  endif
+
+  for move in moves
+    if move.bnr > 0 && move.bnr->bufloaded()
+      FollowRename(move.bnr, move.tbnr, move.to)
+    elseif move.bnr > 0
+      var listed: bool = move.bnr->buflisted()
+      exe $'bwipe {move.bnr}'
+      if listed
+	setbufvar(move.to->bufadd(), '&buflisted', true)
+      endif
+    endif
+    MoveUndoFile(move.from, move.to)
+  endfor
 enddef
 
 # interface WorkspaceEdit
