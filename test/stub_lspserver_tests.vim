@@ -1958,6 +1958,147 @@ def g:Test_CodeActionContext_MultiLineDiagnostic()
   :%bw!
 enddef
 
+# Returns a stub language server with the position encoding "posEncoding" that
+# published the diagnostics "diags" for the current buffer.  The params of the
+# code action requests sent to the server are added to "sentParams".
+def MakeDiagCodeActionServer(posEncoding: number, diags: list<dict<any>>,
+			     sentParams: list<dict<any>>): dict<any>
+  g:LspOptionsSet({autoHighlightDiags: false})
+  var lspserver = MakeTestLspServer([])
+  lspserver.posEncoding = posEncoding
+  lspserver.needOffsetEncoding = posEncoding != 32
+  lspserver.features = {diagnostics: true}
+  lspserver.featureEnabled = (_) => true
+  lspserver.isCodeActionProvider = true
+  lspserver.rpc_a = (_, params, _) => {
+    sentParams->add(params->deepcopy())
+    return 1
+  }
+  diag.DiagNotification(lspserver, util.LspBufnrToUri(bufnr()),
+			diags->deepcopy(), 'push')
+  return lspserver
+enddef
+
+# Returns the "character" values of all the positions in "value", the params
+# of a request or a part of them.
+def PositionCharacters(value: any): list<number>
+  var chars: list<number> = []
+  if value->type() == v:t_dict
+    if value->has_key('character')
+      chars->add(value.character)
+    endif
+    for v in value->values()
+      chars->extend(PositionCharacters(v))
+    endfor
+  elseif value->type() == v:t_list
+    for v in value
+      chars->extend(PositionCharacters(v))
+    endfor
+  endif
+  return chars
+enddef
+
+# The diagnostics in the context of a code action request are in the position
+# encoding of the language server.  A diagnostic that ends past the end of a
+# line with multibyte, composing and astral plane characters ends at the end
+# of the line, and no position is negative.
+def g:Test_CodeActionContext_DiagnosticPastEndOfLine()
+  silent! edit XCodeActionDiagPastEol.txt
+  setline(1, ['x;', "é a\u0301 😊"])
+  # The second line is 11 bytes, 7 UTF-16 code units and 6 characters long,
+  # and "a" is at byte 3, UTF-16 code unit 2 and character 2.
+  var aIdx = {8: 3, 16: 2, 32: 2}
+  var lineLen = {8: 11, 16: 7, 32: 6}
+  for posEncoding in [8, 16, 32]
+    var diags = [{range: {start: {line: 1, character: aIdx[posEncoding]},
+			  end: {line: 1, character: 40}},
+		  message: 'past the end'}]
+    var sentParams: list<dict<any>> = []
+    var lspserver = MakeDiagCodeActionServer(posEncoding, diags, sentParams)
+    cursor(2, 1)
+    lspserver.codeActionAsync(@%, 2, 2, '', (_, _, _, _) => 0)
+
+    var msg = $'UTF-{posEncoding}'
+    assert_equal(1, sentParams->len(), msg)
+    var params = sentParams[0]
+    assert_equal({start: {line: 1, character: 0},
+		  end: {line: 1, character: lineLen[posEncoding]}},
+		 params.range, msg)
+    # A UTF-32 server gets back the position that it sent, which is not
+    # decoded
+    var diagEnd = posEncoding == 32 ? 40 : lineLen[posEncoding]
+    assert_equal([{start: {line: 1, character: aIdx[posEncoding]},
+		   end: {line: 1, character: diagEnd}}],
+		 params.context.diagnostics->mapnew((_, d) => d.range), msg)
+    var chars = PositionCharacters(params)
+    assert_equal(4, chars->len(), msg)
+    assert_equal([], chars->filter((_, c) => c < 0), msg)
+
+    ClearBufferDiagnostics()
+  endfor
+  :%bw!
+enddef
+
+# The range of a code action request for a line that the cursor is not on
+# starts at the start of the line, not at the column of the cursor.
+def g:Test_CodeAction_OtherLineRangeStartsAtLineStart()
+  silent! edit XCodeActionOtherLine.txt
+  setline(1, ['x;', "é a\u0301 😊"])
+  for posEncoding in [8, 16, 32]
+    var sentParams: list<dict<any>> = []
+    var lspserver = MakeDiagCodeActionServer(posEncoding, [], sentParams)
+    cursor(2, 1)
+    :normal! $
+    lspserver.codeActionAsync(@%, 1, 1, '', (_, _, _, _) => 0)
+    assert_equal({start: {line: 0, character: 0},
+		  end: {line: 0, character: 2}},
+		 sentParams[0].range, $'UTF-{posEncoding}')
+    ClearBufferDiagnostics()
+  endfor
+  :%bw!
+enddef
+
+# The ranges of the code lens and the document link that are resolved are in
+# the position encoding of the language server.  A range that ends past the
+# end of a line with multibyte, composing and astral plane characters ends at
+# the end of the line.
+def g:Test_Resolve_RangePastEndOfLine()
+  silent! edit XResolvePastEol.txt
+  setline(1, ["é a\u0301 😊"])
+  var aIdx = {8: 3, 16: 2, 32: 2}
+  var lineLen = {8: 11, 16: 7}
+  for posEncoding in [8, 16, 32]
+    var lspserver = MakeTestLspServer([])
+    lspserver.posEncoding = posEncoding
+    lspserver.needOffsetEncoding = posEncoding != 32
+    lspserver.isCodeLensResolveProvider = true
+    lspserver.isDocumentLinkResolveProvider = true
+    var requests: list<dict<any>> = []
+    lspserver.rpc = (method: string, params: any): dict<any> => {
+      requests->add({method: method, params: params->deepcopy()})
+      return {result: params->deepcopy()}
+    }
+
+    # The range as the language server sent it, decoded
+    var range = {start: {line: 0, character: aIdx[posEncoding]},
+		 end: {line: 0, character: 40}}
+    lspserver.decodeRange(bufnr(), range)
+    lspserver.resolveCodeLens(bufnr(), {range: range->deepcopy()})
+    lspserver.resolveDocumentLink(bufnr(), {range: range->deepcopy()})
+
+    var msg = $'UTF-{posEncoding}'
+    assert_equal(['codeLens/resolve', 'documentLink/resolve'],
+		 requests->mapnew((_, r) => r.method), msg)
+    var rangeEnd = posEncoding == 32 ? 40 : lineLen[posEncoding]
+    for r in requests
+      assert_equal({start: {line: 0, character: aIdx[posEncoding]},
+		    end: {line: 0, character: rangeEnd}},
+		   r.params.range, $'{msg}: {r.method}')
+    endfor
+  endfor
+  :%bw!
+enddef
+
 # Return the [lnum, text, align, wrap] of the diagnostic virtual text placed in
 # the current buffer.
 def DiagVirtualTextLayout(): list<list<any>>
