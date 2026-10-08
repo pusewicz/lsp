@@ -551,9 +551,9 @@ def ClearAleDiags(bnr: number)
   endif
   var linterNames = aleLinterNames->remove(bnr)
 
-  # ALE drops a deleted buffer on BufDelete, before the BufWipeout that
-  # detaches it from the language servers.  Clearing its results then would
-  # make ALE track the deleted buffer again.
+  # Clearing the results makes ALE track the buffer, so skip a buffer that
+  # ALE doesn't track (e.g. one it dropped on BufDelete).  A buffer deleted
+  # with ":bdelete" is detached on BufUnload, while ALE still tracks it.
   if !get(g:, 'ale_buffer_info', {})->has_key(bnr)
     return
   endif
@@ -647,6 +647,12 @@ export def DiagNotification(lspserver: dict<any>, uri: string, diags_arg: list<d
 
   var bnr: number = DiagBufnr(lspserver.docBufnrs, uri)
   if bnr == -1
+    return
+  endif
+  if !bnr->bufloaded()
+    # Don't load a buffer just to display its diagnostics: loading it attaches
+    # it to the language servers again (e.g. clangd clears the diagnostics of
+    # a buffer closed by ":bdelete").
     return
   endif
 

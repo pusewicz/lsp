@@ -2834,6 +2834,15 @@ LspDetached			A |User| autocommand fired when a buffer is
 				attached to the language servers for its new
 				name), or when |LspDisable()| removes the
 				buffer from all the attached servers.
+				unloaded (e.g. by |:bdelete|, |:bunload| or
+				when reloading it with |:edit!|), wiped out,
+				when a buffer is renamed (with |:file| or
+				|:saveas|, after which it is attached to the
+				language servers for its new name), or when
+				|LspDisable()| removes the buffer from all the
+				attached servers.  When an unloaded buffer is
+				loaded again, it is attached to the language
+				servers again and |LspAttached| is fired.
 
 				This autocommand is fired once per buffer
 				after all attached language servers are
