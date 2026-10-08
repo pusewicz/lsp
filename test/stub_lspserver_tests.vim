@@ -5589,6 +5589,186 @@ def g:Test_LspOutline_KeepsBufferWithSimilarName()
   endtry
 enddef
 
+# Returns a language server that reports a Function symbol for each line
+# "void {name}(void) {}" of a document.
+def MakeOutlineServer(): dict<any>
+  var lspserver = MakeTestLspServer([])
+  lspserver.running = true
+  lspserver.ready = true
+  lspserver.isDocumentSymbolProvider = true
+  lspserver.rpc_a = (method: string, params: any, Cbfunc: func): number => {
+    var symbols: list<dict<any>> = []
+    var lines = util.LspUriToBufnr(params.textDocument.uri)->getbufline(1, '$')
+    for idx in range(lines->len())
+      var name: string = lines[idx]->matchstr('^void \zs\w\+')
+      if !name->empty()
+	var symRange = {start: {line: idx, character: 5},
+			end: {line: idx, character: 5 + name->len()}}
+	symbols->add({name: name, kind: 12, range: symRange,
+		      selectionRange: symRange->deepcopy()})
+      endif
+    endfor
+    Cbfunc(lspserver, symbols, {})
+    return 1
+  }
+  return lspserver
+enddef
+
+# Edits the file "fname" with the lines "lines" in the current window, with
+# the language server "lspserver" for it.  Returns the buffer number.
+def OutlineSrcEdit(lspserver: dict<any>, fname: string,
+		   lines: list<string>): number
+  exe $'silent edit {fname}'
+  setline(1, lines)
+  :setlocal nomodified filetype=text
+  buf.BufLspServerSet(bufnr(), lspserver)
+  return bufnr()
+enddef
+
+# Returns the numbers of the lines in the outline buffer "bnr" with the
+# highlight of the current symbol.
+def OutlineHighlightLnums(bnr: number): list<number>
+  return prop_list(1, {bufnr: bnr, end_lnum: -1,
+		       types: ['LspOutlineHighlight']})
+    ->map((_, p) => p.lnum)
+enddef
+
+# Test that the outline highlights the symbol at the cursor in the source
+# file, after it is updated and when the cursor is idle.
+def g:Test_LspOutline_HighlightCurrentSymbol()
+  var lspserver = MakeOutlineServer()
+  var srcBnr = -1
+  try
+    srcBnr = OutlineSrcEdit(lspserver, 'XOutlineHighlight.c',
+			    ['void aOutlineFunc(void) {}', '',
+			     'void bOutlineFunc(void) {}'])
+    cursor(3, 1)
+    :LspOutline
+    var outlineBnr: number = ScratchBufsInTab()[0]
+    assert_equal([6], OutlineHighlightLnums(outlineBnr))
+
+    cursor(1, 1)
+    :doautocmd CursorHold
+    assert_equal([5], OutlineHighlightLnums(outlineBnr))
+    cursor(2, 1)
+    :doautocmd CursorHold
+    assert_equal([], OutlineHighlightLnums(outlineBnr))
+  finally
+    buf.BufLspServerRemove(srcBnr, lspserver)
+    :%bw!
+  endtry
+enddef
+
+# Test that the outline, open in two tab pages for the same file, keeps the
+# cursor in both outline windows, and jumps to and highlights the symbols at
+# their current lines in both tab pages, after it is refreshed in one of them.
+def g:Test_LspOutline_InTwoTabPages_Refresh()
+  var lspserver = MakeOutlineServer()
+  var srcBnr = -1
+  try
+    srcBnr = OutlineSrcEdit(lspserver, 'XOutlineTabs.c',
+			    ['void aOutlineFunc(void) {}',
+			     'void bOutlineFunc(void) {}'])
+    :LspOutline
+    var outlineBnr: number = ScratchBufsInTab()[0]
+    var outlineWinids: list<number> = [outlineBnr->bufwinid()]
+    :tab split
+    :LspOutline
+    assert_equal([outlineBnr], ScratchBufsInTab())
+    outlineWinids->add(outlineBnr->bufwinid())
+    win_execute(outlineWinids[0], 'cursor(6, 1)')
+    win_execute(outlineWinids[1], 'cursor(5, 1)')
+
+    append(0, ['', ''])
+    g:LspRequestDocSymbols()
+    assert_equal(['Function@', '  aOutlineFunc', '  bOutlineFunc'],
+		 outlineBnr->getbufline(4, '$'))
+    assert_equal([6, 5], outlineWinids->mapnew((_, w) => getcurpos(w)[1]))
+
+    # [tab page, outline line to select, its source line, source line for
+    # the highlight, its outline line]
+    for [tabnr, selLnum, srcLnum, hlSrcLnum, hlLnum] in [[1, 6, 4, 3, 5],
+							  [2, 5, 3, 4, 6]]
+      var ctx = $'tab page {tabnr}'
+      exe $'tabnext {tabnr}'
+      var srcWinid = win_getid()
+      outlineWinids[tabnr - 1]->win_gotoid()
+      cursor(selLnum, 1)
+      exe "normal \<CR>"
+      assert_equal([srcWinid, srcLnum, 6], [win_getid(), line('.'), col('.')],
+		   ctx)
+
+      cursor(hlSrcLnum, 1)
+      :doautocmd CursorHold
+      assert_equal([hlLnum], OutlineHighlightLnums(outlineBnr), ctx)
+    endfor
+  finally
+    buf.BufLspServerRemove(srcBnr, lspserver)
+    :%bw!
+  endtry
+enddef
+
+# Test that opening the outline in a second tab page keeps the symbols that it
+# shows, until the language server replies.
+def g:Test_LspOutline_InTwoTabPages_KeepsSymbolsUntilReply()
+  var lspserver = MakeOutlineServer()
+  var srcBnr = -1
+  try
+    srcBnr = OutlineSrcEdit(lspserver, 'XOutlineTabs.c',
+			    ['', 'void aOutlineFunc(void) {}'])
+    :LspOutline
+    var outlineBnr: number = ScratchBufsInTab()[0]
+    var outlineLines: list<string> = outlineBnr->getbufline(1, '$')
+    lspserver.rpc_a = (method: string, params: any, Cbfunc: func): number => 1
+
+    :tab split
+    :LspOutline
+    assert_equal(outlineLines, outlineBnr->getbufline(1, '$'))
+    outlineBnr->bufwinid()->win_gotoid()
+    cursor(5, 1)
+    exe "normal \<CR>"
+    assert_equal([2, srcBnr, 2, 6],
+		 [tabpagenr(), bufnr(), line('.'), col('.')])
+  finally
+    buf.BufLspServerRemove(srcBnr, lspserver)
+    :%bw!
+  endtry
+enddef
+
+# Test that the outline, open in two tab pages for different files, jumps to
+# the file that it shows from the tab page where it was not refreshed.
+def g:Test_LspOutline_InTwoTabPages_OtherFile()
+  var lspserver = MakeOutlineServer()
+  var srcBnrs: list<number> = []
+  try
+    srcBnrs->add(OutlineSrcEdit(lspserver, 'XOutlineTabsA.c',
+				['void aOutlineFunc(void) {}']))
+    var srcWinid = win_getid()
+    :LspOutline
+    var outlineBnr: number = ScratchBufsInTab()[0]
+    outlineBnr->bufwinid()->win_gotoid()
+
+    :tabnew
+    srcBnrs->add(OutlineSrcEdit(lspserver, 'XOutlineTabsB.c',
+				['', 'void bOutlineFunc(void) {}']))
+    :LspOutline
+    assert_equal(['Function@', '  bOutlineFunc'],
+		 outlineBnr->getbufline(4, '$'))
+
+    :tabfirst
+    assert_equal(outlineBnr, bufnr())
+    cursor(5, 1)
+    exe "normal \<CR>"
+    assert_equal([1, srcWinid, 'XOutlineTabsB.c', 2, 6],
+		 [tabpagenr(), win_getid(), bufname(), line('.'), col('.')])
+  finally
+    for bnr in srcBnrs
+      buf.BufLspServerRemove(bnr, lspserver)
+    endfor
+    :%bw!
+  endtry
+enddef
+
 # Test that the hover text doesn't replace the text of a modified buffer of the
 # user in the preview window, which the preview window can't leave.
 def g:Test_HoverInPreview_KeepsModifiedPreviewBuffer()
