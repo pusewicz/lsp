@@ -111,7 +111,7 @@ def JumpToWorkspaceSymbol(lspserver: dict<any>, cmdmods: string,
 
     # if the selected file is already present in a window, then jump to it
     var fname: string = symTbl[result - 1].file
-    var bnr = fname->bufnr()
+    var bnr = util.BufnrExact(fname)
     if cmdmods->empty()
       var winList: list<number> = bnr->win_findbuf()
       if winList->empty()
@@ -129,7 +129,7 @@ def JumpToWorkspaceSymbol(lspserver: dict<any>, cmdmods: string,
 	if bufnr() != bnr
 	  # If the target buffer is opened in a window in the current tab
 	  # page, then use it.
-	  var winID = fname->bufwinid()
+	  var winID = bnr->bufwinid()
 	  if winID == -1
 	    # not present in the current tab page.  Use the first window.
 	    winID = winList[0]
@@ -293,10 +293,7 @@ def UpdatePeekFilePopup(lspserver: dict<any>, locations: list<dict<any>>)
   var [uri, range] = util.LspLocationParse(locations[n])
   var fname: string = util.LspUriToFile(uri)
 
-  var bnr: number = fname->bufnr()
-  if bnr == -1
-    bnr = fname->bufadd()
-  endif
+  var bnr: number = fname->bufadd()
 
   var popupAttrs = opt.PopupConfigure('Peek', {
     title: $"{fname->fnamemodify(':t')} ({fname->fnamemodify(':h')})",
@@ -375,10 +372,7 @@ def PeekLocations(lspserver: dict<any>, locations: list<dict<any>>,
   for loc in locations
     var [uri, range] = util.LspLocationParse(loc)
     var fname: string = util.LspUriToFile(uri)
-    var bnr: number = fname->bufnr()
-    if bnr == -1
-      bnr = fname->bufadd()
-    endif
+    var bnr: number = fname->bufadd()
     :silent! bnr->bufload()
 
     var lnum = range.start.line + 1
@@ -427,10 +421,7 @@ export def ShowLocations(lspserver: dict<any>, locations: list<dict<any>>,
   for loc in locations
     var [uri, range] = util.LspLocationParse(loc)
     var fname: string = util.LspUriToFile(uri)
-    var bnr: number = fname->bufnr()
-    if bnr == -1
-      bnr = fname->bufadd()
-    endif
+    var bnr: number = fname->bufadd()
     :silent! bnr->bufload()
     var rstart = range.start
     var text: string = bnr->getbufline(rstart.line + 1)->get(0, '')->trim("\t ", 1)
@@ -667,7 +658,7 @@ export def DocSymbolOutline(lspserver: dict<any>, docSymbol: any,
     return
   endif
 
-  var bnr = fname->bufnr()
+  var bnr = util.BufnrExact(fname)
   var symbolTypeTable: dict<list<dict<any>>> = {}
   var symbolLineTable: list<dict<any>> = []
 
@@ -1050,7 +1041,7 @@ export def DocSymbolPopup(lspserver: dict<any>, docSymbol: any,
     return
   endif
 
-  var bnr = fname->bufnr()
+  var bnr = util.BufnrExact(fname)
 
   if docSymbol[0]->has_key('location')
     # SymbolInformation[]
