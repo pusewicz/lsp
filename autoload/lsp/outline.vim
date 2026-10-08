@@ -100,6 +100,10 @@ def OutlineWinid(): number
   return outlineBufnr->bufwinid()
 enddef
 
+# Adds the outline lines for the symbols in "symbolTypeTable" of the buffer
+# "bnr" to "text", grouped by kind in the order of the LSP SymbolKind numbers,
+# and the location for each line to "lnumMap".  "children" is true for the
+# children of a symbol, whose line is indented by "pfx".
 def AddSymbolText(bnr: number,
 			symbolTypeTable: dict<list<dict<any>>>,
 			pfx: string,
@@ -107,7 +111,10 @@ def AddSymbolText(bnr: number,
 			lnumMap: list<dict<any>>,
 			children: bool)
   var prefix: string = pfx .. '  '
-  for [symType, symbols] in symbolTypeTable->items()
+  var symTypes: list<string> = symbolTypeTable->keys()
+    ->sort((a, b) => symbolTypeTable[a][0].kind - symbolTypeTable[b][0].kind)
+  for symType in symTypes
+    var symbols: list<dict<any>> = symbolTypeTable[symType]
     if !children
       # Add an empty line for the top level symbol types. For types in the
       # children symbols, don't add the empty line.
@@ -153,79 +160,75 @@ export def UpdateOutlineWindow(fname: string,
 
   var fullFname: string = fname->fnamemodify(':p')
   var prevWinID: number = win_getid()
-  wid->win_gotoid()
+  try
+    wid->win_gotoid()
 
-  # if the file displayed in the outline buffer is same as the new file, then
-  # save and restore the cursor position in each window showing it
-  var savedCursors: list<list<any>> = []
-  if b:->get('lspSymbols', {})->get('filename', '') == fullFname
-    savedCursors = outlineBufnr->win_findbuf()
-      ->mapnew((_, winid) => [winid, getcurpos(winid)])
-  endif
+    # if the file displayed in the outline buffer is same as the new file,
+    # then save and restore the cursor position in each window showing it
+    var savedCursors: list<list<any>> = []
+    if b:->get('lspSymbols', {})->get('filename', '') == fullFname
+      savedCursors = outlineBufnr->win_findbuf()
+	->mapnew((_, winid) => [winid, getcurpos(winid)])
+    endif
 
-  :setlocal modifiable
-  deletebufline('', 1, '$')
-  setline(1, ['# LSP Outline View',
-		$'# {fname->fnamemodify(":t")} ({fname->fnamemodify(":h")})'])
+    :setlocal modifiable
+    deletebufline('', 1, '$')
+    setline(1, ['# LSP Outline View',
+		  $'# {fname->fnamemodify(":t")} ({fname->fnamemodify(":h")})'])
 
-  # First two lines in the buffer display comment information
-  var lnumMap: list<dict<any>> = [{}, {}]
-  var text: list<string> = []
-  AddSymbolText(util.BufnrExact(fname), symbolTypeTable, '', text, lnumMap,
-		false)
-  text->append('$')
-  b:lspSymbols = {
-    filename: fullFname,
-    lnumTable: lnumMap,
-    symbolsByLine: symbolLineTable
-  }
-  :setlocal nomodifiable
+    # First two lines in the buffer display comment information
+    var lnumMap: list<dict<any>> = [{}, {}]
+    var text: list<string> = []
+    AddSymbolText(util.BufnrExact(fname), symbolTypeTable, '', text, lnumMap,
+		  false)
+    text->append('$')
+    b:lspSymbols = {
+      filename: fullFname,
+      lnumTable: lnumMap,
+      symbolsByLine: symbolLineTable
+    }
+    :setlocal nomodifiable
 
-  for [winid, curpos] in savedCursors
-    win_execute(winid, $'setpos(".", {curpos})')
-  endfor
+    for [winid, curpos] in savedCursors
+      win_execute(winid, $'setpos(".", {curpos})')
+    endfor
 
-  if exists('#User#LspOutlineUpdated')
-    :doautocmd <nomodeline> User LspOutlineUpdated
-  endif
-
-  prevWinID->win_gotoid()
+    if exists('#User#LspOutlineUpdated')
+      :doautocmd <nomodeline> User LspOutlineUpdated
+    endif
+  finally
+    # Go back before re-enabling refreshing the outline window.  After an
+    # exception thrown by an autocmd, the autocmds for going back end the
+    # finally block, so re-enable it in a finally block of its own.
+    try
+      prevWinID->win_gotoid()
+    finally
+      skipRefresh = false
+    endtry
+  endtry
 
   # Highlight the current symbol
   OutlineHighlightCurrentSymbol()
-
-  # re-enable refreshing the outline window
-  skipRefresh = false
 enddef
 
-# Search for the symbol corresponding to the line 'lnum' in the symbol table.
-# A symbol (e.g. a function) spans multiple lines.
+# Returns the index of the innermost symbol in "symbolTable" whose range
+# contains the line "lnum", the last one of those with the fewest lines, or -1
+# when there is none.  The symbols are sorted by their start line.
 def FindSymbolForLine(symbolTable: list<dict<any>>, lnum: number): number
-  var left = 0
-  var right = symbolTable->len() - 1
-  var mid: number
-
-  # binary search
-  while left <= right
-    mid = (left + right) / 2
-    var r = symbolTable[mid].range
-    if lnum >= (r.start.line + 1) && lnum <= (r.end.line + 1)
-      # symbol found
-      return mid
+  var found: number = -1
+  var foundLineCount: number = 0
+  for idx in range(symbolTable->len())
+    var r: dict<dict<number>> = symbolTable[idx].range
+    if r.start.line + 1 > lnum
+      break
     endif
-    if lnum > (r.start.line + 1)
-      left = mid + 1
-    else
-      right = mid - 1
+    var lineCount: number = r.end.line - r.start.line + 1
+    if lnum <= r.end.line + 1 && (found == -1 || lineCount <= foundLineCount)
+      found = idx
+      foundLineCount = lineCount
     endif
-  endwhile
-
-  # symbol not found
-  if left > right
-    return -1
-  else
-    return mid
-  endif
+  endfor
+  return found
 enddef
 
 def OutlineHighlightCurrentSymbol()
@@ -290,7 +293,8 @@ def OutlineShowSymbolDetail(lnum: number)
 
   var idx = symbolTable->indexof((_, v) => v.outlineLine == lnum)
   if idx != -1
-    echo $'{symbolTable[idx].name}: {symbolTable[idx].detail}'
+    var symbol: dict<any> = symbolTable[idx]
+    echo symbol.name .. (symbol.detail->empty() ? '' : $': {symbol.detail}')
   else
     echo ''
   endif

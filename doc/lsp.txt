@@ -868,7 +868,9 @@ entire workspace.
 			The window header shows shows the file name and its
 			parent directory.  Symbols are grouped under their
 			kind (e.g., Function, Variable) and nested children
-			are indented below their parent kind.  Folds are
+			are indented below their parent kind.  The kinds are
+			in the order of their LSP SymbolKind numbers, e.g.
+			Class, Method, Field, Function, Variable.  Folds are
 			created using indent-based folding; up to four levels
 			are expanded by default.
 

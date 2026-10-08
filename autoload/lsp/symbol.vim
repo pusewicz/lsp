@@ -573,19 +573,20 @@ export def TagFunc(lspserver: dict<any>,
 enddef
 
 # process SymbolInformation[]
+# A SymbolInformation has no selection range, detail or children.  Give its
+# entry the fields of the entry of a DocumentSymbol, with its location range
+# as the selection range.
 def ProcessSymbolInfoTable(lspserver: dict<any>,
 			   bnr: number,
 			   symbolInfoTable: list<dict<any>>,
 			   symbolTypeTable: dict<list<dict<any>>>,
 			   symbolLineTable: list<dict<any>>)
-  var fname: string
   var symbolType: string
   var name: string
   var r: dict<dict<number>>
   var symInfo: dict<any>
 
   for syminfo in symbolInfoTable
-    fname = util.LspUriToFile(syminfo.location.uri)
     symbolType = SymbolKindToName(syminfo.kind)
     name = syminfo.name
     if syminfo->has_key('containerName')
@@ -599,7 +600,14 @@ def ProcessSymbolInfoTable(lspserver: dict<any>,
     if !symbolTypeTable->has_key(symbolType)
       symbolTypeTable[symbolType] = []
     endif
-    symInfo = {name: name, range: r}
+    symInfo = {
+      name: name,
+      kind: syminfo.kind,
+      range: r,
+      selectionRange: r,
+      detail: '',
+      children: {}
+    }
     symbolTypeTable[symbolType]->add(symInfo)
     symbolLineTable->add(symInfo)
   endfor
@@ -637,6 +645,7 @@ def ProcessDocSymbolTable(lspserver: dict<any>,
     endif
     symInfo = {
       name: name,
+      kind: syminfo.kind,
       range: range,
       selectionRange: selectionRange,
       detail: symbolDetail,
@@ -685,18 +694,18 @@ enddef
 
 # Process the list of symbols (LSP interface "SymbolInformation") in
 # "symbolInfoTable". For each symbol, create the name to display in the popup
-# menu along with the symbol range and return the List.
+# menu along with the symbol range and return the List.  The symbol range is
+# also the selection range, as a SymbolInformation has none.
 def GetSymbolsInfoTable(lspserver: dict<any>,
 			bnr: number,
 			symbolInfoTable: list<dict<any>>): list<dict<any>>
   var symbolTable: list<dict<any>> = []
   var symbolType: string
   var name: string
-  var containerName: string
   var r: dict<dict<number>>
 
   for syminfo in symbolInfoTable
-    symbolType = SymbolKindToName(syminfo.kind)
+    symbolType = SymbolKindToName(syminfo.kind)->tolower()
     name = $'{symbolType} : {syminfo.name}'
     if syminfo->has_key('containerName') && !syminfo.containerName->empty()
       name ..= $' [{syminfo.containerName}]'
@@ -704,7 +713,7 @@ def GetSymbolsInfoTable(lspserver: dict<any>,
     r = syminfo.location.range
     lspserver.decodeRange(bnr, r)
 
-    symbolTable->add({name: name, range: r, selectionRange: {}})
+    symbolTable->add({name: name, range: r, selectionRange: r})
   endfor
 
   return symbolTable
@@ -781,11 +790,7 @@ def SymbolHighlight(symTbl: list<dict<any>>, symIdx: number)
   cursor(r.start.line + 1, 1)
   :normal! z.
 
-  var sr = symTbl[symIdx].selectionRange
-  if sr->empty()
-    return
-  endif
-  RangePropAdd('LspSymbolNameProp', sr)
+  RangePropAdd('LspSymbolNameProp', symTbl[symIdx].selectionRange)
 enddef
 
 # Callback invoked when an item is selected in the symbol popup menu
@@ -812,10 +817,6 @@ def SymbolMenuItemSelected(symPopupMenu: number,
 
     # Jump to the selected symbol location
     var r = symTblFiltered[result - 1].selectionRange
-    if r->empty()
-      # SymbolInformation doesn't have the selectionRange field
-      r = symTblFiltered[result - 1].range
-    endif
     setcursorcharpos(r.start.line + 1,
 		     util.GetCharIdxWithoutCompChar(bufnr(), r.start) + 1)
     :normal! zv
