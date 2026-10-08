@@ -905,21 +905,14 @@ enddef
 
 # Check if completion item is selected
 def CheckCompletionItemSel(label: string): bool
-  var cInfo = complete_info()
-  if cInfo->empty() || !cInfo.pum_visible || cInfo.selected == -1
+  # Only the selected item: for "items", complete_info() makes a dict for
+  # every item in the menu.
+  var cInfo = complete_info(['pum_visible', 'selected', 'completed'])
+  if !cInfo.pum_visible || cInfo.selected == -1
     return false
   endif
 
-  if cInfo.selected >= cInfo.items->len()
-    return false
-  endif
-
-  var selItem = cInfo.items[cInfo.selected]
-  if selItem->type() != v:t_dict
-    return false
-  endif
-
-  var userData = selItem->get('user_data', v:none)
+  var userData = cInfo->get('completed', {})->get('user_data', v:none)
   if userData->type() != v:t_dict
     return false
   endif
