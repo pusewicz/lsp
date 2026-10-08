@@ -14,6 +14,7 @@ import '../autoload/lsp/buffer.vim' as buf
 import '../autoload/lsp/ontypeformat.vim' as ontypeformat
 import '../autoload/lsp/textedit.vim' as textedit
 import '../autoload/lsp/hover.vim' as hover
+import '../autoload/lsp/options.vim' as opt
 
 def CaptureNotification(notifications: list<dict<any>>, method: string,
 			params: any = {}): void
@@ -2295,7 +2296,7 @@ def g:Test_TextdocDidChange_IncrementalSync_MultiHunkDeleteAppliesBottomUp()
   # Regression test for #836: ":%d" produces two diff hunks; emitting them
   # top-down sends the second hunk's range against a document already
   # shrunk by the first, desyncing the server.
-  if !exists('*diff')
+  if !opt.incrementalSyncSupported
     # incrementalSync needs diff(); options.OptionsSet() forces it back off
     # without it, same as the plugin itself falling back to full sync.
     return
@@ -2331,7 +2332,7 @@ def g:Test_TextdocDidChange_IncrementalSync_MultiHunkDeleteAppliesBottomUp()
 enddef
 
 def g:Test_TextdocDidChange_IncrementalSync_MultiHunkInsertDescendingOrder()
-  if !exists('*diff')
+  if !opt.incrementalSyncSupported
     return
   endif
   g:LspOptionsSet({incrementalSync: true})
@@ -2365,7 +2366,7 @@ def g:Test_TextdocDidChange_IncrementalSync_NoEolAnchorsToLastLineEnd()
   # Regression test: without a trailing newline, a hunk reaching the end of
   # the document must anchor to the end of the last line, not to a
   # {line: lineCount, character: 0} position that doesn't exist.
-  if !exists('*diff')
+  if !opt.incrementalSyncSupported
     return
   endif
   g:LspOptionsSet({incrementalSync: true})
@@ -2396,7 +2397,7 @@ enddef
 # Without a trailing newline, a hunk whose new text is a single empty last
 # line still adds a line break, so it must not be sent as an empty change.
 def g:Test_TextdocDidChange_IncrementalSync_NoEolEmptyLastLine()
-  if !exists('*diff')
+  if !opt.incrementalSyncSupported
     return
   endif
   g:LspOptionsSet({incrementalSync: true})
@@ -2481,7 +2482,7 @@ enddef
 # one when 'fixendofline' is set, so a line appended after the last one comes
 # after that newline in the server's document.
 def g:Test_TextdocDidChange_IncrementalSync_FixEolAppendLine()
-  if !exists('*diff')
+  if !opt.incrementalSyncSupported
     return
   endif
   g:LspOptionsSet({incrementalSync: true})
@@ -2511,7 +2512,7 @@ enddef
 # a newline without changing any line, so the next change resends the full
 # text instead of a diff against the cached document.
 def g:Test_TextdocDidChange_IncrementalSync_WriteRuleToggleSendsFullText()
-  if !exists('*diff')
+  if !opt.incrementalSyncSupported
     return
   endif
   g:LspOptionsSet({incrementalSync: true})

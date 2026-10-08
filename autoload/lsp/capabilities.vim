@@ -69,7 +69,7 @@ export def ProcessServerCaps(lspserver: dict<any>, caps: dict<any>)
     endif
   endif
   if lspserver.textDocumentSync == protocol.TextDocumentSyncKindIncremental
-	&& !exists('*diff')
+	&& !opt.incrementalSyncSupported
     # Incremental sync needs the diff() function.  If it is not supported,
     # then fallback to full sync.
     lspserver.textDocumentSync = protocol.TextDocumentSyncKindFull
