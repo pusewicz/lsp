@@ -5,4 +5,7 @@ test/X*.c
 test/X*.cpp
 # test/Xtest.c
 # test/Xtest.cpp
-test/results.txt
+test/results*.txt
+
+# Output of test/docker/run_tests.sh
+test/docker/logs/

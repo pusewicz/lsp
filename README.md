@@ -245,6 +245,19 @@ Command|Description
 
 For code actions, when multiple servers return actions, the menu shows one merged list. If duplicate action titles exist, the source server label is shown only for those duplicate-title entries. The selected action is resolved/executed by the server that provided it.
 
+## Running the Tests
+
+The tests need the language servers that the GitHub Actions workflow installs. To run them locally in the same environment, on the same Vim versions and in parallel, use Docker:
+
+```sh
+test/docker/run_tests.sh                       # the whole suite on Vim nightly and v9.0.0000
+test/docker/run_tests.sh clangd_tests.vim      # only some test files
+test/docker/run_tests.sh -v v9.0.0000          # only one Vim version
+test/docker/run_tests.sh --shell -v v9.0.0000  # a shell in the test environment
+```
+
+The first run builds an image per Vim version, which takes a few minutes. Together the images take about 3.5 GB of disk space. Later runs rebuild Vim nightly only when it has changed, and `--refresh` rebuilds the images with the latest language servers, which CI installs on every run. The tests run on a copy of the working tree, and the output for each version goes to `test/docker/logs/`. See `test/docker/run_tests.sh --help` for the details.
+
 ## Similar Vim LSP Plugins
 
 1. [vim-lsp: Async Language Server Protocol](https://github.com/prabirshrestha/vim-lsp)
