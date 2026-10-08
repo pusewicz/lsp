@@ -1051,6 +1051,92 @@ def g:Test_ProcessNotif_PublishDiagnostics_NotIgnoredForPullCapableServer()
   :%bw!
 enddef
 
+# Return a textDocument/publishDiagnostics notification for "uri" with a
+# diagnostic on the first line for each of "messages".
+def PublishDiagsNotif(uri: string, messages: list<string>): dict<any>
+  return {
+    jsonrpc: '2.0',
+    method: 'textDocument/publishDiagnostics',
+    params: {
+      uri: uri,
+      diagnostics: messages->mapnew((_, msg) => MakeLineDiag(0, msg))
+    }
+  }
+enddef
+
+# Test that the diagnostics published for a document open on the language
+# server reach its buffer through the URI it was opened with, also when the
+# server escapes that URI differently, without looking up a buffer by its
+# file name.  The URIs name a file without a buffer, so that only the
+# documents open on the server lead to the buffer.
+def g:Test_PublishDiagnostics_FoundByOpenDocumentUri()
+  g:LspOptionsSet({autoHighlightDiags: false})
+  silent! edit XDiagOpenDocument.c
+  var bnr = bufnr()
+  var lspserver = MakeDiagServer('srv')
+  var fname = '/XDiagNoSuchDir/a+b[1] c.c'
+  var uri = util.LspFileToUri(fname)
+  lspserver.docBufnrs[uri] = bnr
+
+  for publishedUri in [uri, 'file:///XDiagNoSuchDir/a+b%5b1%5d%20c.c']
+    handlers.ProcessNotif(lspserver,
+      PublishDiagsNotif(publishedUri, [publishedUri]))
+    assert_equal([publishedUri], DiagMsgs(diag.GetDiagsForBuf(bnr)))
+  endfor
+  assert_false(fname->bufexists())
+
+  diag.DiagRemoveFile(bnr)
+  g:LspOptionsSet({autoHighlightDiags: true})
+  :%bw!
+enddef
+
+# Test that the diagnostics published for a document that isn't open on the
+# language server reach the buffer with its file name: a document never
+# opened, a closed document (a server clears the diagnostics of a document
+# when it is closed) and one whose buffer in the open documents is gone.  The
+# diagnostics for a file without a buffer are dropped, without adding one.
+def g:Test_PublishDiagnostics_UnopenedDocumentFoundByFileName()
+  g:LspOptionsSet({autoHighlightDiags: false})
+  var lspserver = MakeDiagServer('srv')
+
+  silent! edit XDiagNotOpened.c
+  var notOpened = bufnr()
+  var notOpenedUri = util.LspBufnrToUri(notOpened)
+  handlers.ProcessNotif(lspserver,
+    PublishDiagsNotif(notOpenedUri, ['not opened']))
+  assert_equal(['not opened'], DiagMsgs(diag.GetDiagsForBuf(notOpened)))
+
+  silent! edit XDiagClosed.c
+  var closed = bufnr()
+  var closedUri = util.LspBufnrToUri(closed)
+  lspserver.textdocDidOpen(closed, 'c')
+  handlers.ProcessNotif(lspserver, PublishDiagsNotif(closedUri, ['open']))
+  assert_equal(['open'], DiagMsgs(diag.GetDiagsForBuf(closed)))
+  lspserver.textdocDidClose(closed)
+  assert_false(lspserver.docBufnrs->has_key(closedUri))
+  handlers.ProcessNotif(lspserver, PublishDiagsNotif(closedUri, []))
+  assert_equal([], diag.GetDiagsForBuf(closed))
+
+  silent! edit XDiagWipedOut.c
+  var wipedOut = bufnr()
+  :bwipeout!
+  lspserver.docBufnrs[notOpenedUri] = wipedOut
+  handlers.ProcessNotif(lspserver,
+    PublishDiagsNotif(notOpenedUri, ['stale open document']))
+  assert_equal(['stale open document'],
+    DiagMsgs(diag.GetDiagsForBuf(notOpened)))
+
+  var noBuffer = 'XDiagNoBuffer.c'->fnamemodify(':p')
+  handlers.ProcessNotif(lspserver,
+    PublishDiagsNotif(util.LspFileToUri(noBuffer), ['no buffer']))
+  assert_false(noBuffer->bufexists())
+
+  diag.DiagRemoveFile(notOpened)
+  diag.DiagRemoveFile(closed)
+  g:LspOptionsSet({autoHighlightDiags: true})
+  :%bw!
+enddef
+
 # Define stub ALE "other source" functions that record their calls in
 # g:LspTestAleCalls, and send the diagnostics to them.  Returns the directory
 # to pass to RemoveAleStub().
