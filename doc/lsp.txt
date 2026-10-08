@@ -893,6 +893,11 @@ entire workspace.
 			different file updates the outline window with the
 			symbols for the new file.
 
+			The outline windows in all the tab pages show the
+			same outline buffer, with the symbols of the file it
+			was last updated for.  Selecting a symbol in any of
+			them jumps to that file.
+
 			You can use |lsp-opt-outlineOnRight| and
 			|lsp-opt-outlineWinSize| to customize the placement
 			and size of the window.
