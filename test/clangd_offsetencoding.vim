@@ -105,6 +105,39 @@ def g:Test_LspDocumentLink_multibyte()
   delete('Xdoclink😊.h')
 enddef
 
+# Returns [type, lnum, col, length] of the text properties highlighting the
+# range and the name of the symbol selected in the :LspDocumentSymbol popup.
+def SymbolHighlightProps(): list<list<any>>
+  return prop_list(1, {end_lnum: line('$'),
+		       types: ['LspSymbolRangeProp', 'LspSymbolNameProp']})
+	->mapnew((_, p) => [p.type, p.lnum, p.col, p.length])
+enddef
+
+# Test for highlighting the range and the name of the selected symbol in the
+# :LspDocumentSymbol popup when using multibyte and composing characters
+def g:Test_LspDocumentSymbol_multibyte()
+  :silent! edit XLspDocumentSymbol_mb.c
+  sleep 200m
+  setline(1, ['/* ééé */ int 😊😊 = 1;', "/* 😊 */ int a\u0301b\u0301 = 2;"])
+  g:WaitForServerFileLoad(0)
+
+  var expected: list<list<list<any>>> = [
+    [['LspSymbolRangeProp', 1, 14, 16], ['LspSymbolNameProp', 1, 18, 8]],
+    [['LspSymbolRangeProp', 2, 12, 14], ['LspSymbolNameProp', 2, 16, 6]]
+  ]
+  for lnum in [1, 2]
+    cursor(lnum, 1)
+    :LspDocumentSymbol
+    g:WaitForAssert(() => assert_equal(expected[lnum - 1],
+				       SymbolHighlightProps()))
+    feedkeys("\<Esc>", 'xt')
+    assert_equal([], SymbolHighlightProps())
+  endfor
+
+  popup_clear()
+  :%bw!
+enddef
+
 def g:Test_LspFormat_multibyte()
   :silent! edit XLspFormat_mb.c
   sleep 200m
