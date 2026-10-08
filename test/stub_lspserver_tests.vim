@@ -3399,6 +3399,270 @@ def g:Test_ApplyWorkspaceEdit_CreateExistingFile()
   endtry
 enddef
 
+# Returns a RenameFile operation renaming file "from" to "to".
+def MakeRename(from: string, to: string, options: dict<bool> = {}): dict<any>
+  return {kind: 'rename', oldUri: util.LspFileToUri(from),
+	  newUri: util.LspFileToUri(to), options: options}
+enddef
+
+# Renaming a file renames its loaded buffer, which keeps its text and undo
+# history, so that the text edits that follow apply to it.  The buffer can be
+# written with ":write" without "!".
+def g:Test_ApplyWorkspaceEdit_RenameLoadedBuffer()
+  var from = 'XWorkspaceEditRenameFrom.txt'
+  var to = 'XWorkspaceEditRenameTo.txt'
+  var renameAndEdit = {documentChanges: [
+    MakeRename(from, to),
+    MakeInsertEdit(util.LspFileToUri(to), "new\n")
+  ]}
+  try
+    writefile(['one'], from)
+    exe $'edit {from}'
+    var bnr = bufnr()
+    setline(1, 'two')
+    write
+    textedit.ApplyWorkspaceEdit(renameAndEdit)
+    assert_false(filereadable(from))
+    assert_equal(['two'], readfile(to))
+    assert_equal(bnr, bufnr())
+    assert_equal(fnamemodify(to, ':p'), expand('%:p'))
+    assert_false(bufexists(fnamemodify(from, ':p')))
+    assert_equal(['new', 'two'], getline(1, '$'))
+    write
+    assert_equal(['new', 'two'], readfile(to))
+    silent undo 0
+    assert_equal(['one'], getline(1, '$'))
+    :%bwipe!
+
+    rename(to, from)
+    bnr = bufadd(from)
+    bufload(bnr)
+    ApplyResourceOp(MakeRename(from, to))
+    assert_equal(['new', 'two'], readfile(to))
+    assert_equal(fnamemodify(to, ':p'), bnr->getbufinfo()[0].name)
+    assert_true(bufloaded(bnr))
+    assert_equal([], win_findbuf(bnr))
+    assert_false(bufexists(fnamemodify(from, ':p')))
+  finally
+    delete(from)
+    delete(to)
+    :%bwipe!
+  endtry
+enddef
+
+# The buffer of a renamed file keeps its unsaved changes, without writing
+# them.
+def g:Test_ApplyWorkspaceEdit_RenameModifiedBuffer()
+  var from = 'XWorkspaceEditRenameModified.txt'
+  var to = 'XWorkspaceEditRenameModifiedTo.txt'
+  try
+    writefile(['saved'], from)
+    var bnr = bufadd(from)
+    bufload(bnr)
+    setbufline(bnr, 1, 'unsaved')
+    ApplyResourceOp(MakeRename(from, to))
+    assert_false(filereadable(from))
+    assert_equal(['saved'], readfile(to))
+    assert_equal(fnamemodify(to, ':p'), bnr->getbufinfo()[0].name)
+    assert_equal(['unsaved'], getbufline(bnr, 1, '$'))
+    assert_true(getbufvar(bnr, '&modified'))
+  finally
+    delete(from)
+    delete(to)
+    :%bwipe!
+  endtry
+enddef
+
+# Renaming a file over one whose buffer is loaded replaces that buffer, in
+# its windows too, unless the buffer has unsaved changes.
+def g:Test_ApplyWorkspaceEdit_RenameOverLoadedBuffer()
+  var from = 'XWorkspaceEditRenameOverFrom.txt'
+  var to = 'XWorkspaceEditRenameOverTo.txt'
+  var rename = MakeRename(from, to, {overwrite: true})
+  try
+    writefile(['from'], from)
+    writefile(['to'], to)
+    exe $'edit {to}'
+    var tbnr = bufnr()
+    setline(1, 'unsaved')
+    ApplyResourceOp(rename)
+    assert_equal('Error: File rename failed, '
+		 .. $'{fnamemodify(to, ":p")} has unsaved changes', LastMessage())
+    assert_equal(['from'], readfile(from))
+    assert_equal(['to'], readfile(to))
+    assert_equal(['unsaved'], getline(1, '$'))
+
+    edit!
+    ApplyResourceOp(rename)
+    assert_false(filereadable(from))
+    assert_equal(['from'], readfile(to))
+    assert_false(bufexists(tbnr))
+    assert_equal(1, winnr('$'))
+    assert_equal(fnamemodify(to, ':p'), expand('%:p'))
+    assert_equal(['from'], getline(1, '$'))
+  finally
+    delete(from)
+    delete(to)
+    :%bwipe!
+  endtry
+enddef
+
+# Renaming a file to one that exists fails, unless "overwrite" or
+# "ignoreIfExists" is set, and so does renaming a file that does not exist.
+def g:Test_ApplyWorkspaceEdit_RenameExistingFile()
+  var from = 'XWorkspaceEditRenameExistingFrom.txt'
+  var to = 'XWorkspaceEditRenameExistingTo.txt'
+  try
+    writefile(['from'], from)
+    writefile(['to'], to)
+    ApplyResourceOp(MakeRename(from, to))
+    assert_equal('Error: File rename failed, '
+		 .. $'{fnamemodify(to, ":p")} already exists', LastMessage())
+    assert_equal(['from'], readfile(from))
+    assert_equal(['to'], readfile(to))
+
+    var messages = execute('messages')
+    ApplyResourceOp(MakeRename(from, to, {ignoreIfExists: true}))
+    assert_equal(messages, execute('messages'))
+    assert_equal(['from'], readfile(from))
+    assert_equal(['to'], readfile(to))
+
+    ApplyResourceOp(MakeRename(from, to,
+			       {overwrite: true, ignoreIfExists: true}))
+    assert_equal(messages, execute('messages'))
+    assert_false(filereadable(from))
+    assert_equal(['from'], readfile(to))
+
+    ApplyResourceOp(MakeRename(from, to, {overwrite: true}))
+    assert_equal('Error: File rename failed, '
+		 .. $'{fnamemodify(from, ":p")} does not exist', LastMessage())
+  finally
+    delete(from)
+    delete(to)
+    :%bwipe!
+  endtry
+enddef
+
+# Renaming a directory renames the buffers of the files in it.  The parent
+# of the new directory is created if needed.
+def g:Test_ApplyWorkspaceEdit_RenameDirectory()
+  var from = 'XWorkspaceEditRenameDir'
+  var parent = 'XWorkspaceEditRenameParent'
+  var to = $'{parent}/Dir'
+  try
+    mkdir($'{from}/sub', 'p')
+    writefile(['a'], $'{from}/sub/a.txt')
+    writefile(['b'], $'{from}/b.txt')
+    var abnr = bufadd($'{from}/sub/a.txt')
+    bufload(abnr)
+    var bbnr = bufadd($'{from}/b.txt')
+    setbufvar(bbnr, '&buflisted', true)
+    ApplyResourceOp(MakeRename(from, to))
+    assert_false(isdirectory(from))
+    assert_equal(['a'], readfile($'{to}/sub/a.txt'))
+    assert_equal(['b'], readfile($'{to}/b.txt'))
+    assert_equal(fnamemodify($'{to}/sub/a.txt', ':p'),
+		 abnr->getbufinfo()[0].name)
+    assert_equal(['a'], getbufline(abnr, 1, '$'))
+    assert_false(bufexists(bbnr))
+    assert_true(bufadd($'{to}/b.txt')->buflisted())
+  finally
+    delete(from, 'rf')
+    delete(parent, 'rf')
+    :%bwipe!
+  endtry
+enddef
+
+# A buffer renamed with its file is detached from the language servers for
+# its old name, which are notified that the document was closed.
+def g:Test_ApplyWorkspaceEdit_RenameDetachesBuffer()
+  var from = 'XWorkspaceEditRenameDetach.txt'
+  var to = 'XWorkspaceEditRenameDetachTo.txt'
+  var notifications: list<dict<any>> = []
+  try
+    writefile(['text'], from)
+    exe $'edit {from}'
+    var bnr = bufnr()
+    var srv = MakeTestLspServer(notifications)
+    srv.running = true
+    srv.supportsDidOpenClose = true
+    buf.BufLspServerSet(bnr, srv)
+    ApplyResourceOp(MakeRename(from, to))
+    assert_equal([{method: 'textDocument/didClose',
+		   params: {textDocument: {uri: util.LspFileToUri(from)}}}],
+		 notifications)
+    assert_equal(0, buf.BufLspServersGet(bnr)->len())
+  finally
+    delete(from)
+    delete(to)
+    :%bwipe!
+  endtry
+enddef
+
+# Returns what renaming a hidden buffer in a hidden popup window could change.
+def RenameHiddenState(): dict<any>
+  return {winid: win_getid(), layout: winlayout(), alt: bufnr('#'),
+	  jumps: getjumplist(), curpos: getcurpos(), modified: &modified,
+	  popups: popup_list()}
+enddef
+
+# A hidden buffer is renamed with its file in a hidden popup window that
+# leaves no trace: only the autocommands for renaming the buffer are
+# triggered, the buffer stays loaded whatever its 'bufhidden' is, and the
+# windows, the alternate file, the jumps and the cursor stay as they are.
+def g:Test_ApplyWorkspaceEdit_RenameHiddenBufferLeavesNoTrace()
+  var from = 'XWorkspaceEditRenameHidden.txt'
+  var to = 'XWorkspaceEditRenameHiddenTo.txt'
+  silent! edit XWorkspaceEditRenameHiddenAlt.txt
+  silent! edit XWorkspaceEditRenameHiddenCur.txt
+  setline(1, ['a', 'b', 'c'])
+  :normal! G
+  g:RenameHiddenEvents = []
+  augroup XRenameHidden
+    for ev in ['BufAdd', 'BufNew', 'BufEnter', 'BufLeave', 'BufWinEnter',
+	       'BufWinLeave', 'BufHidden', 'BufUnload', 'BufDelete',
+	       'BufWipeout', 'BufReadPre', 'BufReadPost', 'BufWritePre',
+	       'BufWritePost', 'BufFilePre', 'BufFilePost', 'WinNew',
+	       'WinEnter', 'WinLeave', 'WinClosed', 'OptionSet', 'TextChanged',
+	       'CursorMoved']
+      exe $'autocmd {ev} * g:RenameHiddenEvents->add("{ev}")'
+    endfor
+  augroup END
+  # OptionSet is not triggered while Vim is starting
+  test_override('starting', 1)
+  try
+    for bufhidden in ['', 'hide', 'unload', 'delete', 'wipe']
+      writefile(['text'], from)
+      var bnr = bufadd(from)
+      bnr->bufload()
+      # Setting the option shows that the autocommands are triggered.
+      g:RenameHiddenEvents = []
+      setbufvar(bnr, '&bufhidden', bufhidden)
+      assert_equal(['OptionSet'], g:RenameHiddenEvents)
+      g:RenameHiddenEvents = []
+      var before = RenameHiddenState()
+      ApplyResourceOp(MakeRename(from, to))
+      var msg = $'bufhidden={bufhidden}'
+      assert_equal(['BufFilePre', 'BufNew', 'BufFilePost', 'BufWipeout'],
+		   g:RenameHiddenEvents, msg)
+      assert_equal(before, RenameHiddenState(), msg)
+      assert_true(bnr->bufloaded(), msg)
+      assert_equal(fnamemodify(to, ':p'), bnr->getbufinfo()[0].name, msg)
+      assert_equal(['text'], getbufline(bnr, 1, '$'), msg)
+      assert_equal(bufhidden, getbufvar(bnr, '&bufhidden'), msg)
+      exe $'bwipe! {bnr}'
+      delete(to)
+    endfor
+  finally
+    test_override('starting', 0)
+    autocmd_delete([{group: 'XRenameHidden'}])
+    unlet g:RenameHiddenEvents
+    delete(from)
+    delete(to)
+    :%bwipe!
+  endtry
+enddef
+
 # A completion request supersedes the pending one, which is cancelled, so a
 # late reply to it must not be taken as the reply to the latest one.
 def g:Test_GetCompletion_CancelsSupersededRequest()

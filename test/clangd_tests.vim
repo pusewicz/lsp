@@ -8,6 +8,7 @@ import '../autoload/lsp/codeaction.vim' as codeaction
 import '../autoload/lsp/lsp.vim' as lsp
 import '../autoload/lsp/util.vim' as util
 import '../autoload/lsp/options.vim' as opt
+import '../autoload/lsp/textedit.vim' as textedit
 
 source common.vim
 
@@ -2869,6 +2870,32 @@ def g:Test_ReloadBufferWithDiags()
 
   :%bw!
   delete('Xreloadbuffer.c')
+enddef
+
+# A buffer renamed with its file by a workspace edit is opened again in the
+# language server with its new name, so that the server gets its changes.
+def g:Test_ApplyWorkspaceEdit_RenameReopensDocument()
+  var from = 'XRenameDocFrom.c'
+  var to = 'XRenameDocTo.c'
+  var rename = {documentChanges: [{kind: 'rename',
+    oldUri: util.LspFileToUri(from), newUri: util.LspFileToUri(to)}]}
+  writefile(['int a;'], from)
+  try
+    exe $'silent! edit {from}'
+    g:WaitForServerFileLoad(0)
+    textedit.ApplyWorkspaceEdit(rename)
+    assert_equal(fnamemodify(to, ':p'), expand('%:p'))
+    setline(1, 'int a')
+    redraw!
+    g:WaitForDiags(1)
+    setline(1, 'int a;')
+    redraw!
+    g:WaitForDiags(0)
+  finally
+    delete(from)
+    delete(to)
+    :%bw!
+  endtry
 enddef
 
 # Test for ":LspDiag" sub commands
