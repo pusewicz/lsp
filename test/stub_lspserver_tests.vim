@@ -13,6 +13,7 @@ import '../autoload/lsp/util.vim' as util
 import '../autoload/lsp/buffer.vim' as buf
 import '../autoload/lsp/ontypeformat.vim' as ontypeformat
 import '../autoload/lsp/textedit.vim' as textedit
+import '../autoload/lsp/hover.vim' as hover
 
 def CaptureNotification(notifications: list<dict<any>>, method: string,
 			params: any = {}): void
@@ -285,30 +286,31 @@ def g:Test_Rpc_CancelsInterruptedRequest()
 enddef
 
 # Test that a reply saying that the request was cancelled, by the client or by
-# the server, is not reported as an error, and that the callback of an
-# asynchronous request then gets no result.
-def g:Test_Rpc_CancelledReplyIsNotAnError()
+# the server, or that the content it was about was modified, is not reported
+# as an error, and that the callback of an asynchronous request then gets no
+# result.
+def g:Test_Rpc_StaleRequestReplyIsNotAnError()
   # Send the asynchronous requests asynchronously, as outside the tests.
   g:LSPTest = false
   try
-    for code in [-32800, -32802]
+    for code in [-32800, -32801, -32802]
       var notifications: list<dict<any>> = []
       var lspserver = MakeTestLspServer(notifications)
       var syncId = lspserver.nextSyncRpcId
-      var cancelled = {code: code, message: 'cancelled'}
+      var stale = {code: code, message: 'stale'}
       # Vim numbers the asynchronous requests on a new channel from 1.
       lspserver.job = StartStubServerJob([
-	{jsonrpc: '2.0', id: 1, error: cancelled},
-	{jsonrpc: '2.0', id: syncId, error: cancelled}
+	{jsonrpc: '2.0', id: 1, error: stale},
+	{jsonrpc: '2.0', id: syncId, error: stale}
       ])
       var beforeMessages = execute('messages')
 
       var replies: list<list<any>> = []
-      assert_equal(1, lspserver.rpc_a('test/cancelled', {},
+      assert_equal(1, lspserver.rpc_a('test/stale', {},
 	(_, reply, error) => {
 	  replies->add([reply, error])
 	}))
-      assert_equal({}, lspserver.rpc('test/cancelled', {}))
+      assert_equal({}, lspserver.rpc('test/stale', {}))
       g:WaitForAssert(() => assert_equal([[v:null, {}]], replies))
       job_stop(lspserver.job)
 
@@ -318,6 +320,130 @@ def g:Test_Rpc_CancelledReplyIsNotAnError()
   finally
     g:LSPTest = true
   endtry
+enddef
+
+# Test that the reply to a semantic tokens request saying that the content was
+# modified leaves the semantic highlighting as it is, without an error.
+def g:Test_SemanticHighlightUpdate_ContentModifiedIsNotAnError()
+  silent! edit XSemanticTokensContentModified.txt
+  setbufvar(bufnr(), 'LspSemanticResultId', 'previous')
+  var lspserver = MakeTestLspServer([])
+  lspserver.isSemanticTokensProvider = true
+  lspserver.semanticTokensDelta = false
+  var errors: list<string> = []
+  lspserver.errorLog = (msg: string) => {
+    errors->add(msg)
+  }
+  # Send the request asynchronously, as outside the tests.
+  g:LSPTest = false
+  # Vim numbers the asynchronous requests on a new channel from 1.
+  lspserver.job = StartStubServerJob([{jsonrpc: '2.0', id: 1,
+    error: {code: -32801, message: 'content modified'}}])
+  try
+    var beforeMessages = execute('messages')
+    lspserver.semanticHighlightUpdate(bufnr())
+    g:WaitForAssert(() => assert_equal({}, lspserver.supersedableRequests))
+    assert_equal(beforeMessages, execute('messages'))
+    assert_equal([], errors)
+    assert_equal('previous', getbufvar(bufnr(), 'LspSemanticResultId'))
+  finally
+    g:LSPTest = true
+    job_stop(lspserver.job)
+  endtry
+  :%bw!
+enddef
+
+# Test that the reply to a hover request saying that the content was modified
+# is not cached, so that hovering again at the same position asks the server
+# again, while an empty hover result is still cached.
+def g:Test_ShowHoverInfo_ContentModifiedIsNotCached()
+  silent! edit XHoverContentModified.txt
+  var lspserver = MakeTestLspServer([])
+  lspserver.isHoverProvider = true
+  # Send the request asynchronously, as outside the tests.
+  g:LSPTest = false
+  # Vim numbers the asynchronous requests on a new channel from 1.
+  lspserver.job = StartStubServerJob([{jsonrpc: '2.0', id: 1,
+    error: {code: -32801, message: 'content modified'}}])
+  try
+    var beforeMessages = execute('messages')
+    lspserver.hover('silent')
+    g:WaitForAssert(() => assert_equal({}, lspserver.supersedableRequests))
+    assert_equal(beforeMessages, execute('messages'))
+    var reqctx = hover.HoverRequestContextGet(lspserver)
+    assert_false(hover.HoverShowCached(reqctx, lspserver, 'silent'))
+
+    hover.HoverReply(lspserver, {contents: ''}, {}, 'silent', reqctx)
+    assert_true(hover.HoverShowCached(reqctx, lspserver, 'silent'))
+  finally
+    g:LSPTest = true
+    job_stop(lspserver.job)
+  endtry
+  :%bw!
+enddef
+
+# Returns the last message in the message history.
+def LastMessage(): string
+  return execute('messages')->split("\n")[-1]
+enddef
+
+# Test that a synchronous request whose caller handles the errors returns the
+# reply with the error, which is not reported, while for the other callers the
+# error is reported and an empty Dict is returned.
+def g:Test_Rpc_ReturnsErrorToCallerHandlingIt()
+  var lspserver = MakeTestLspServer([])
+  for code in [-32603, -32801]
+    var syncId = lspserver.nextSyncRpcId
+    var failed = {code: code, message: 'failed'}
+    lspserver.job = StartStubServerJob(
+      [{jsonrpc: '2.0', id: syncId, error: failed}])
+    try
+      var beforeMessages = execute('messages')
+      assert_equal({jsonrpc: '2.0', id: syncId, error: failed},
+		   lspserver.rpc('test/fails', {}, {handleError: false}))
+      assert_equal(beforeMessages, execute('messages'))
+    finally
+      job_stop(lspserver.job)
+    endtry
+  endfor
+
+  lspserver.job = StartStubServerJob([{jsonrpc: '2.0',
+    id: lspserver.nextSyncRpcId, error: {code: -32603, message: 'failed'}}])
+  try
+    assert_equal({}, lspserver.rpc('test/fails', {}))
+    assert_equal('Error: request test/fails failed (failed, error = InternalError)',
+		 LastMessage())
+  finally
+    job_stop(lspserver.job)
+  endtry
+enddef
+
+# Test that jumping to a definition and looking up a tag treat an error reply
+# like a reply without a location.
+def g:Test_GotoDefinitionAndTagFunc_ErrorReplyFindsNothing()
+  silent! edit XGotoDefinitionError.txt
+  var lspserver = MakeTestLspServer([])
+  lspserver.isDefinitionProvider = true
+  lspserver.isWorkspaceSymbolProvider = true
+  var lookups: list<func> = [
+    () => {
+      lspserver.gotoDefinition(false, '', 0)
+    },
+    () => {
+      assert_equal(null, lspserver.tagFunc('XNoSuchTag', '', {}))
+    }
+  ]
+  for Lookup in lookups
+    lspserver.job = StartStubServerJob([{jsonrpc: '2.0',
+      id: lspserver.nextSyncRpcId, error: {code: -32603, message: 'failed'}}])
+    try
+      Lookup()
+    finally
+      job_stop(lspserver.job)
+    endtry
+  endfor
+  assert_equal('Warn: symbol definition is not found', LastMessage())
+  :%bw!
 enddef
 
 # Test that a "$/cancelRequest" notification from the server is accepted
@@ -453,42 +579,46 @@ def g:Test_ProcessMessages_AcceptsValidJsonRpcVersion()
   assert_equal(0, traceMsgs->len())
 enddef
 
-def g:Test_PullDiagnostics_RetriggersServerCancelledRequest()
-  silent! edit XPullDiagnosticsRetrigger.rs
-  setline(1, ['fn main() {}'])
-
-  var queued: list<number> = []
-  var rpcOpts: list<dict<any>> = []
-  def MockDiagnosticRpc(_method: string, _params: any,
-                        opts: dict<any> = {}): dict<any>
-    rpcOpts->add(opts->deepcopy())
-    return {
-      error: {
-        code: -32802,
-        message: 'server cancelled the request',
-        data: {
-          retriggerRequest: true
-        }
-      }
-    }
-  enddef
-
+# Pull the diagnostics for the current buffer from a stand-in for a language
+# server that replies with "error".  Returns the buffers for which another
+# pull was queued.
+def PullDiagnosticsWithError(error: dict<any>): list<number>
   var lspserver = MakeTestLspServer([])
-  lspserver.running = true
-  lspserver.ready = true
   lspserver.isDiagnosticsProvider = true
-  lspserver.features = {diagnostics: true}
-  lspserver.featureEnabled = (_) => true
-  lspserver.queuePullDiagnostics = (bnr: number) => queued->add(bnr)
-  lspserver.rpc = MockDiagnosticRpc
+  var queued: list<number> = []
+  lspserver.queuePullDiagnostics = (bnr: number) => {
+    queued->add(bnr)
+  }
+  lspserver.job = StartStubServerJob(
+    [{jsonrpc: '2.0', id: lspserver.nextSyncRpcId, error: error}])
+  try
+    lspserver.pullDiagnostics(bufnr())
+  finally
+    job_stop(lspserver.job)
+  endtry
+  return queued
+enddef
 
-  buf.BufLspServerSet(bufnr(), lspserver)
-  lspserver.pullDiagnostics(bufnr())
+# Test that the pull diagnostics request is sent again, without reporting an
+# error, when the server cancels it and asks for it to be retriggered, or when
+# the content was modified.
+def g:Test_PullDiagnostics_RetriesStaleRequest()
+  silent! edit XPullDiagnosticsRetry.rs
+  var beforeMessages = execute('messages')
 
-  assert_equal([{handleError: false}], rpcOpts)
-  assert_equal([bufnr()], queued)
+  assert_equal([bufnr()], PullDiagnosticsWithError({code: -32802,
+    message: 'server cancelled', data: {retriggerRequest: true}}))
+  assert_equal([bufnr()], PullDiagnosticsWithError({code: -32801,
+    message: 'content modified'}))
+  assert_equal([], PullDiagnosticsWithError({code: -32802,
+    message: 'server cancelled', data: {retriggerRequest: false}}))
+  assert_equal(beforeMessages, execute('messages'))
 
-  buf.BufLspServerRemove(bufnr(), lspserver)
+  assert_equal([], PullDiagnosticsWithError({code: -32603,
+    message: 'failed'}))
+  assert_equal(
+    'Error: request textDocument/diagnostic failed (failed, error = InternalError)',
+    LastMessage())
   :%bw!
 enddef
 
