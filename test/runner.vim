@@ -63,7 +63,12 @@ def LspRunTests()
         add(v:errors, $'EXCEPTION: {f} -> {v:exception} at {v:throwpoint}')
       endtry
 
-      # Check for both v:errors (assertions) and v:errmsg (Vim core errors)
+      # Check for both v:errors (assertions) and v:errmsg (Vim core errors).
+      # Before patch 9.2.1015, compiling a :def line that starts with a
+      # "name.member(" call continued on the next line can set v:errmsg
+      # although nothing is wrong, e.g. to E697 when a List is left open at
+      # the end of the line (vim/vim#21168); build such a List in a variable
+      # first.
       if v:errmsg != ''
         add(v:errors, $'ERROR: {f} generated {v:errmsg}')
       endif
