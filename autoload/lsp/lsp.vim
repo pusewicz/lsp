@@ -1516,6 +1516,29 @@ export def CodeLens()
   lspserver.codeLens(@%)
 enddef
 
+# Display the links in the current buffer in a location or quickfix list
+# Uses LSP "textDocument/documentLink" request
+export def DocumentLink()
+  var lspserver: dict<any> = buf.CurbufGetServerChecked('documentLink')
+  if lspserver->empty()
+    return
+  endif
+
+  lspserver.showDocumentLinks(bufnr())
+enddef
+
+# Open the target of the document link under the cursor.  The user specified
+# window command modifiers (e.g. topleft) are in "cmdmods".
+# Uses LSP "textDocument/documentLink" and "documentLink/resolve" requests
+export def DocumentLinkOpen(cmdmods: string)
+  var lspserver: dict<any> = buf.CurbufGetServerChecked('documentLink')
+  if lspserver->empty()
+    return
+  endif
+
+  lspserver.openDocumentLink(cmdmods)
+enddef
+
 # Perform a workspace wide symbol lookup
 # Uses LSP "workspace/symbol" request
 export def SymbolSearch(queryArg: string, cmdmods: string)

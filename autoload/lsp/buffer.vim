@@ -47,6 +47,7 @@ var SupportedCheckFns = {
   documentOnTypeFormatting: (lspserver) => lspserver.isDocumentOnTypeFormattingProvider,
   documentRangeFormatting: (lspserver) => lspserver.isDocumentRangeFormattingProvider,
   documentHighlight: (lspserver) => lspserver.isDocumentHighlightProvider,
+  documentLink: (lspserver) => lspserver.isDocumentLinkProvider,
   documentSymbol: (lspserver) => lspserver.isDocumentSymbolProvider,
   foldingRange: (lspserver) => lspserver.isFoldingRangeProvider,
   hover: (lspserver) => lspserver.isHoverProvider,
