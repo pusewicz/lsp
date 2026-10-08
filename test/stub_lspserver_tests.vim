@@ -920,6 +920,153 @@ def g:Test_DiagVirtualTextMostSevere()
   :%bw!
 enddef
 
+# Seed the current buffer with a diagnostic spanning lines 1-3, a diagnostic
+# nested inside it on line 2, and a diagnostic on line 4 whose range ends at
+# the start of line 5.  Returns the server that reported them.
+def SeedMultiLineDiags(): dict<any>
+  g:LspOptionsSet({autoHighlightDiags: false})
+  setline(1, repeat(['abcdefghij'], 5))
+
+  var lspserver = MakeTestLspServer([])
+  lspserver.features = {diagnostics: true}
+  lspserver.featureEnabled = (_) => true
+
+  var diags = [
+    {range: {start: {line: 0, character: 4}, end: {line: 2, character: 2}},
+     message: 'multi'},
+    {range: {start: {line: 1, character: 3}, end: {line: 1, character: 6}},
+     message: 'single'},
+    {range: {start: {line: 3, character: 5}, end: {line: 4, character: 0}},
+     message: 'eol'}
+  ]
+  diag.DiagNotification(lspserver, util.LspBufnrToUri(bufnr()), diags, 'push')
+  return lspserver
+enddef
+
+# Return the messages of the diagnostics in "diags"
+def DiagMsgs(diags: list<dict<any>>): list<string>
+  return diags->mapnew((_, d) => d.message)
+enddef
+
+def g:Test_GetDiagsByLine_MultiLineDiagnostic()
+  silent! edit XMultiLineDiagsByLine.txt
+  var lspserver = SeedMultiLineDiags()
+  var bnr = bufnr()
+
+  assert_equal(['multi'], DiagMsgs(diag.GetDiagsByLine(bnr, 1)))
+  assert_equal(['multi', 'single'], DiagMsgs(diag.GetDiagsByLine(bnr, 2)))
+  assert_equal(['multi'], DiagMsgs(diag.GetDiagsByLine(bnr, 3)))
+  assert_equal(['eol'], DiagMsgs(diag.GetDiagsByLine(bnr, 4)))
+  assert_equal([], DiagMsgs(diag.GetDiagsByLine(bnr, 5)))
+
+  assert_equal(['multi'], DiagMsgs(diag.GetDiagsByLine(bnr, 3, lspserver)))
+  assert_equal([], diag.GetDiagsByLine(bnr, 3, MakeTestLspServer([])))
+
+  assert_equal(['multi', 'single'],
+	       DiagMsgs(diag.GetDiagsInLineRange(bnr, 2, 3)))
+  assert_equal(['multi', 'single', 'eol'],
+	       DiagMsgs(diag.GetDiagsInLineRange(bnr, 1, 5)))
+  assert_equal(['eol'], DiagMsgs(diag.GetDiagsInLineRange(bnr, 4, 5)))
+
+  # The returned list must not alias the stored diagnostics
+  diag.GetDiagsByLine(bnr, 2, lspserver)->add({message: 'extra'})
+  assert_equal(['multi', 'single'],
+	       DiagMsgs(diag.GetDiagsByLine(bnr, 2, lspserver)))
+
+  ClearBufferDiagnostics()
+  :%bw!
+enddef
+
+def g:Test_GetDiagByPos_MultiLineDiagnostic()
+  silent! edit XMultiLineDiagByPos.txt
+  SeedMultiLineDiags()
+  var bnr = bufnr()
+
+  var MsgAt = (lnum: number, col: number, atPos: bool): string =>
+    diag.GetDiagByPos(bnr, lnum, col, atPos)->get('message', '')
+
+  # Innermost diagnostic whose range contains the position
+  assert_equal('', MsgAt(1, 4, true))
+  assert_equal('multi', MsgAt(1, 5, true))
+  assert_equal('multi', MsgAt(2, 1, true))
+  assert_equal('single', MsgAt(2, 4, true))
+  assert_equal('single', MsgAt(2, 6, true))
+  assert_equal('multi', MsgAt(2, 7, true))
+  assert_equal('multi', MsgAt(3, 2, true))
+  assert_equal('', MsgAt(3, 3, true))
+  assert_equal('', MsgAt(4, 5, true))
+  assert_equal('eol', MsgAt(4, 6, true))
+  assert_equal('eol', MsgAt(4, 10, true))
+  assert_equal('', MsgAt(5, 1, true))
+
+  # First diagnostic starting at or after the position, else the last one
+  assert_equal('multi', MsgAt(1, 1, false))
+  assert_equal('multi', MsgAt(1, 9, false))
+  assert_equal('single', MsgAt(2, 1, false))
+  assert_equal('single', MsgAt(2, 8, false))
+  assert_equal('multi', MsgAt(3, 5, false))
+  assert_equal('', MsgAt(5, 1, false))
+
+  ClearBufferDiagnostics()
+  :%bw!
+enddef
+
+def g:Test_LspDiagCurrent_MultiLineDiagnostic()
+  silent! edit XMultiLineDiagCurrent.txt
+  SeedMultiLineDiags()
+
+  g:LspOptionsSet({showDiagInPopup: false})
+  cursor(3, 1)
+  assert_equal(['multi'], execute('LspDiag current')->split("\n"))
+  assert_equal(['multi'], execute('LspDiag! current')->split("\n"))
+  cursor(3, 3)
+  assert_equal(['Warn: No diagnostic messages found for current position'],
+	       execute('LspDiag! current')->split("\n"))
+  cursor(2, 5)
+  assert_equal(['single'], execute('LspDiag! current')->split("\n"))
+  g:LspOptionsSet({showDiagInPopup: true})
+
+  # The popup for a diagnostic starting on a previous line is displayed below
+  # the cursor line
+  cursor(3, 2)
+  :redraw
+  :LspDiag current
+  var ids = popup_list()
+  assert_equal(1, ids->len())
+  assert_equal(['multi'], getbufline(ids[0]->winbufnr(), 1, '$'))
+  assert_equal(screenpos(0, 3, 1).row + 1, ids[0]->popup_getpos().line)
+  popup_clear()
+
+  # The v:beval_* variables can't be set, so only check that the balloon
+  # expression compiles and finds nothing outside of a balloon
+  assert_equal('', g:LspDiagExpr())
+
+  ClearBufferDiagnostics()
+  :%bw!
+enddef
+
+def g:Test_CodeActionContext_MultiLineDiagnostic()
+  silent! edit XMultiLineDiagCodeAction.txt
+  var lspserver = SeedMultiLineDiags()
+  lspserver.isCodeActionProvider = true
+  var sentDiags: list<list<string>> = []
+  lspserver.rpc_a = (_, params, _) => {
+    sentDiags->add(DiagMsgs(params.context.diagnostics))
+    return 1
+  }
+
+  cursor(3, 1)
+  lspserver.codeActionAsync(@%, 3, 3, '', (_, _, _, _) => 0)
+  lspserver.codeActionAsync(@%, 2, 3, '', (_, _, _, _) => 0)
+  lspserver.codeActionAsync(@%, 1, 5, '', (_, _, _, _) => 0)
+  lspserver.codeActionAsync(@%, 5, 5, '', (_, _, _, _) => 0)
+  assert_equal([['multi'], ['multi', 'single'], ['multi', 'single', 'eol'],
+		[]], sentDiags)
+
+  ClearBufferDiagnostics()
+  :%bw!
+enddef
+
 def g:Test_ProcessMessages_InvalidRequest_NonStringMethod_WithId()
   var lspserver = MakeTestLspServer([])
   var outMessages: list<dict<any>> = []
