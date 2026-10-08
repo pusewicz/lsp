@@ -1678,7 +1678,10 @@ completionMatcher	|String| option.  Enable fuzzy or case insensitive
 
 						*lsp-opt-completionTextEdit*
 completionTextEdit	|Boolean| option.  If true, apply the LSP server
-			supplied text edits after a completion.  If a snippet
+			supplied text edits after a completion.  This
+			includes the text edit of a completion item that also
+			replaces text before the completed keyword (e.g.
+			"foo." completed to "foo?.bar").  If a snippet
 			plugin is going to apply the text edits, then set
 			this to false to avoid applying the text edits twice.
 			By default this is set to true.
