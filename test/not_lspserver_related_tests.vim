@@ -5,6 +5,7 @@ import '../autoload/lsp/completion.vim' as completion
 import '../autoload/lsp/buffer.vim' as buf
 import '../autoload/lsp/capabilities.vim' as capabilities
 import '../autoload/lsp/util.vim' as util
+import '../autoload/lsp/options.vim' as opt
 
 # Test for no duplicates in helptags
 def g:Test_Helptags()
@@ -593,6 +594,87 @@ def g:Test_OnTypeFormattingCapability()
 
   assert_true(lspserver.isDocumentOnTypeFormattingProvider)
   assert_equal(['}', ';', "\n"], lspserver.onTypeFormattingTriggers)
+enddef
+
+const popupTypes: list<string> = ['CodeAction', 'Completion', 'Diag', 'Hover',
+  'Peek', 'SignatureHelp', 'SymbolMenu', 'SymbolMenuInput', 'TypeHierarchy']
+
+# Return the "opacity" attribute PopupConfigure() sets for each popup type,
+# leaving out the types it sets none for.
+def PopupOpacities(): dict<number>
+  var opacities: dict<number> = {}
+  for type in popupTypes
+    var attrs = opt.PopupConfigure(type, {})
+    if attrs->has_key('opacity')
+      opacities[type] = attrs.opacity
+    endif
+  endfor
+  return opacities
+enddef
+
+# Drop the per-type popup opacity overrides and restore the default opacity.
+def ResetPopupOpacityOptions()
+  opt.lspOptions->filter((key, _) => key !~ '^popupOpacity.')
+  g:LspOptionsSet({popupOpacity: 100})
+enddef
+
+# By default popups are not given an opacity at all.
+def g:Test_PopupConfigure_Opacity_Default()
+  assert_equal({}, PopupOpacities())
+enddef
+
+# popupOpacity applies to every popup type unless overridden per type.
+def g:Test_PopupConfigure_Opacity_Overrides()
+  try
+    g:LspOptionsSet({popupOpacity: 70, popupOpacityHover: 0,
+		     popupOpacityDiag: 100})
+    if has('patch-9.2.0017')
+      assert_equal({CodeAction: 70, Completion: 70, Hover: 0, Peek: 70,
+		    SignatureHelp: 70, SymbolMenu: 70, SymbolMenuInput: 70,
+		    TypeHierarchy: 70}, PopupOpacities())
+    else
+      assert_equal({}, PopupOpacities())
+    endif
+  finally
+    ResetPopupOpacityOptions()
+  endtry
+enddef
+
+# Out of range and non-number opacity values leave popups opaque.
+def g:Test_PopupConfigure_Opacity_InvalidValues()
+  try
+    g:LspOptionsSet({popupOpacity: 150, popupOpacityHover: -1,
+		     popupOpacityDiag: '50', popupOpacityPeek: 50.0,
+		     popupOpacityCompletion: 40})
+    if has('patch-9.2.0017')
+      assert_equal({Completion: 40}, PopupOpacities())
+    else
+      assert_equal({}, PopupOpacities())
+    endif
+  finally
+    ResetPopupOpacityOptions()
+  endtry
+enddef
+
+# The opacity reaches a new popup and an existing popup updated with
+# popup_setoptions(), as is done for the completion documentation popup.
+def g:Test_PopupConfigure_Opacity_AppliedToPopup()
+  if !has('patch-9.2.0017')
+    return
+  endif
+  try
+    g:LspOptionsSet({popupOpacity: 60, popupOpacityCompletion: 30})
+    var winid = popup_create('hover', opt.PopupConfigure('Hover', {}))
+    assert_equal(60, winid->popup_getoptions().opacity)
+
+    var infoid = popup_create('info', {})
+    assert_equal(100, infoid->popup_getoptions().opacity)
+    infoid->popup_setoptions(opt.PopupConfigure('Completion', {}))
+    assert_equal(30, infoid->popup_getoptions().opacity)
+  finally
+    popup_clear()
+    ResetPopupOpacityOptions()
+  endtry
 enddef
 
 # Only here to because the test runner needs it
