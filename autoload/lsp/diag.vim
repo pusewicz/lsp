@@ -507,12 +507,8 @@ def AleLocListItem(bnr: number, diag: dict<any>): dict<any>
     endCol = bnr->getbufline(endLnum)[0]->strlen()
   else
     # The byte index of the exclusive end is the column of the last byte in
-    # the range.  A range ending past the end of the line ends with the line.
-    var endText = bnr->getbufline(endLnum)[0]
-    endCol = endText->byteidxcomp(range.end.character)
-    if endCol < 0
-      endCol = endText->strlen()
-    endif
+    # the range
+    endCol = util.GetLineByteFromPos(bnr, range.end)
   endif
   if endLnum < lnum || (endLnum == lnum && endCol < col)
     [endLnum, endCol] = [lnum, col]
