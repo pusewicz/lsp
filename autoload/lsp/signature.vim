@@ -37,8 +37,6 @@ def g:LspShowSignature(triggerKind: number = SIG_TRIGGER_KIND_INVOKED,
     return ''
   endif
 
-  # First send all the changes in the current buffer to the LSP server.
-  listener_flush()
   lspserver.showSignature(triggerKind, triggerChar)
 
   return ''

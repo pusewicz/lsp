@@ -3156,7 +3156,10 @@ The returned dict has the following methods:
 		"handleError" set to v:false, no error is reported and the
 		reply, with its "error" item, is returned.  When the reply
 		doesn't arrive in time, or CTRL-C interrupts the wait, the
-		request is cancelled.
+		request is cancelled.  The changes made to the buffers
+		attached to the LSP server that were not sent to it yet are
+		sent first, so that the reply is for the current text, also
+		right after a change made by a script.
 
 	rpc_a(method: string, params: any, Cbfunc: func): number
 		Send an async RPC request message to the LSP server with a
@@ -3164,7 +3167,8 @@ The returned dict has the following methods:
 		used to cancel the RPC request (if needed).  Returns -1 on
 		error.  A reply saying that the request was cancelled, or
 		that the content was modified (ContentModified), is not
-		reported as an error: the callback gets no result.
+		reported as an error: the callback gets no result.  Like
+		rpc(), first sends the pending buffer changes.
 
 	cancelRequest(id: number)
 		Ask the LSP server to cancel the request with the LSP message
