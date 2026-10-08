@@ -39,10 +39,11 @@ g:LSPTest_fileStatusDelay = 0
 
 var clangdPath: string = g:ClangdPath()
 
+const MIN_CLANGD = 22
 var clangdVerDetail = systemlist($'{shellescape(clangdPath)} --version')
 var clangdVerMajor = clangdVerDetail->matchstr('.*version \d\+\..*')->substitute('.* \(\d\+\)\..*', '\1', 'g')->str2nr()
-if clangdVerMajor != 15
-  echoerr $'Clangd version 15 required. Please `brew install llvm@15`'
+if clangdVerMajor < MIN_CLANGD
+  echoerr $'Clangd version {MIN_CLANGD} or later required. Please `brew install llvm` or `brew upgrade llvm`'
 endif
 echomsg clangdVerDetail
 
@@ -654,7 +655,7 @@ def g:Test_LspDiag()
     }
   END
   setline(1, lines)
-  g:WaitForServerFileLoad(1)
+  g:WaitForServerFileLoad(2)
   var bnr: number = bufnr()
   :redraw!
   :LspDiag show
@@ -664,7 +665,7 @@ def g:Test_LspDiag()
   assert_equal(3, qfl->len())
   assert_equal([3, 14, 'E'], [qfl[0].lnum, qfl[0].col, qfl[0].type])
   assert_equal([5, 2, 'W'], [qfl[1].lnum, qfl[1].col, qfl[1].type])
-  assert_equal([7, 2, 'W'], [qfl[2].lnum, qfl[2].col, qfl[2].type])
+  assert_equal([7, 2, 'E'], [qfl[2].lnum, qfl[2].col, qfl[2].type])
   close
   g:LspOptionsSet({showDiagInPopup: false})
   normal gg
@@ -845,21 +846,13 @@ def g:Test_LspDiag_Multi()
   setline(1, lines)
   :redraw!
   # TODO: Waiting count doesn't include Warning, Info, and Hint diags
-  if clangdVerMajor > 14
-    g:WaitForServerFileLoad(3)
-  else
-    g:WaitForServerFileLoad(2)
-  endif
+  g:WaitForServerFileLoad(3)
   :LspDiag show
   var qfl: list<dict<any>> = getloclist(0)
   assert_equal('quickfix', getwinvar(winnr('$'), '&buftype'))
   assert_equal(bnr, qfl[0].bufnr)
   assert_equal(3, qfl->len())
-  if clangdVerMajor > 14
-    assert_equal([1, 5, 'E'], [qfl[0].lnum, qfl[0].col, qfl[0].type])
-  else
-    assert_equal([1, 5, 'W'], [qfl[0].lnum, qfl[0].col, qfl[0].type])
-  endif
+  assert_equal([1, 5, 'E'], [qfl[0].lnum, qfl[0].col, qfl[0].type])
   assert_equal([1, 9, 'E'], [qfl[1].lnum, qfl[1].col, qfl[1].type])
   assert_equal([2, 9, 'E'], [qfl[2].lnum, qfl[2].col, qfl[2].type])
   close
@@ -1673,17 +1666,13 @@ def g:Test_LspHover()
     }
   END
   setline(1, lines)
-  if clangdVerMajor > 14
-    g:WaitForServerFileLoad(1)
-  else
-    g:WaitForServerFileLoad(0)
-  endif
+  g:WaitForServerFileLoad(1)
   cursor(8, 4)
   var output = execute(':LspHover')->split("\n")
   assert_equal([], output)
   var p: list<number> = popup_list()
   assert_equal(1, p->len())
-  assert_equal(['### function `f1`  ', '', '---', '→ `int`  ', 'Parameters:  ', '- `int a`', '', '---', '```cpp', 'int f1(int a)', '```'], getbufline(winbufnr(p[0]), 1, '$'))
+  assert_equal(['### function `f1`', '', '---', '→ `int`', '', 'Parameters:', '', '- `int a`', '', '---', '```cpp', 'int f1(int a)', '```'], getbufline(winbufnr(p[0]), 1, '$'))
 
   # Re-running :LspHover at the same position should replace the existing
   # hover popup, not create additional hover popups.
@@ -1825,7 +1814,7 @@ def g:Test_LspShowSignature()
     }
   END
   setline(1, lines)
-  g:WaitForServerFileLoad(2)
+  g:WaitForServerFileLoad(3)
 
   # Default output should be compact (label only) with highlighted active
   # parameter for the first argument.
@@ -2632,15 +2621,21 @@ def g:Test_LspDiagsUpdated_Autocmd()
   END
   setline(1, lines)
   g:WaitForServerFileLoad(0)
+  # The server may publish more than one notification per document version,
+  # so check that every diag update fires the autocmd, not an exact count.
+  var count: number = g:LspAutoCmd
+  assert_true(count > 0)
   setline(3, '    return:')
   redraw!
   g:WaitForDiags(1)
+  assert_true(g:LspAutoCmd > count)
+  count = g:LspAutoCmd
   setline(3, '    return;')
   redraw!
   g:WaitForDiags(0)
+  assert_true(g:LspAutoCmd > count)
   :%bw!
   autocmd_delete([{event: 'User', pattern: 'LspDiagsUpdated'}])
-  assert_equal(5, g:LspAutoCmd)
 enddef
 
 # Test custom notification handlers
@@ -2786,7 +2781,7 @@ def g:Test_OmniComplete_AfterParen()
     }
   END
   setline(1, lines)
-  g:WaitForServerFileLoad(2)
+  g:WaitForServerFileLoad(3)
   redraw!
 
   cursor(4, 1)
