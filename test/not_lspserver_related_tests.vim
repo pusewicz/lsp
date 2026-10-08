@@ -1363,6 +1363,96 @@ def g:Test_DocumentLink_ParseFileUri()
   assert_equal([uri, 1, 1], documentlink.ParseFileUri($'{uri}#section'))
 enddef
 
+# Test for converting the "file:" URI of a local file to a file name, whatever
+# character the path starts with, with an empty host, the host "localhost" or
+# without a host.  The scheme and the host are not case sensitive.
+def g:Test_LspUriToFile_LocalFileUri()
+  var cases: list<list<string>> = [
+    ['file:///_x/y.c', '/_x/y.c'],
+    ['file:///1x/y.c', '/1x/y.c'],
+    ['file:///.hidden/y.c', '/.hidden/y.c'],
+    ['file:///~x/y.c', '/~x/y.c'],
+    ['file:///-x/y.c', '/-x/y.c'],
+    ['file:///%C3%A9x/y.c', '/éx/y.c'],
+    ['file:///éx/y.c', '/éx/y.c'],
+    ['file:///%20x/y%25z.c', '/ x/y%z.c'],
+    ['file:///a:b/c.c', '/a:b/c.c'],
+    ['file:///', '/'],
+    ['file://localhost/_x/y.c', '/_x/y.c'],
+    ['FILE://LocalHost/_x/y.c', '/_x/y.c'],
+    ['file:/_x/y.c', '/_x/y.c'],
+    ['File:/_x/y.c', '/_x/y.c']
+  ]
+  for [uri, fname] in cases
+    assert_equal(fname, util.LspUriToFile(uri), uri)
+  endfor
+enddef
+
+# Test for converting a URI that is not the "file:" URI of a local file: it is
+# returned unchanged, as the name of the buffer for the URI.
+def g:Test_LspUriToFile_OtherUri()
+  var uris: list<string> = [
+    'file://otherhost/_x/y.c',
+    'file://localhost:8080/_x/y.c',
+    'file://otherhost',
+    'file:_x/y.c',
+    'file:',
+    'notfile:///_x/y.c',
+    'jdt://contents/java.base/java.lang/String.class?=p/%5C/a',
+    'fugitive:///_x/.git//0/a%20b.c',
+    'deno:/https/deno.land/x%40y/mod.ts',
+    'untitled:Untitled-1',
+    'https://example.com/a%20b',
+    '/_x/y.c'
+  ]
+  for uri in uris
+    assert_equal(uri, util.LspUriToFile(uri))
+  endfor
+enddef
+
+# Test that converting a file name to a URI and back gives the file name
+# again, and that converting the URI of a buffer name to a file name and back
+# gives the URI again, whatever the file name starts with.  A server may encode
+# a file URI differently from this plugin: it still leads to the URI that this
+# plugin uses for the file.
+def g:Test_LspFileToUri_RoundTrip()
+  var fnames: list<string> = [
+    '/_x/y.c',
+    '/1x/y.c',
+    '/.hidden/y.c',
+    '/~x/y.c',
+    '/-x/y.c',
+    '/éx/ąę€😀.c',
+    '/%x/a b+c#d?e[1]&f;g=h@i%41.c',
+    '/a:b/c.c'
+  ]
+  for fname in fnames
+    var uri: string = util.LspFileToUri(fname)
+    assert_match('^file:///', uri, fname)
+    assert_equal(fname, util.LspUriToFile(uri), uri)
+    assert_equal(uri, util.LspFileToUri(util.LspUriToFile(uri)), uri)
+  endfor
+
+  var canonical: string = util.LspFileToUri('/_x/a+b[1] c.c')
+  var variants: list<string> = [
+    'file:///_x/a+b%5b1%5d%20c.c',
+    'file://localhost/_x/a%2Bb%5B1%5D%20c.c',
+    'file:/_x/a%2bb%5B1%5D%20c.c'
+  ]
+  for uri in variants
+    assert_equal(canonical, util.LspFileToUri(util.LspUriToFile(uri)), uri)
+  endfor
+
+  var otherUris: list<string> = [
+    'file://otherhost/_x/y.c',
+    'jdt://contents/java.base/java.lang/String.class?=p/%5C/a',
+    'fugitive:///_x/.git//0/a%20b.c'
+  ]
+  for uri in otherUris
+    assert_equal(uri, util.LspFileToUri(util.LspUriToFile(uri)))
+  endfor
+enddef
+
 # Returns what checking buffer "bnr" in a hidden popup window could change.
 def BufCheckState(bnr: number): dict<any>
   var info: dict<any> = getbufinfo(bnr)->get(0, {})
