@@ -5850,7 +5850,7 @@ def g:Test_LspOutline_DocumentSymbolAndSymbolInformation()
       assert_equal(c.text, outlineLines[2 :], c.ctx)
 
       for [srcLnum, sym] in [[1, c.symbols[0]], [2, c.symbols[1]],
-			     [4, c.symbols[2]]]
+			     [3, c.symbols[0]], [4, c.symbols[2]]]
 	cursor(srcLnum, 1)
 	:doautocmd CursorHold
 	assert_equal([outlineLines->index(sym[0]) + 1],
