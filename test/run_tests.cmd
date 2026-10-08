@@ -12,6 +12,16 @@ echo LSP unit test results
 type results.txt
 
 findstr /I FAIL results.txt > nul 2>&1
-if %ERRORLEVEL% EQU 0 echo ERROR: Some test failed.
-if %ERRORLEVEL% NEQ 0 echo SUCCESS: All the tests passed.
+if %ERRORLEVEL% EQU 0 (
+  echo ERROR: Some test failed.
+  exit /b 1
+)
+
+findstr /L /C:": pass" results.txt > nul 2>&1
+if %ERRORLEVEL% NEQ 0 (
+  echo ERROR: No tests ran.
+  exit /b 1
+)
+
+echo SUCCESS: All the tests passed.
 
