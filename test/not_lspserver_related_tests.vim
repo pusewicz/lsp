@@ -5,6 +5,7 @@ import '../autoload/lsp/completion.vim' as completion
 import '../autoload/lsp/buffer.vim' as buf
 import '../autoload/lsp/capabilities.vim' as capabilities
 import '../autoload/lsp/documentlink.vim' as documentlink
+import '../autoload/lsp/selection.vim' as selection
 import '../autoload/lsp/util.vim' as util
 import '../autoload/lsp/options.vim' as opt
 
@@ -1370,6 +1371,42 @@ def g:Test_ServerMessagesShow_SpecialFileName()
   if logfile->fnamemodify(':t') == fname
     delete(logfile)
   endif
+enddef
+
+# Test for the Visual selection of an LSP selection range that ends at the
+# start of a line, ends at the end of the buffer or is empty
+def g:Test_SelectionStart_RangeEnd()
+  :new
+  setline(1, ['int x;', 'ééé', '', 'y😊'])
+  var lspserver: dict<any> = {selection: {}}
+  # [range, text selected when 'selection' is "inclusive", text selected when
+  # 'selection' is "exclusive"].  A Visual selection can't include the line
+  # break at the end of the buffer.
+  var cases: list<list<any>> = [
+    [{start: {line: 0, character: 4}, end: {line: 1, character: 0}},
+     "x;\n", "x;\n"],
+    [{start: {line: 1, character: 1}, end: {line: 3, character: 0}},
+     "éé\n\n", "éé\n\n"],
+    [{start: {line: 3, character: 0}, end: {line: 4, character: 0}},
+     'y😊', 'y😊'],
+    [{start: {line: 1, character: 1}, end: {line: 1, character: 1}},
+     'é', 'é'],
+    [{start: {line: 0, character: 0}, end: {line: 0, character: 0}},
+     'i', 'i']
+  ]
+  try
+    for [sel, textIdx] in [['inclusive', 1], ['exclusive', 2]]
+      &selection = sel
+      for c in cases
+	selection.SelectionStart(lspserver, [{range: c[0]}])
+	:normal! y
+	assert_equal(c[textIdx], @", $'{sel}: {c[0]}')
+      endfor
+    endfor
+  finally
+    set selection&
+    :bw!
+  endtry
 enddef
 
 # vim: tabstop=8 shiftwidth=2 softtabstop=2 noexpandtab

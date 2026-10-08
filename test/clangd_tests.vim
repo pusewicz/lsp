@@ -1380,6 +1380,38 @@ def g:Test_LspSelection()
   normal vlelelelelelelsy
   assert_equal([2, 1, 8, 1], [line("'<"), col("'<"), line("'>"), col("'>")])
 
+  # The selection covers exactly the text in the range.  A range that ends at
+  # the end of a line doesn't include the line break.
+  var expected: list<string> = ['count', 'count++', "{\n       count++;\n    }"]
+  for i in range(3)
+    cursor(5, 8)
+    exe $'normal v{repeat("le", i + 1)}y'
+    assert_equal(expected[i], @")
+  endfor
+  cursor(3, 9)
+  normal vleley
+  assert_equal('int i;', @")
+  assert_equal([3, 5, 3, 10], [line("'<"), col("'<"), line("'>"), col("'>")])
+  # Expand the selection with the cursor at its start
+  cursor(5, 8)
+  normal vleoley
+  assert_equal('count++', @")
+
+  # When 'selection' is "exclusive", the selection ends past the range
+  set selection=exclusive
+  for i in range(3)
+    cursor(5, 8)
+    exe $'normal v{repeat("le", i + 1)}y'
+    assert_equal(expected[i], @")
+  endfor
+  cursor(5, 8)
+  normal vlelelelsy
+  assert_equal('count++', @")
+  cursor(3, 9)
+  normal vleley
+  assert_equal('int i;', @")
+  set selection&
+
   xunmap le
   xunmap ls
   bw!
