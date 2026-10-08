@@ -757,6 +757,32 @@ def g:Test_LspFormat_InBufWritePreFormatsBeforeWriting()
   endtry
 enddef
 
+# Test that ":LspFormat!" formats the buffer before the command that follows
+# it runs.
+def g:Test_LspFormatBang_WaitsForReply()
+  silent! edit XLspFormatBang.txt
+  setline(1, ['int  x;'])
+  var bnr = bufnr()
+  var lspserver = MakeTestLspServer([])
+  lspserver.running = true
+  lspserver.ready = true
+  lspserver.isDocumentFormattingProvider = true
+  # A synchronous request has an ID of its own
+  lspserver.job = StartStubServerJob([{jsonrpc: '2.0',
+    id: lspserver.nextSyncRpcId, result: [MakeTextEdit(0, 3, 0, 4, '')]}])
+  buf.BufLspServerSet(bnr, lspserver)
+  g:LSPTest = false
+  try
+    LspFormat! | write
+    assert_equal(['int x;'], readfile('XLspFormatBang.txt'))
+  finally
+    g:LSPTest = true
+    StopAsyncReplyingLspServer(lspserver, bnr)
+    :%bw!
+    delete('XLspFormatBang.txt')
+  endtry
+enddef
+
 # Test that the pulled diagnostics are stored when the reply arrives, and that
 # the request is sent again when the reply says that the content was modified.
 def g:Test_PullDiagnostics_Async()
