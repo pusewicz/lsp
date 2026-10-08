@@ -64,9 +64,9 @@ def RegisterEvents()
   augroup LspAutoCmds
     autocmd!
     autocmd BufNewFile,BufReadPost,FileType * AddFile(expand('<abuf>')->str2nr())
-    # Note that when BufWipeOut is invoked, the current buffer may be different
-    # from the buffer getting wiped out.
-    autocmd BufWipeOut * RemoveFile(expand('<abuf>')->str2nr())
+    # Note that when BufUnload or BufWipeOut is invoked, the current buffer may
+    # be different from the buffer getting unloaded or wiped out.
+    autocmd BufUnload,BufWipeOut * BufferUnloaded(expand('<abuf>')->str2nr())
     autocmd BufWinEnter * BufferLoadedInWin(expand('<abuf>')->str2nr())
     autocmd BufWinEnter * diag.BufferDisplayed(expand('<abuf>')->str2nr())
     # A buffer renamed with ":file" or ":saveas" is another document
@@ -726,6 +726,11 @@ enddef
 
 # A new buffer is opened. If LSP is supported for this buffer, then add it
 export def AddFile(bnr: number): void
+  # An unloaded buffer is attached when it gets loaded (BufReadPost)
+  if !bnr->bufloaded()
+    return
+  endif
+
   # Skip remote files
   if util.LspUriRemote(bnr->bufname()->fnamemodify(':p'))
     return
@@ -791,6 +796,25 @@ export def AddFile(bnr: number): void
   endfor
 enddef
 
+# Cancel the BufferInit() of buffer "bnr" deferred until the server with ID
+# "serverId" is ready.  autocmd_delete() with a "cmd" replaces every autocmd
+# for the event and pattern with that command, so delete all of them and add
+# back the ones for the other buffers.
+def CancelPendingBufferInit(serverId: number, bnr: number): void
+  if !exists($'#LSPBufferAutocmds#User#LspServerReady_{serverId}')
+    return
+  endif
+  var acmd = {group: 'LSPBufferAutocmds', event: 'User',
+	      pattern: $'LspServerReady_{serverId}'}
+  var pending: list<dict<any>> = autocmd_get(acmd)
+  var cmd = $'BufferInit({serverId}, {bnr})'
+  if pending->indexof((_, pendingAcmd) => pendingAcmd.cmd == cmd) == -1
+    return
+  endif
+  autocmd_delete([acmd])
+  autocmd_add(pending->filter((_, pendingAcmd) => pendingAcmd.cmd != cmd))
+enddef
+
 # Notify LSP server to remove a file
 export def RemoveFile(bnr: number): void
   var lspservers: list<dict<any>> = buf.BufLspServersGet(bnr)
@@ -807,6 +831,8 @@ export def RemoveFile(bnr: number): void
     RemoveBufLocalAutocmds(bnr)
     RemoveBufListener(bnr)
     ontypeformat.BufferDeInit(bnr)
+    inlayhints.BufferDeInit(bnr)
+    semantichighlight.BufferDeInit(bnr)
     diag.BufferDeInit(bnr)
   endif
   # Iterate over a copy because BufLspServerRemove mutates the underlying list.
@@ -814,16 +840,9 @@ export def RemoveFile(bnr: number): void
     if lspserver->empty()
       continue
     endif
-    var serverId = lspserver.id
-    try
-      autocmd_delete([{group: 'LSPBufferAutocmds',
-                     event: 'User',
-                     pattern: $'LspServerReady_{serverId}',
-                     cmd: $'BufferInit({serverId}, {bnr})'}])
-    catch /E367:/
-      # The tests can call RemoveFile() without creating this augroup.
-    endtry
-    if lspserver.running
+    CancelPendingBufferInit(lspserver.id, bnr)
+    # The document is opened (didOpen) only once the server is ready
+    if lspserver.ready
       lspserver.textdocDidClose(bnr)
     endif
     diag.DiagRemoveFile(bnr)
@@ -842,8 +861,27 @@ export def RemoveFile(bnr: number): void
   endif
 
   if bufAttachStates->has_key(bnr)
+    if bufAttachStates[bnr].pending
+      # Drop the deferred LspAttached autocmd, so that re-attaching the buffer
+      # doesn't fire it twice.
+      autocmd_delete([{group: 'LspAutoCmds', event: 'BufEnter', bufnr: bnr}])
+    endif
     bufAttachStates->remove(bnr)
   endif
+enddef
+
+# Buffer "bnr" is being unloaded or wiped out.  Detach it from the language
+# servers: a listener doesn't survive ":bdelete", and the buffer has to be
+# attached afresh when it is loaded again.  Also drop its diagnostics, which
+# a server may have published without the buffer being attached: the ones
+# published for an unloaded buffer are ignored, so they would go stale.
+# Nothing to do when Vim is exiting, as all the servers are shut down anyway.
+def BufferUnloaded(bnr: number): void
+  if v:exiting != null
+    return
+  endif
+  RemoveFile(bnr)
+  diag.DiagRemoveFile(bnr)
 enddef
 
 # Buffer "bnr" was renamed, and detached from the language servers for its
@@ -862,11 +900,6 @@ export def BufferLoadedInWin(bnr: number)
     # No language servers for this buffer
     return
   endif
-  for lspserver in lspservers
-    if !lspserver->empty() && lspserver.ready
-      lspserver.textdocDidChange(bnr)
-    endif
-  endfor
   # Refresh the displayed diags visuals
   if opt.lspOptions.autoHighlightDiags
     diag.DiagsRefresh(bnr)
@@ -1211,10 +1244,9 @@ enddef
 export def Hover(cmdmods: string)
   var lspserver: dict<any> = buf.CurbufGetServerChecked('hover')
   if lspserver->empty()
-    if &keywordprg !=# ':LspHover' && !empty(&l:keywordprg) && opt.lspOptions.hoverFallback
-      if cmdmods !~ 'silent'
-      	util.WarnMsg($'Hovering unsupported; falling back to built-in.')
-      endif
+    if cmdmods !~ 'silent' && &keywordprg !=# ':LspHover' &&
+	!empty(&l:keywordprg) && opt.lspOptions.hoverFallback
+      util.WarnMsg($'Hovering unsupported; falling back to built-in.')
       try
       	execute 'normal! K'
       catch /.*/

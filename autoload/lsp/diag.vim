@@ -507,12 +507,8 @@ def AleLocListItem(bnr: number, diag: dict<any>): dict<any>
     endCol = bnr->getbufline(endLnum)[0]->strlen()
   else
     # The byte index of the exclusive end is the column of the last byte in
-    # the range.  A range ending past the end of the line ends with the line.
-    var endText = bnr->getbufline(endLnum)[0]
-    endCol = endText->byteidxcomp(range.end.character)
-    if endCol < 0
-      endCol = endText->strlen()
-    endif
+    # the range
+    endCol = util.GetLineByteFromPos(bnr, range.end)
   endif
   if endLnum < lnum || (endLnum == lnum && endCol < col)
     [endLnum, endCol] = [lnum, col]
@@ -555,9 +551,9 @@ def ClearAleDiags(bnr: number)
   endif
   var linterNames = aleLinterNames->remove(bnr)
 
-  # ALE drops a deleted buffer on BufDelete, before the BufWipeout that
-  # detaches it from the language servers.  Clearing its results then would
-  # make ALE track the deleted buffer again.
+  # Clearing the results makes ALE track the buffer, so skip a buffer that
+  # ALE doesn't track (e.g. one it dropped on BufDelete).  A buffer deleted
+  # with ":bdelete" is detached on BufUnload, while ALE still tracks it.
   if !get(g:, 'ale_buffer_info', {})->has_key(bnr)
     return
   endif
@@ -651,6 +647,12 @@ export def DiagNotification(lspserver: dict<any>, uri: string, diags_arg: list<d
 
   var bnr: number = DiagBufnr(lspserver.docBufnrs, uri)
   if bnr == -1
+    return
+  endif
+  if !bnr->bufloaded()
+    # Don't load a buffer just to display its diagnostics: loading it attaches
+    # it to the language servers again (e.g. clangd clears the diagnostics of
+    # a buffer closed by ":bdelete").
     return
   endif
 

@@ -893,6 +893,11 @@ entire workspace.
 			different file updates the outline window with the
 			symbols for the new file.
 
+			The outline windows in all the tab pages show the
+			same outline buffer, with the symbols of the file it
+			was last updated for.  Selecting a symbol in any of
+			them jumps to that file.
+
 			You can use |lsp-opt-outlineOnRight| and
 			|lsp-opt-outlineWinSize| to customize the placement
 			and size of the window.
@@ -1038,7 +1043,7 @@ the symbol under the cursor.
 
 			This command supports |:command-modifiers|.  Use
 			|:silent| to suppress "No documentation found" warning
-			messages.
+			messages and the |lsp-opt-hoverFallback| fallback.
 
 			With |lsp-opt-hoverOnCursorHold| enabled, hover
 			documentation is requested automatically when the
@@ -1329,7 +1334,9 @@ of such a file follows it:
 
 - Creating a file over an existing one, which the language server asks for
   with the "overwrite" option, empties its buffer too.  The buffer keeps its
-  undo history (see 'undoreload').
+  undo history (see 'undoreload').  A file that does not exist yet but has
+  an empty buffer, as after |:edit| of a new file, is created by writing
+  the buffer.
 - Renaming a file gives its buffer the new name.  The buffer keeps its text,
   its undo history and its unsaved changes, and the language servers get it
   as the document with the new name.  When the renamed file replaces a file,
@@ -1350,7 +1357,14 @@ would change or remove a buffer with unsaved changes, as |:edit| does without
 
 The changes of a workspace edit are applied in order.  When one fails, its
 error is shown and the changes after it are not applied, while the changes
-before it stay applied.
+before it stay applied.  When the workspace edit of a code action fails, the
+command of the code action is not run.
+
+The language server can make the text edits for a file that is open at the
+server for the version of its text that the server has.  When the buffer of
+the file has changed since, e.g. while the code action menu was shown, the
+edits are not for its text: none of the changes of the workspace edit is
+applied and an error is shown.  Make the request again.
 
 ------------------------------------------------------------------------------
 							*lsp-hierarchy-cmds*
@@ -1801,7 +1815,8 @@ hoverInPreview		|Boolean| option. Show |:LspHover| in a preview window
 						*lsp-opt-hoverOnCursorHold*
 hoverOnCursorHold	|Boolean| option. Automatically request hover
 			documentation when the cursor is idle
-			(|CursorHold|).
+			(|CursorHold|).  Automatic requests never fall back
+			to 'keywordprg' (see |lsp-opt-hoverFallback|).
 			By default this is set to false.
 
 						*lsp-opt-hoverDelay*
@@ -1833,7 +1848,9 @@ hoverFallback		|Boolean| option. Fall back to file type 'keywordprg'
 			in case no hover information is available.  If enabled,
 			and local 'keywordprg' is not empty and is not set to
 			|:LspHover|, then |:LspHover| executes the built-in |K|
-			behavior as a fallback.
+			behavior as a fallback.  `:silent LspHover` and
+			automatic hover requests (|lsp-opt-hoverOnCursorHold|)
+			do not fall back.
 
 			Do not set 'keywordprg' to |:LspHover| when using this
 			option, because that would disable fallback and can
@@ -2845,6 +2862,15 @@ LspDetached			A |User| autocommand fired when a buffer is
 				attached to the language servers for its new
 				name), or when |LspDisable()| removes the
 				buffer from all the attached servers.
+				unloaded (e.g. by |:bdelete|, |:bunload| or
+				when reloading it with |:edit!|), wiped out,
+				when a buffer is renamed (with |:file| or
+				|:saveas|, after which it is attached to the
+				language servers for its new name), or when
+				|LspDisable()| removes the buffer from all the
+				attached servers.  When an unloaded buffer is
+				loaded again, it is attached to the language
+				servers again and |LspAttached| is fired.
 
 				This autocommand is fired once per buffer
 				after all attached language servers are

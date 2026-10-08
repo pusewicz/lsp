@@ -24,7 +24,7 @@ jobs:
         run: |
           set -euo pipefail
           brew install --cask macvim-app
-          brew install llvm go gopls
+          brew install llvm go gopls coreutils
           rustup component add rust-src
           arch=$(uname -m)
           if [[ $arch == arm64 ]]; then
@@ -43,12 +43,16 @@ jobs:
       - name: Install the TypeScript language server
         working-directory: test
         run: npm ci
+      - name: Test the test runner
+        working-directory: test
+        run: ./runner_selftest.sh
       - name: Run Tests
         env:
           LSP_DEBUG: 1
         run: |
           set -euo pipefail
           sw_vers
+          "$(brew --prefix llvm)/bin/clangd" --version
           rust-analyzer --version
           /Applications/MacVim.app/Contents/MacOS/Vim --version
           cd test
@@ -62,4 +66,5 @@ jobs:
             /tmp/lsp-*.log
             /tmp/lsp-*.err
             test/results_*.txt
+            test/screen_*.log
           if-no-files-found: ignore

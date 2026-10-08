@@ -266,6 +266,8 @@ cd test && ./run_tests.sh clangd_tests.vim markdown_tests.vim
 
 Set `VIMPRG` to run the tests with another Vim. Set `LSP_DEBUG` to have the language servers log their messages to `lsp-<server>.log` and `lsp-<server>.err` in the temporary directory, as `:LspServer debug on` does; CI does that and keeps these logs of a failed run as an artifact.
 
+`cd test && ./runner_selftest.sh` checks the test runner itself with a test file whose setup and teardown hooks fail; CI runs it before the suite.
+
 ## Similar Vim LSP Plugins
 
 1. [vim-lsp: Async Language Server Protocol](https://github.com/prabirshrestha/vim-lsp)

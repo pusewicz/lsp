@@ -227,7 +227,8 @@ def ProcessApplyEditReq(lspserver: dict<any>, request: dict<any>)
   endif
 
   try
-    var result = textedit.ApplyWorkspaceEdit(workspaceEditParams.edit)
+    var result = textedit.ApplyWorkspaceEdit(workspaceEditParams.edit,
+					     lspserver)
     lspserver.sendResponse(request, result, {})
   catch
     SendInternalError(lspserver, request,

@@ -742,6 +742,19 @@ def AsyncRpcSupersede(lspserver: dict<any>, key: string, method: string,
   return id
 enddef
 
+# Cancel the pending requests about buffer "bnr" sent with AsyncRpcSupersede()
+# (their key ends with the buffer number), and ignore their replies.
+def CancelBufferRequests(lspserver: dict<any>, bnr: number)
+  for [key, req] in lspserver.supersedableRequests->items()
+    if key =~# $' {bnr}$'
+      lspserver.supersedableRequests->remove(key)
+      if req.id > 0
+	lspserver.cancelRequest(req.id)
+      endif
+    endif
+  endfor
+enddef
+
 # Returns true when the "lspserver" has "feature" enabled.
 # By default, all the features of a lsp server are enabled.
 def FeatureEnabled(lspserver: dict<any>, feature: string): bool
@@ -847,20 +860,6 @@ def HunkText(newBufLines: list<string>, hunk: dict<number>, hasEol: bool): strin
   return text
 enddef
 
-# Length of "line" in the position encoding negotiated with the server
-# ("posEncoding": 8, 16 or 32).  Used to anchor a range to the end of a line
-# that only exists in a cached (old-document) snapshot, so
-# offset.EncodePosition() (which reads the live buffer) doesn't apply.
-def EncodedLineLen(lspserver: dict<any>, line: string): number
-  if lspserver.posEncoding == 8
-    return line->strlen()
-  elseif lspserver.posEncoding == 16
-    return line->strutf16len(true)
-  else
-    return line->strchars()
-  endif
-enddef
-
 # Send a file/document opened notification to the language server.
 def TextdocDidOpen(lspserver: dict<any>, bnr: number, ftype: string): void
   # Notification: 'textDocument/didOpen'
@@ -904,6 +903,9 @@ enddef
 def TextdocDidClose(lspserver: dict<any>, bnr: number): void
   # Notification: 'textDocument/didClose'
   # Params: DidCloseTextDocumentParams
+
+  # A reply about the closed document is of no use
+  CancelBufferRequests(lspserver, bnr)
 
   var params = {
     textDocument: {
@@ -1074,15 +1076,22 @@ def TextdocDidChange(lspserver: dict<any>, bnr: number): void
 
   var contentChanges: list<dict<any>>
   var hasEol = util.BufWritesEol(bnr)
+  var newBufLines = BufferLines(bnr)
+  var cachedBufferContent = lspserver.cachedBufferContent
+  var cachedBufferEol = lspserver.cachedBufferEol
 
   if textDocumentSync == 1 || !opt.lspOptions.incrementalSync
     # TextDocumentSyncKind: Full — send the entire buffer on every change.
-    contentChanges = [{text: LinesText(BufferLines(bnr), hasEol)}]
+    # A change that leaves the text as it was, which Vim also passes to the
+    # listeners, is not sent: the version of the document then stays that
+    # of its text.
+    if !cachedBufferContent->has_key(bnr)
+	|| cachedBufferContent[bnr] != newBufLines
+	|| cachedBufferEol->get(bnr, !hasEol) != hasEol
+      contentChanges = [{text: LinesText(newBufLines, hasEol)}]
+    endif
   elseif exists_compiled('*diff')
     # TextDocumentSyncKind: Incremental — send only the changed lines.
-    var newBufLines = BufferLines(bnr)
-    var cachedBufferContent = lspserver.cachedBufferContent
-    var cachedBufferEol = lspserver.cachedBufferEol
     if cachedBufferContent->has_key(bnr)
 	&& cachedBufferEol[bnr] == hasEol
 	&& cachedBufferContent[bnr]->empty() == newBufLines->empty()
@@ -1108,10 +1117,10 @@ def TextdocDidChange(lspserver: dict<any>, bnr: number): void
 	  # doesn't start at the first line, pull the start back over the
 	  # newline that precedes it too, so that line's break is removed.
 	  endLine = oldLineCount - 1
-	  endChar = EncodedLineLen(lspserver, oldBufLines[endLine])
+	  endChar = offset.EncodedLineLen(lspserver, oldBufLines[endLine])
 	  if startLine > 0
 	    startLine -= 1
-	    startChar = EncodedLineLen(lspserver, oldBufLines[startLine])
+	    startChar = offset.EncodedLineLen(lspserver, oldBufLines[startLine])
 	    if hunk.to_count > 0
 	      text = "\n" .. text
 	    endif
@@ -1132,9 +1141,9 @@ def TextdocDidChange(lspserver: dict<any>, bnr: number): void
       # full-text change.
       contentChanges = [{text: LinesText(newBufLines, hasEol)}]
     endif
-    cachedBufferContent[bnr] = newBufLines
   endif
-  lspserver.cachedBufferEol[bnr] = hasEol
+  cachedBufferContent[bnr] = newBufLines
+  cachedBufferEol[bnr] = hasEol
 
   if contentChanges->empty()
     return
@@ -2171,42 +2180,6 @@ def TypeHierarchy(lspserver: dict<any>, direction: number)
   typehier.ShowTypeHierarchy(lspserver, isSuper, typeHierItem)
 enddef
 
-# Decode the ranges in "WorkspaceEdit"
-def DecodeWorkspaceEdit(lspserver: dict<any>, workspaceEdit: dict<any>)
-  if !lspserver.needOffsetEncoding
-    return
-  endif
-  if workspaceEdit->has_key('changes')
-    for [uri, changes] in workspaceEdit.changes->items()
-      var bnr: number = util.LspUriToBufnr(uri)
-      if bnr <= 0
-	continue
-      endif
-      # Decode the position encoding in all the text edit locations
-      changes->map((_, textEdit) => {
-	lspserver.decodeRange(bnr, textEdit.range)
-	return textEdit
-      })
-    endfor
-  endif
-
-  if workspaceEdit->has_key('documentChanges')
-    for change in workspaceEdit.documentChanges
-      if !change->has_key('kind')
-	var bnr: number = util.LspUriToBufnr(change.textDocument.uri)
-	if bnr <= 0
-	  continue
-	endif
-	# Decode the position encoding in all the text edit locations
-	change.edits->map((_, textEdit) => {
-	  lspserver.decodeRange(bnr, textEdit.range)
-	  return textEdit
-	})
-      endif
-    endfor
-  endif
-enddef
-
 # Request: "textDocument/rename"
 # Param: RenameParams
 def RenameSymbol(lspserver: dict<any>, newName: string)
@@ -2231,21 +2204,7 @@ def RenameSymbol(lspserver: dict<any>, newName: string)
   endif
 
   # result: WorkspaceEdit
-  DecodeWorkspaceEdit(lspserver, reply.result)
-  textedit.ApplyWorkspaceEdit(reply.result)
-enddef
-
-# Decode the range in "CodeAction"
-def DecodeCodeAction(lspserver: dict<any>, actionList: list<dict<any>>)
-  if !lspserver.needOffsetEncoding
-    return
-  endif
-  actionList->map((_, act) => {
-      if !act->has_key('disabled') && act->has_key('edit')
-	DecodeWorkspaceEdit(lspserver, act.edit)
-      endif
-      return act
-    })
+  textedit.ApplyWorkspaceEdit(reply.result, lspserver)
 enddef
 
 # Parse a code action query for request-side filtering.
@@ -2292,6 +2251,11 @@ def ParseCodeActionQuery(query: string): dict<any>
   return result
 enddef
 
+# Return the "params" of the "textDocument/codeAction" request to "lspserver"
+# for lines "line1" to "line2" of the file "fname_arg", with the diagnostics of
+# the server on them and the code action kinds in "query", and the
+# "selectorQuery" in "query" that picks from the code actions.  When the lines
+# are just the cursor line, the range starts at the cursor.
 def GetCodeActionParams(lspserver: dict<any>, fname_arg: string, line1: number,
 			line2: number, query: string): dict<any>
   # Keep request construction in one place so sync/async code action paths
@@ -2302,7 +2266,7 @@ def GetCodeActionParams(lspserver: dict<any>, fname_arg: string, line1: number,
   var r: dict<dict<number>> = {
     start: {
       line: line1 - 1,
-      character: line1 == line2
+      character: line1 == line2 && line1 == line('.')
 	? util.GetCharIdxWithCompChar(getline('.'), charcol('.') - 1)
 	: 0
     },
@@ -2360,8 +2324,6 @@ def CodeAction(lspserver: dict<any>, fname_arg: string, line1: number,
     return
   endif
 
-  DecodeCodeAction(lspserver, reply.result)
-
   codeaction.ApplyCodeAction(lspserver, reply.result, reqInfo.selectorQuery)
 enddef
 
@@ -2380,12 +2342,8 @@ def CodeActionAsync(lspserver: dict<any>, fname_arg: string, line1: number,
   var reqid = lspserver.rpc_a('textDocument/codeAction', params,
 	(_: dict<any>, result, rpcError) => {
 	  var actionList: list<dict<any>> = []
-    # Decode edits here so downstream UI/execution uses buffer coordinates.
 	  if rpcError->empty() && result->type() == v:t_list
 	    actionList = result
-	    if !actionList->empty()
-	      DecodeCodeAction(lspserver, actionList)
-	    endif
 	  endif
 
 	  Cbfunc(lspserver, actionList, reqInfo.selectorQuery, rpcError)

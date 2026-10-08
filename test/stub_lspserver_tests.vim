@@ -14,6 +14,8 @@ import '../autoload/lsp/buffer.vim' as buf
 import '../autoload/lsp/capabilities.vim'
 import '../autoload/lsp/ontypeformat.vim' as ontypeformat
 import '../autoload/lsp/textedit.vim' as textedit
+import '../autoload/lsp/inlayhints.vim' as inlayhints
+import '../autoload/lsp/capabilities.vim' as capabilities
 import '../autoload/lsp/hover.vim' as hover
 import '../autoload/lsp/options.vim' as opt
 
@@ -594,6 +596,54 @@ def g:Test_ShowHoverInfo_ContentModifiedIsNotCached()
   :%bw!
 enddef
 
+# Test that, with 'hoverFallback' enabled, an empty hover result runs
+# 'keywordprg' only for a request that is not silent: the automatic hover on
+# CursorHold is silent and must not run it, while an explicit hover at the same
+# position, answered from the cache, still falls back.
+def g:Test_HoverReply_FallbackOnlyWhenNotSilent()
+  silent! edit XHoverFallback.txt
+  setline(1, 'fallbackword')
+  command! -nargs=* XHoverFallback g:HoverFallbackArg = <q-args>
+  setlocal keywordprg=:XHoverFallback
+  g:LspOptionsSet({hoverFallback: true})
+  var lspserver = MakeTestLspServer([])
+  try
+    var reqctx = hover.HoverRequestContextGet(lspserver)
+    hover.HoverReply(lspserver, {contents: ''}, {}, 'silent', reqctx)
+    assert_false(exists('g:HoverFallbackArg'))
+
+    assert_true(hover.HoverShowCached(reqctx, lspserver, ''))
+    assert_equal('fallbackword', g:HoverFallbackArg)
+  finally
+    g:LspOptionsSet({hoverFallback: false})
+    delcommand XHoverFallback
+    unlet! g:HoverFallbackArg
+  endtry
+  :%bw!
+enddef
+
+# Test that ':silent LspHover' in a buffer without a language server does not
+# fall back to 'keywordprg', while ':LspHover' does.
+def g:Test_Hover_NoServerFallbackOnlyWhenNotSilent()
+  :enew!
+  setline(1, 'fallbackword')
+  command! -nargs=* XHoverFallback g:HoverFallbackArg = <q-args>
+  setlocal keywordprg=:XHoverFallback
+  g:LspOptionsSet({hoverFallback: true})
+  try
+    lsp.Hover('silent')
+    assert_false(exists('g:HoverFallbackArg'))
+
+    lsp.Hover('')
+    assert_equal('fallbackword', g:HoverFallbackArg)
+  finally
+    g:LspOptionsSet({hoverFallback: false})
+    delcommand XHoverFallback
+    unlet! g:HoverFallbackArg
+  endtry
+  :%bw!
+enddef
+
 # Returns the last message in the message history.
 def LastMessage(): string
   return execute('messages')->split("\n")[-1]
@@ -1015,6 +1065,40 @@ def g:Test_DiagNotification_DeduplicatesAcrossPushAndPull()
   :%bw!
 enddef
 
+# Diagnostics published for an unloaded buffer are ignored and must not load
+# it, as loading it attaches it to the language servers again.  So a buffer
+# drops its diagnostics when it is unloaded, as they would go stale.
+def g:Test_DiagNotification_IgnoresUnloadedBuffer()
+  g:LspOptionsSet({autoHighlightDiags: false})
+  silent! edit XDiagUnloadedBuffer.txt
+  var bnr = bufnr()
+  var uri = util.LspBufnrToUri(bnr)
+  var lspserver = MakeTestLspServer([])
+  lspserver.featureEnabled = (_) => true
+  var errDiag = {
+    range: {
+      start: {line: 0, character: 0},
+      end: {line: 0, character: 1}
+    },
+    severity: 1,
+    message: 'error'
+  }
+
+  # A loaded buffer gets the diagnostics without being attached, and loses
+  # them when it is unloaded
+  diag.DiagNotification(lspserver, uri, [errDiag], 'push')
+  assert_equal(1, diag.DiagsGetErrorCount(bnr).Error)
+  :enew
+  assert_false(bufloaded(bnr))
+  assert_equal(0, diag.DiagsGetErrorCount(bnr).Error)
+
+  diag.DiagNotification(lspserver, uri, [errDiag], 'push')
+  assert_false(bufloaded(bnr))
+  assert_equal(0, diag.DiagsGetErrorCount(bnr).Error)
+  g:LspOptionsSet({autoHighlightDiags: true})
+  :%bw!
+enddef
+
 def g:Test_ProcessNotif_PublishDiagnostics_NotIgnoredForPullCapableServer()
   g:LspOptionsSet({autoHighlightDiags: false})
   silent! edit XPushDiagnosticsForPullServer.rs
@@ -1107,7 +1191,9 @@ def g:Test_PublishDiagnostics_UnopenedDocumentFoundByFileName()
     PublishDiagsNotif(notOpenedUri, ['not opened']))
   assert_equal(['not opened'], DiagMsgs(diag.GetDiagsForBuf(notOpened)))
 
-  silent! edit XDiagClosed.c
+  # The buffers are kept loaded: the diagnostics published for an unloaded
+  # buffer are ignored
+  silent! hide edit XDiagClosed.c
   var closed = bufnr()
   var closedUri = util.LspBufnrToUri(closed)
   lspserver.textdocDidOpen(closed, 'c')
@@ -1118,7 +1204,7 @@ def g:Test_PublishDiagnostics_UnopenedDocumentFoundByFileName()
   handlers.ProcessNotif(lspserver, PublishDiagsNotif(closedUri, []))
   assert_equal([], diag.GetDiagsForBuf(closed))
 
-  silent! edit XDiagWipedOut.c
+  silent! hide edit XDiagWipedOut.c
   var wipedOut = bufnr()
   :bwipeout!
   lspserver.docBufnrs[notOpenedUri] = wipedOut
@@ -1474,9 +1560,8 @@ def g:Test_AleSupport_DiagsSentPerServer()
   :%bw!
 enddef
 
-# The diagnostics of a buffer that ALE no longer tracks (it drops a deleted
-# buffer before the buffer is detached from the servers) are not cleared in
-# ALE, which would make ALE track the buffer again.
+# The diagnostics of a buffer that ALE doesn't track (e.g. one it dropped on
+# BufDelete) are not cleared in ALE, which would make ALE track the buffer.
 def g:Test_AleSupport_DeletedBufferNotSentToAle()
   var aleStub = InstallAleStub()
   silent! edit XAleSupportDeleted.c
@@ -1871,6 +1956,147 @@ def g:Test_CodeActionContext_MultiLineDiagnostic()
 		[]], sentDiags)
 
   ClearBufferDiagnostics()
+  :%bw!
+enddef
+
+# Returns a stub language server with the position encoding "posEncoding" that
+# published the diagnostics "diags" for the current buffer.  The params of the
+# code action requests sent to the server are added to "sentParams".
+def MakeDiagCodeActionServer(posEncoding: number, diags: list<dict<any>>,
+			     sentParams: list<dict<any>>): dict<any>
+  g:LspOptionsSet({autoHighlightDiags: false})
+  var lspserver = MakeTestLspServer([])
+  lspserver.posEncoding = posEncoding
+  lspserver.needOffsetEncoding = posEncoding != 32
+  lspserver.features = {diagnostics: true}
+  lspserver.featureEnabled = (_) => true
+  lspserver.isCodeActionProvider = true
+  lspserver.rpc_a = (_, params, _) => {
+    sentParams->add(params->deepcopy())
+    return 1
+  }
+  diag.DiagNotification(lspserver, util.LspBufnrToUri(bufnr()),
+			diags->deepcopy(), 'push')
+  return lspserver
+enddef
+
+# Returns the "character" values of all the positions in "value", the params
+# of a request or a part of them.
+def PositionCharacters(value: any): list<number>
+  var chars: list<number> = []
+  if value->type() == v:t_dict
+    if value->has_key('character')
+      chars->add(value.character)
+    endif
+    for v in value->values()
+      chars->extend(PositionCharacters(v))
+    endfor
+  elseif value->type() == v:t_list
+    for v in value
+      chars->extend(PositionCharacters(v))
+    endfor
+  endif
+  return chars
+enddef
+
+# The diagnostics in the context of a code action request are in the position
+# encoding of the language server.  A diagnostic that ends past the end of a
+# line with multibyte, composing and astral plane characters ends at the end
+# of the line, and no position is negative.
+def g:Test_CodeActionContext_DiagnosticPastEndOfLine()
+  silent! edit XCodeActionDiagPastEol.txt
+  setline(1, ['x;', "é a\u0301 😊"])
+  # The second line is 11 bytes, 7 UTF-16 code units and 6 characters long,
+  # and "a" is at byte 3, UTF-16 code unit 2 and character 2.
+  var aIdx = {8: 3, 16: 2, 32: 2}
+  var lineLen = {8: 11, 16: 7, 32: 6}
+  for posEncoding in [8, 16, 32]
+    var diags = [{range: {start: {line: 1, character: aIdx[posEncoding]},
+			  end: {line: 1, character: 40}},
+		  message: 'past the end'}]
+    var sentParams: list<dict<any>> = []
+    var lspserver = MakeDiagCodeActionServer(posEncoding, diags, sentParams)
+    cursor(2, 1)
+    lspserver.codeActionAsync(@%, 2, 2, '', (_, _, _, _) => 0)
+
+    var msg = $'UTF-{posEncoding}'
+    assert_equal(1, sentParams->len(), msg)
+    var params = sentParams[0]
+    assert_equal({start: {line: 1, character: 0},
+		  end: {line: 1, character: lineLen[posEncoding]}},
+		 params.range, msg)
+    # A UTF-32 server gets back the position that it sent, which is not
+    # decoded
+    var diagEnd = posEncoding == 32 ? 40 : lineLen[posEncoding]
+    assert_equal([{start: {line: 1, character: aIdx[posEncoding]},
+		   end: {line: 1, character: diagEnd}}],
+		 params.context.diagnostics->mapnew((_, d) => d.range), msg)
+    var chars = PositionCharacters(params)
+    assert_equal(4, chars->len(), msg)
+    assert_equal([], chars->filter((_, c) => c < 0), msg)
+
+    ClearBufferDiagnostics()
+  endfor
+  :%bw!
+enddef
+
+# The range of a code action request for a line that the cursor is not on
+# starts at the start of the line, not at the column of the cursor.
+def g:Test_CodeAction_OtherLineRangeStartsAtLineStart()
+  silent! edit XCodeActionOtherLine.txt
+  setline(1, ['x;', "é a\u0301 😊"])
+  for posEncoding in [8, 16, 32]
+    var sentParams: list<dict<any>> = []
+    var lspserver = MakeDiagCodeActionServer(posEncoding, [], sentParams)
+    cursor(2, 1)
+    :normal! $
+    lspserver.codeActionAsync(@%, 1, 1, '', (_, _, _, _) => 0)
+    assert_equal({start: {line: 0, character: 0},
+		  end: {line: 0, character: 2}},
+		 sentParams[0].range, $'UTF-{posEncoding}')
+    ClearBufferDiagnostics()
+  endfor
+  :%bw!
+enddef
+
+# The ranges of the code lens and the document link that are resolved are in
+# the position encoding of the language server.  A range that ends past the
+# end of a line with multibyte, composing and astral plane characters ends at
+# the end of the line.
+def g:Test_Resolve_RangePastEndOfLine()
+  silent! edit XResolvePastEol.txt
+  setline(1, ["é a\u0301 😊"])
+  var aIdx = {8: 3, 16: 2, 32: 2}
+  var lineLen = {8: 11, 16: 7}
+  for posEncoding in [8, 16, 32]
+    var lspserver = MakeTestLspServer([])
+    lspserver.posEncoding = posEncoding
+    lspserver.needOffsetEncoding = posEncoding != 32
+    lspserver.isCodeLensResolveProvider = true
+    lspserver.isDocumentLinkResolveProvider = true
+    var requests: list<dict<any>> = []
+    lspserver.rpc = (method: string, params: any): dict<any> => {
+      requests->add({method: method, params: params->deepcopy()})
+      return {result: params->deepcopy()}
+    }
+
+    # The range as the language server sent it, decoded
+    var range = {start: {line: 0, character: aIdx[posEncoding]},
+		 end: {line: 0, character: 40}}
+    lspserver.decodeRange(bufnr(), range)
+    lspserver.resolveCodeLens(bufnr(), {range: range->deepcopy()})
+    lspserver.resolveDocumentLink(bufnr(), {range: range->deepcopy()})
+
+    var msg = $'UTF-{posEncoding}'
+    assert_equal(['codeLens/resolve', 'documentLink/resolve'],
+		 requests->mapnew((_, r) => r.method), msg)
+    var rangeEnd = posEncoding == 32 ? 40 : lineLen[posEncoding]
+    for r in requests
+      assert_equal({start: {line: 0, character: aIdx[posEncoding]},
+		    end: {line: 0, character: rangeEnd}},
+		   r.params.range, $'{msg}: {r.method}')
+    endfor
+  endfor
   :%bw!
 enddef
 
@@ -2417,6 +2643,110 @@ def g:Test_LspDetached_AutocmdNotFiredWithoutAttachedServer()
   :bw!
 enddef
 
+# Test that detaching a buffer from its language servers removes the inlay
+# hint autocmds of the buffer.
+def g:Test_LspDetached_RemovesInlayHintAutocmds()
+  silent! edit XLspDetachedInlayHints.txt
+  var bnr = bufnr()
+  var bufPattern = $'<buffer={bnr}>'
+
+  var srv = MakeTestLspServer([])
+  srv.isInlayHintProvider = true
+  srv.syncInit = true
+  srv.featureEnabled = (_) => true
+  buf.BufLspServerSet(bnr, srv)
+  g:LspOptionsSet({showInlayHints: true})
+  try
+    inlayhints.BufferInit(srv, bnr)
+    assert_notequal([], autocmd_get({group: 'LspInlayHints', pattern: bufPattern}))
+    assert_notequal([], autocmd_get({group: 'LspAttached', pattern: bufPattern}))
+
+    lsp.RemoveFile(bnr)
+    assert_equal([], autocmd_get({group: 'LspInlayHints', pattern: bufPattern}))
+    assert_equal([], autocmd_get({group: 'LspAttached', pattern: bufPattern}))
+  finally
+    g:LspOptionsSet({showInlayHints: false})
+    :bw!
+  endtry
+enddef
+
+# Detaching a buffer cancels its initialization deferred until the language
+# server is ready, but not the one of the other buffers waiting for it.
+def g:Test_RemoveFile_CancelsOnlyItsPendingBufferInit()
+  var notifications: list<dict<any>> = []
+  var srv = MakeTestLspServer(notifications)
+  srv.caps = {textDocumentSync: 2}
+  capabilities.ProcessServerCaps(srv, srv.caps)
+  var readyAcmd = {group: 'LSPBufferAutocmds', event: 'User',
+		   pattern: $'LspServerReady_{srv.id}'}
+  silent! edit XPendingBufferInit1.txt
+  var bnr1 = bufnr()
+  silent! new XPendingBufferInit2.txt
+  var bnr2 = bufnr()
+  for bnr in [bnr1, bnr2]
+    buf.BufLspServerSet(bnr, srv)
+    autocmd_add([readyAcmd->extendnew({once: true,
+				       cmd: $'BufferInit({srv.id}, {bnr})'})])
+  endfor
+
+  lsp.RemoveFile(bnr1)
+  var pending = autocmd_get(readyAcmd)
+  assert_equal([$'BufferInit({srv.id}, {bnr2})'],
+	       pending->mapnew((_, acmd) => acmd.cmd))
+  assert_true(pending[0].once)
+
+  # The kept autocmd still initializes its buffer once the server is ready
+  srv.running = true
+  srv.ready = true
+  exe $'doautocmd <nomodeline> LSPBufferAutocmds User LspServerReady_{srv.id}'
+  assert_equal([['textDocument/didOpen', util.LspBufnrToUri(bnr2)]],
+	       notifications->mapnew((_, n) => [n.method, n.params.textDocument.uri]))
+  assert_equal([], autocmd_get(readyAcmd))
+
+  lsp.RemoveFile(bnr2)
+  :%bw!
+enddef
+
+# Detaching a buffer cancels its pending requests (e.g. document highlight)
+# before closing it, so their late replies are ignored, and keeps the pending
+# requests for the other buffers.
+def g:Test_RemoveFile_CancelsPendingBufferRequests()
+  var notifications: list<dict<any>> = []
+  var srv = MakeTestLspServer(notifications)
+  srv.caps = {textDocumentSync: 2}
+  capabilities.ProcessServerCaps(srv, srv.caps)
+  srv.isDocumentHighlightProvider = true
+  srv.running = true
+  srv.ready = true
+  var lastId = 0
+  srv.rpc_a = (_, _, _) => {
+    lastId += 1
+    return lastId
+  }
+
+  silent! edit XCancelOnDetach1.txt
+  var bnr1 = bufnr()
+  silent! new XCancelOnDetach2.txt
+  var bnr2 = bufnr()
+  buf.BufLspServerSet(bnr1, srv)
+  buf.BufLspServerSet(bnr2, srv)
+  srv.docHighlight(bnr2, 'silent')
+  wincmd p
+  srv.docHighlight(bnr1, 'silent')
+
+  lsp.RemoveFile(bnr1)
+  assert_equal([['$/cancelRequest', {id: 2}],
+		['textDocument/didClose',
+		 {textDocument: {uri: util.LspBufnrToUri(bnr1)}}]],
+	       notifications->mapnew((_, n) => [n.method, n.params]))
+  assert_equal([$'textDocument/documentHighlight {bnr2}'],
+	       srv.supersedableRequests->keys())
+
+  lsp.RemoveFile(bnr2)
+  assert_equal({}, srv.supersedableRequests)
+  :%bw!
+enddef
+
 def g:Test_ProcessApplyEditReq_SuccesssfulEdit()
   var lspserver = MakeTestLspServer([])
   var responses: list<dict<any>> = []
@@ -2676,7 +3006,7 @@ def g:Test_ApplyCodeAction_RoutesToOriginServer_AfterBufferSwitch()
     }
   ]
 
-  silent! edit! XCodeActionRoutingOther.txt
+  silent! hide edit XCodeActionRoutingOther.txt
   setline(1, ['other'])
   assert_notequal(originBnr, bufnr())
 
@@ -3417,6 +3747,43 @@ def g:Test_TextdocDidChange_FullSync_TrailingNewlineFollowsWriteRule()
   :%bw!
 enddef
 
+# With full sync, a change that leaves the text as it was is not sent, so the
+# version of the document stays that of its text, for which the language
+# server can make edits.  The text that is sent is the one that incremental
+# sync diffs against when it is turned on.
+def g:Test_TextdocDidChange_FullSync_SkipsUnchangedText()
+  silent! edit XFullSyncUnchanged.txt
+  setline(1, ['abc'])
+  var notifications: list<dict<any>> = []
+  var lspserver = MakeTestLspServer(notifications)
+  var bnr = bufnr()
+  lspserver.textdocDidOpen(bnr, 'text')
+  var version = lspserver.docVersions[bnr]
+
+  setline(1, 'xyz')
+  setline(1, 'abc')
+  lspserver.textdocDidChange(bnr)
+  assert_equal([], notifications)
+  assert_equal(version, lspserver.docVersions[bnr])
+
+  setline(1, 'ABC')
+  lspserver.textdocDidChange(bnr)
+  assert_equal([{text: "ABC\n"}], notifications[-1].params.contentChanges)
+  assert_true(notifications[-1].params.textDocument.version > version)
+
+  if opt.incrementalSyncSupported
+    g:LspOptionsSet({incrementalSync: true})
+    append('$', 'def')
+    lspserver.textdocDidChange(bnr)
+    assert_equal([{range: {start: {line: 1, character: 0},
+			   end: {line: 1, character: 0}},
+		   text: "def\n"}],
+		 notifications[-1].params.contentChanges)
+    g:LspOptionsSet({incrementalSync: false})
+  endif
+  :%bw!
+enddef
+
 # A buffer read from a file without a trailing newline is still written with
 # one when 'fixendofline' is set, so a line appended after the last one comes
 # after that newline in the server's document.
@@ -4027,10 +4394,10 @@ def g:Test_ApplyWorkspaceEdit_FileNameIsNotAPattern()
   endfor
 enddef
 
-# Returns a TextDocumentEdit inserting "text" at the start of the document
-# with URI "uri".
-def MakeInsertEdit(uri: string, text: string): dict<any>
-  return {textDocument: {uri: uri, version: v:null},
+# Returns a TextDocumentEdit inserting "text" at the start of version
+# "version" of the document with URI "uri".
+def MakeInsertEdit(uri: string, text: string, version: any = v:null): dict<any>
+  return {textDocument: {uri: uri, version: version},
 	  edits: [MakeTextEdit(0, 0, 0, 0, text)]}
 enddef
 
@@ -4065,6 +4432,56 @@ def g:Test_ApplyWorkspaceEdit_CreateOverwritesLoadedBuffer()
     assert_equal(['new'], getline(1, '$'))
     silent undo 0
     assert_equal(['old1', 'old2'], getline(1, '$'))
+  finally
+    delete(fname)
+    :%bwipe!
+  endtry
+enddef
+
+# Runs "Cmd" and returns true when Vim did not ask a question meanwhile.  Vim
+# asks it in a dialog that reads the keys typed by the user and ignores
+# typeahead, and the test runner types no keys, so the question would wait
+# forever.  <CR> is fed as typed first to answer it, and whether it is left
+# unread tells whether a question was asked.
+def AsksNoQuestion(Cmd: func()): bool
+  var unread: bool
+  test_feedinput("\r")
+  try
+    Cmd()
+  finally
+    unread = getcharstr(0) == "\r"
+  endtry
+  return unread
+enddef
+
+# Creating the file of a loaded buffer that has no file yet, as after ":edit"
+# of a new file, makes it the file of the buffer, so that Vim does not ask
+# what to do about a file created after editing started (W13).
+def g:Test_ApplyWorkspaceEdit_CreateFileOfNewBuffer()
+  var fname = 'XWorkspaceEditCreateNew.txt'
+  var uri = util.LspFileToUri(fname)
+  var Create = () => {
+    ApplyResourceOp({kind: 'create', uri: uri})
+  }
+  try
+    exe $'silent edit {fname}'
+    setlocal bomb
+    assert_true(AsksNoQuestion(Create))
+    assert_equal(0, getfsize(fname))
+    assert_notmatch('\[New\]', execute('file'))
+    bwipe!
+    delete(fname)
+
+    var bnr = bufadd(fname)
+    bnr->bufload()
+    assert_true(AsksNoQuestion(Create))
+    assert_equal(0, getfsize(fname))
+    assert_notmatch('\[New\]', util.ExecuteInBuffer(bnr, 'file'))
+    assert_equal([], win_findbuf(bnr))
+    var CheckTime = () => {
+      checktime
+    }
+    assert_true(AsksNoQuestion(CheckTime))
   finally
     delete(fname)
     :%bwipe!
@@ -4323,6 +4740,8 @@ def g:Test_ApplyWorkspaceEdit_RenameDetachesBuffer()
     var bnr = bufnr()
     var srv = MakeTestLspServer(notifications)
     srv.running = true
+    # The document is open only once the server is ready
+    srv.ready = true
     srv.supportsDidOpenClose = true
     buf.BufLspServerSet(bnr, srv)
     ApplyResourceOp(MakeRename(from, to))
@@ -4541,6 +4960,178 @@ def g:Test_ApplyWorkspaceEdit_AbortsAtFailedChange()
   finally
     delete(created)
     delete(existing)
+    :%bwipe!
+  endtry
+enddef
+
+# A text document edit for a version of a document that is open at the
+# language server is applied only when that is the version of the current
+# text, once the pending changes are sent.  Otherwise none of the changes of
+# the workspace edit is applied.  The versions are those of the documents
+# before the workspace edit.
+def g:Test_ApplyWorkspaceEdit_ChecksDocumentVersion()
+  var fname = 'XWorkspaceEdit+Version.txt'
+  var created = 'XWorkspaceEditVersionCreated.txt'
+  var other = 'XWorkspaceEditVersionOther.txt'
+  var uri = util.LspFileToUri(fname)
+  var notifications: list<dict<any>> = []
+  var lspserver = MakeTestLspServer(notifications)
+  silent! exe $'edit {fname}'
+  setline(1, ['one'])
+  var bnr = bufnr()
+  lspserver.textdocDidOpen(bnr, 'text')
+  var listenerId = listener_add((changedBnr, _, _, _, _) => {
+    lspserver.textdocDidChange(changedBnr)
+  }, bnr)
+  try
+    var version = lspserver.docVersions[bnr]
+    var edit = {documentChanges: [MakeInsertEdit(uri, 'a', version),
+				  MakeInsertEdit(uri, 'b', version)]}
+    assert_equal({applied: true}, textedit.ApplyWorkspaceEdit(edit, lspserver))
+    assert_equal(['baone'], getline(1, '$'))
+
+    edit = {documentChanges: [{kind: 'create', uri: util.LspFileToUri(created)},
+			      MakeInsertEdit(uri, 'c', version)]}
+    var result = textedit.ApplyWorkspaceEdit(edit, lspserver)
+    var current = lspserver.docVersions[bnr]
+    assert_true(current > version)
+    var reason = 'Text document edit failed, the edit is for version '
+      .. $'{version} of {fnamemodify(fname, ":p")}, which is at version {current}'
+    assert_equal({applied: false, failureReason: reason, failedChange: 1},
+		 result)
+    assert_equal($'Error: {reason}', LastMessage())
+    assert_false(filereadable(created))
+    assert_equal(['baone'], getline(1, '$'))
+
+    # A change that was not sent yet makes the version of the server stale.
+    # The document is found also by a URI that escapes fewer characters.
+    setline(1, 'two')
+    var unescapedUri = $'file://{fnamemodify(fname, ":p")}'
+    assert_notequal(uri, unescapedUri)
+    edit = {documentChanges: [MakeInsertEdit(unescapedUri, 'd', current)]}
+    assert_false(textedit.ApplyWorkspaceEdit(edit, lspserver).applied)
+    assert_equal(['two'], getline(1, '$'))
+    assert_equal('textDocument/didChange', notifications[-1].method)
+    assert_equal([{text: "two\n"}], notifications[-1].params.contentChanges)
+
+    # The version is not checked for an edit without one, for a document that
+    # is not open at the server or without a server.
+    edit = {documentChanges: [
+      MakeInsertEdit(uri, 'e'),
+      MakeInsertEdit(util.LspFileToUri(other), 'f', 1)
+    ]}
+    assert_equal({applied: true}, textedit.ApplyWorkspaceEdit(edit, lspserver))
+    assert_equal(['etwo'], getline(1, '$'))
+    assert_equal(['f'], getbufline(other, 1, '$'))
+    edit = {documentChanges: [MakeInsertEdit(uri, 'g', version)]}
+    assert_equal({applied: true}, textedit.ApplyWorkspaceEdit(edit))
+    assert_equal(['getwo'], getline(1, '$'))
+  finally
+    listener_remove(listenerId)
+    delete(created)
+    :%bwipe!
+  endtry
+enddef
+
+# The command of a code action is not run when the workspace edit of the code
+# action fails.
+def g:Test_CodeAction_SkipsCommandWhenEditFails()
+  var execCmds: list<string> = []
+  var lspserver = MakeCodeActionServer('test', [], execCmds)
+  var action = {title: 'Fix', edit: {documentChanges: [{kind: 'copy'}]},
+		command: {title: 'Fix', command: 'test.fix'}}
+  codeaction.HandleCodeAction(lspserver, action)
+  assert_equal([], execCmds)
+
+  action.edit = {documentChanges: []}
+  codeaction.HandleCodeAction(lspserver, action)
+  assert_equal(['test.fix'], execCmds)
+enddef
+
+# Returns a test language server that uses UTF-16 positions.
+def MakeUtf16LspServer(): dict<any>
+  var lspserver = MakeTestLspServer([])
+  lspserver.posEncoding = 16
+  lspserver.needOffsetEncoding = true
+  return lspserver
+enddef
+
+# Returns a workspace edit with UTF-16 positions that creates file "fname",
+# inserts in it a line starting with a character that takes two UTF-16 code
+# units, and then inserts "!" after that character.  Only the text of the
+# file after the changes before it tells where that is.
+def Utf16CreateAndEdit(fname: string): dict<any>
+  var uri = util.LspFileToUri(fname)
+  return {documentChanges: [
+    {kind: 'create', uri: uri},
+    MakeInsertEdit(uri, "😀ab\n"),
+    {textDocument: {uri: uri, version: v:null},
+     edits: [MakeTextEdit(0, 2, 0, 2, '!')]}
+  ]}
+enddef
+
+# The positions of the text edits of a rename are decoded for the text that
+# the edits are applied to, after the changes before them.
+def g:Test_RenameSymbol_DecodesEditsAfterPrecedingChanges()
+  var fname = 'XRenameUtf16Created.txt'
+  var lspserver = MakeUtf16LspServer()
+  lspserver.isRenameProvider = true
+  lspserver.rpc = (_: string, _: any): dict<any> => {
+    return {result: Utf16CreateAndEdit(fname)}
+  }
+  try
+    silent! edit XRenameUtf16Source.txt
+    lspserver.renameSymbol('new')
+    assert_equal(['😀!ab'], getbufline(fname, 1, '$'))
+  finally
+    delete(fname)
+    :%bwipe!
+  endtry
+enddef
+
+# The positions of the text edits of a code action, also of one that is
+# resolved, are decoded for the text that the edits are applied to, after the
+# changes before them.
+def g:Test_CodeAction_DecodesEditsAfterPrecedingChanges()
+  var fname = 'XCodeActionUtf16Created.txt'
+  var action = {title: 'Create'}
+  var lspserver = MakeUtf16LspServer()
+  lspserver.isCodeActionProvider = true
+  lspserver.isCodeActionResolveProvider = true
+  lspserver.rpc = (method: string, _: any): dict<any> => {
+    var resolved = action->extendnew({edit: Utf16CreateAndEdit(fname)})
+    return {result: method == 'codeAction/resolve' ? resolved : [resolved]}
+  }
+  try
+    silent! edit XCodeActionUtf16Source.txt
+    lspserver.codeAction(@%, 1, 1, '1')
+    assert_equal(['😀!ab'], getbufline(fname, 1, '$'))
+    exe $'bwipe! {fname}'
+    delete(fname)
+
+    codeaction.HandleCodeAction(lspserver, action)
+    assert_equal(['😀!ab'], getbufline(fname, 1, '$'))
+  finally
+    delete(fname)
+    :%bwipe!
+  endtry
+enddef
+
+# The positions of the text edits of a workspace edit that the language server
+# asks for are decoded for the text that the edits are applied to, after the
+# changes before them.
+def g:Test_ProcessApplyEditReq_DecodesEditsAfterPrecedingChanges()
+  var fname = 'XApplyEditUtf16Created.txt'
+  var responses: list<dict<any>> = []
+  var lspserver = MakeUtf16LspServer()
+  lspserver.sendResponse = function(CaptureResponse, [responses])
+  try
+    lspserver.processRequest({id: 1, method: 'workspace/applyEdit',
+			      params: {edit: Utf16CreateAndEdit(fname)}})
+    assert_equal({applied: true}, responses[0].result)
+    assert_equal(['😀!ab'], getbufline(fname, 1, '$'))
+  finally
+    delete(fname)
     :%bwipe!
   endtry
 enddef
@@ -4995,6 +5586,186 @@ def g:Test_LspOutline_KeepsBufferWithSimilarName()
     assert_notequal(0, decoyWinid->win_id2win())
   finally
     buf.BufLspServerRemove(srcBnr, lspserver)
+    :%bw!
+  endtry
+enddef
+
+# Returns a language server that reports a Function symbol for each line
+# "void {name}(void) {}" of a document.
+def MakeOutlineServer(): dict<any>
+  var lspserver = MakeTestLspServer([])
+  lspserver.running = true
+  lspserver.ready = true
+  lspserver.isDocumentSymbolProvider = true
+  lspserver.rpc_a = (method: string, params: any, Cbfunc: func): number => {
+    var symbols: list<dict<any>> = []
+    var lines = util.LspUriToBufnr(params.textDocument.uri)->getbufline(1, '$')
+    for idx in range(lines->len())
+      var name: string = lines[idx]->matchstr('^void \zs\w\+')
+      if !name->empty()
+	var symRange = {start: {line: idx, character: 5},
+			end: {line: idx, character: 5 + name->len()}}
+	symbols->add({name: name, kind: 12, range: symRange,
+		      selectionRange: symRange->deepcopy()})
+      endif
+    endfor
+    Cbfunc(lspserver, symbols, {})
+    return 1
+  }
+  return lspserver
+enddef
+
+# Edits the file "fname" with the lines "lines" in the current window, with
+# the language server "lspserver" for it.  Returns the buffer number.
+def OutlineSrcEdit(lspserver: dict<any>, fname: string,
+		   lines: list<string>): number
+  exe $'silent edit {fname}'
+  setline(1, lines)
+  :setlocal nomodified filetype=text
+  buf.BufLspServerSet(bufnr(), lspserver)
+  return bufnr()
+enddef
+
+# Returns the numbers of the lines in the outline buffer "bnr" with the
+# highlight of the current symbol.
+def OutlineHighlightLnums(bnr: number): list<number>
+  return prop_list(1, {bufnr: bnr, end_lnum: -1,
+		       types: ['LspOutlineHighlight']})
+    ->map((_, p) => p.lnum)
+enddef
+
+# Test that the outline highlights the symbol at the cursor in the source
+# file, after it is updated and when the cursor is idle.
+def g:Test_LspOutline_HighlightCurrentSymbol()
+  var lspserver = MakeOutlineServer()
+  var srcBnr = -1
+  try
+    srcBnr = OutlineSrcEdit(lspserver, 'XOutlineHighlight.c',
+			    ['void aOutlineFunc(void) {}', '',
+			     'void bOutlineFunc(void) {}'])
+    cursor(3, 1)
+    :LspOutline
+    var outlineBnr: number = ScratchBufsInTab()[0]
+    assert_equal([6], OutlineHighlightLnums(outlineBnr))
+
+    cursor(1, 1)
+    :doautocmd CursorHold
+    assert_equal([5], OutlineHighlightLnums(outlineBnr))
+    cursor(2, 1)
+    :doautocmd CursorHold
+    assert_equal([], OutlineHighlightLnums(outlineBnr))
+  finally
+    buf.BufLspServerRemove(srcBnr, lspserver)
+    :%bw!
+  endtry
+enddef
+
+# Test that the outline, open in two tab pages for the same file, keeps the
+# cursor in both outline windows, and jumps to and highlights the symbols at
+# their current lines in both tab pages, after it is refreshed in one of them.
+def g:Test_LspOutline_InTwoTabPages_Refresh()
+  var lspserver = MakeOutlineServer()
+  var srcBnr = -1
+  try
+    srcBnr = OutlineSrcEdit(lspserver, 'XOutlineTabs.c',
+			    ['void aOutlineFunc(void) {}',
+			     'void bOutlineFunc(void) {}'])
+    :LspOutline
+    var outlineBnr: number = ScratchBufsInTab()[0]
+    var outlineWinids: list<number> = [outlineBnr->bufwinid()]
+    :tab split
+    :LspOutline
+    assert_equal([outlineBnr], ScratchBufsInTab())
+    outlineWinids->add(outlineBnr->bufwinid())
+    win_execute(outlineWinids[0], 'cursor(6, 1)')
+    win_execute(outlineWinids[1], 'cursor(5, 1)')
+
+    append(0, ['', ''])
+    g:LspRequestDocSymbols()
+    assert_equal(['Function@', '  aOutlineFunc', '  bOutlineFunc'],
+		 outlineBnr->getbufline(4, '$'))
+    assert_equal([6, 5], outlineWinids->mapnew((_, w) => getcurpos(w)[1]))
+
+    # [tab page, outline line to select, its source line, source line for
+    # the highlight, its outline line]
+    for [tabnr, selLnum, srcLnum, hlSrcLnum, hlLnum] in [[1, 6, 4, 3, 5],
+							  [2, 5, 3, 4, 6]]
+      var ctx = $'tab page {tabnr}'
+      exe $'tabnext {tabnr}'
+      var srcWinid = win_getid()
+      outlineWinids[tabnr - 1]->win_gotoid()
+      cursor(selLnum, 1)
+      exe "normal \<CR>"
+      assert_equal([srcWinid, srcLnum, 6], [win_getid(), line('.'), col('.')],
+		   ctx)
+
+      cursor(hlSrcLnum, 1)
+      :doautocmd CursorHold
+      assert_equal([hlLnum], OutlineHighlightLnums(outlineBnr), ctx)
+    endfor
+  finally
+    buf.BufLspServerRemove(srcBnr, lspserver)
+    :%bw!
+  endtry
+enddef
+
+# Test that opening the outline in a second tab page keeps the symbols that it
+# shows, until the language server replies.
+def g:Test_LspOutline_InTwoTabPages_KeepsSymbolsUntilReply()
+  var lspserver = MakeOutlineServer()
+  var srcBnr = -1
+  try
+    srcBnr = OutlineSrcEdit(lspserver, 'XOutlineTabs.c',
+			    ['', 'void aOutlineFunc(void) {}'])
+    :LspOutline
+    var outlineBnr: number = ScratchBufsInTab()[0]
+    var outlineLines: list<string> = outlineBnr->getbufline(1, '$')
+    lspserver.rpc_a = (method: string, params: any, Cbfunc: func): number => 1
+
+    :tab split
+    :LspOutline
+    assert_equal(outlineLines, outlineBnr->getbufline(1, '$'))
+    outlineBnr->bufwinid()->win_gotoid()
+    cursor(5, 1)
+    exe "normal \<CR>"
+    assert_equal([2, srcBnr, 2, 6],
+		 [tabpagenr(), bufnr(), line('.'), col('.')])
+  finally
+    buf.BufLspServerRemove(srcBnr, lspserver)
+    :%bw!
+  endtry
+enddef
+
+# Test that the outline, open in two tab pages for different files, jumps to
+# the file that it shows from the tab page where it was not refreshed.
+def g:Test_LspOutline_InTwoTabPages_OtherFile()
+  var lspserver = MakeOutlineServer()
+  var srcBnrs: list<number> = []
+  try
+    srcBnrs->add(OutlineSrcEdit(lspserver, 'XOutlineTabsA.c',
+				['void aOutlineFunc(void) {}']))
+    var srcWinid = win_getid()
+    :LspOutline
+    var outlineBnr: number = ScratchBufsInTab()[0]
+    outlineBnr->bufwinid()->win_gotoid()
+
+    :tabnew
+    srcBnrs->add(OutlineSrcEdit(lspserver, 'XOutlineTabsB.c',
+				['', 'void bOutlineFunc(void) {}']))
+    :LspOutline
+    assert_equal(['Function@', '  bOutlineFunc'],
+		 outlineBnr->getbufline(4, '$'))
+
+    :tabfirst
+    assert_equal(outlineBnr, bufnr())
+    cursor(5, 1)
+    exe "normal \<CR>"
+    assert_equal([1, srcWinid, 'XOutlineTabsB.c', 2, 6],
+		 [tabpagenr(), win_getid(), bufname(), line('.'), col('.')])
+  finally
+    for bnr in srcBnrs
+      buf.BufLspServerRemove(bnr, lspserver)
+    endfor
     :%bw!
   endtry
 enddef

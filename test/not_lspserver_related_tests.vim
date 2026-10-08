@@ -5,6 +5,7 @@ import '../autoload/lsp/completion.vim' as completion
 import '../autoload/lsp/buffer.vim' as buf
 import '../autoload/lsp/capabilities.vim' as capabilities
 import '../autoload/lsp/documentlink.vim' as documentlink
+import '../autoload/lsp/offset.vim' as offset
 import '../autoload/lsp/selection.vim' as selection
 import '../autoload/lsp/util.vim' as util
 import '../autoload/lsp/options.vim' as opt
@@ -1351,6 +1352,7 @@ def g:Test_StaleRequestSupportCapability()
 	       capabilities.GetClientCaps().general.staleRequestSupport)
 enddef
 
+<<<<<<< HEAD
 # Test for the "willSave" and "willSaveWaitUntil" text document sync server
 # capabilities and the synchronization client capability
 def g:Test_WillSaveCapability()
@@ -1373,6 +1375,17 @@ def g:Test_WillSaveCapability()
   assert_equal({dynamicRegistration: false, didSave: true, willSave: true,
 		willSaveWaitUntil: true},
 	       capabilities.GetClientCaps().textDocument.synchronization)
+=======
+# Test that the client advertises the workspace edits that it applies: text
+# document edits for a version of a document and the file operations, up to
+# the first change that fails, but not the change annotations, which it
+# doesn't support.
+def g:Test_WorkspaceEditCapability()
+  assert_equal({documentChanges: true,
+		resourceOperations: ['rename', 'create', 'delete'],
+		failureHandling: 'abort'},
+	       capabilities.GetClientCaps().workspace.workspaceEdit)
+>>>>>>> main
 enddef
 
 # Test for parsing the line and column fragment in a document link file URI
@@ -1385,6 +1398,146 @@ def g:Test_DocumentLink_ParseFileUri()
   assert_equal([uri, 3, 2], documentlink.ParseFileUri($'{uri}#L3,2-L4,1'))
   assert_equal([uri, 1, 1], documentlink.ParseFileUri($'{uri}#L0'))
   assert_equal([uri, 1, 1], documentlink.ParseFileUri($'{uri}#section'))
+enddef
+
+# Test for converting the "file:" URI of a local file to a file name, whatever
+# character the path starts with, with an empty host, the host "localhost" or
+# without a host.  The scheme and the host are not case sensitive.
+def g:Test_LspUriToFile_LocalFileUri()
+  var cases: list<list<string>> = [
+    ['file:///_x/y.c', '/_x/y.c'],
+    ['file:///1x/y.c', '/1x/y.c'],
+    ['file:///.hidden/y.c', '/.hidden/y.c'],
+    ['file:///~x/y.c', '/~x/y.c'],
+    ['file:///-x/y.c', '/-x/y.c'],
+    ['file:///%C3%A9x/y.c', '/éx/y.c'],
+    ['file:///éx/y.c', '/éx/y.c'],
+    ['file:///%20x/y%25z.c', '/ x/y%z.c'],
+    ['file:///a:b/c.c', '/a:b/c.c'],
+    ['file:///', '/'],
+    ['file://localhost/_x/y.c', '/_x/y.c'],
+    ['FILE://LocalHost/_x/y.c', '/_x/y.c'],
+    ['file:/_x/y.c', '/_x/y.c'],
+    ['File:/_x/y.c', '/_x/y.c']
+  ]
+  for [uri, fname] in cases
+    assert_equal(fname, util.LspUriToFile(uri), uri)
+  endfor
+enddef
+
+# Test for converting a URI that is not the "file:" URI of a local file: it is
+# returned unchanged, as the name of the buffer for the URI.
+def g:Test_LspUriToFile_OtherUri()
+  var uris: list<string> = [
+    'file://otherhost/_x/y.c',
+    'file://localhost:8080/_x/y.c',
+    'file://otherhost',
+    'file:_x/y.c',
+    'file:',
+    'notfile:///_x/y.c',
+    'jdt://contents/java.base/java.lang/String.class?=p/%5C/a',
+    'fugitive:///_x/.git//0/a%20b.c',
+    'deno:/https/deno.land/x%40y/mod.ts',
+    'untitled:Untitled-1',
+    'https://example.com/a%20b',
+    '/_x/y.c'
+  ]
+  for uri in uris
+    assert_equal(uri, util.LspUriToFile(uri))
+  endfor
+enddef
+
+# Test that converting a file name to a URI and back gives the file name
+# again, and that converting the URI of a buffer name to a file name and back
+# gives the URI again, whatever the file name starts with.  A server may encode
+# a file URI differently from this plugin: it still leads to the URI that this
+# plugin uses for the file.
+def g:Test_LspFileToUri_RoundTrip()
+  var fnames: list<string> = [
+    '/_x/y.c',
+    '/1x/y.c',
+    '/.hidden/y.c',
+    '/~x/y.c',
+    '/-x/y.c',
+    '/éx/ąę€😀.c',
+    '/%x/a b+c#d?e[1]&f;g=h@i%41.c',
+    '/a:b/c.c'
+  ]
+  for fname in fnames
+    var uri: string = util.LspFileToUri(fname)
+    assert_match('^file:///', uri, fname)
+    assert_equal(fname, util.LspUriToFile(uri), uri)
+    assert_equal(uri, util.LspFileToUri(util.LspUriToFile(uri)), uri)
+  endfor
+
+  var canonical: string = util.LspFileToUri('/_x/a+b[1] c.c')
+  var variants: list<string> = [
+    'file:///_x/a+b%5b1%5d%20c.c',
+    'file://localhost/_x/a%2Bb%5B1%5D%20c.c',
+    'file:/_x/a%2bb%5B1%5D%20c.c'
+  ]
+  for uri in variants
+    assert_equal(canonical, util.LspFileToUri(util.LspUriToFile(uri)), uri)
+  endfor
+
+  var otherUris: list<string> = [
+    'file://otherhost/_x/y.c',
+    'jdt://contents/java.base/java.lang/String.class?=p/%5C/a',
+    'fugitive:///_x/.git//0/a%20b.c'
+  ]
+  for uri in otherUris
+    assert_equal(uri, util.LspFileToUri(util.LspUriToFile(uri)))
+  endfor
+enddef
+
+# Test for decoding the percent-encoded octets in the path of a "file:" URI.
+# The octets of a multibyte character form the character, whatever the case
+# of the hexadecimal digits.  "%25" is a "%" that is not decoded again.  A "%"
+# that is not followed by two hexadecimal digits, "%00" and a "+" are kept, and
+# so are octets that are not valid UTF-8 and a composing character after an
+# encoded octet.
+def g:Test_LspUriToFile_PercentDecoding()
+  var cases: list<list<string>> = [
+    ['file:///x/%C3%A9%E2%82%AC%F0%9F%98%80.c', '/x/é€😀.c'],
+    ['file:///x/e%CC%81.c', "/x/é.c"],
+    ["file:///x/%2B́%41́.c", "/x/+́Á.c"],
+    ['file:///x/%c3%a9%C3%a9%c3%A9.c', '/x/ééé.c'],
+    ['file:///x/%2b%2B%41%61%7e.c', '/x/++Aa~.c'],
+    ['file:///x/%25.c', '/x/%.c'],
+    ['file:///x/%2541.c', '/x/%41.c'],
+    ['file:///x/%25%34%31.c', '/x/%41.c'],
+    ['file:///x/a+b.c', '/x/a+b.c'],
+    ['file:///x/%', '/x/%'],
+    ['file:///x/%4', '/x/%4'],
+    ['file:///x/%G1%1G.c', '/x/%G1%1G.c'],
+    ['file:///x/%%41.c', '/x/%A.c'],
+    ['file:///x/100%.c', '/x/100%.c'],
+    ['file:///x/a%00b.c', '/x/a%00b.c'],
+    ['file:///x/%FF%E2%82.c', "/x/\xff\xe2\x82.c"]
+  ]
+  for [uri, fname] in cases
+    assert_equal(fname, util.LspUriToFile(uri), uri)
+  endfor
+enddef
+
+# Test for encoding a file name in a "file:" URI: each character other than an
+# unreserved character, ":" and "/" is replaced by the percent-encoded octets
+# of its UTF-8 encoding.  That includes a composing character after an
+# unreserved character, as in a file name in Unicode normalization form D.
+def g:Test_LspFileToUri_PercentEncoding()
+  var cases: list<list<string>> = [
+    ['/AZaz09-._~:/x.c', 'file:///AZaz09-._~:/x.c'],
+    ['/x/é€😀.c', 'file:///x/%C3%A9%E2%82%AC%F0%9F%98%80.c'],
+    ["/x/café.c", 'file:///x/cafe%CC%81.c'],
+    ["/x/+́.c", 'file:///x/%2B%CC%81.c'],
+    ['/x/ +%#?[]@!$&''()*,;=.c',
+     'file:///x/%20%2B%25%23%3F%5B%5D%40%21%24%26%27%28%29%2A%2C%3B%3D.c'],
+    ["/x/a\tb\nc.c", 'file:///x/a%09b%0Ac.c'],
+    ["/x/\xff.c", 'file:///x/%FF.c']
+  ]
+  for [fname, uri] in cases
+    assert_equal(uri, util.LspFileToUri(fname), fname)
+  endfor
 enddef
 
 # Returns what checking buffer "bnr" in a hidden popup window could change.
@@ -1706,6 +1859,129 @@ def g:Test_SelectionStart_RangeEnd()
     set selection&
     :bw!
   endtry
+enddef
+
+# Set the text of the current buffer for the position encoding tests: lines
+# with ASCII, multibyte, astral plane and composing characters and an empty
+# line.
+def SetPositionEncodingTestLines()
+  setline(1, ['int abc;', 'ééé', '😊😊', "a\u0301b\u0301", ''])
+  assert_equal([8, 6, 8, 6, 0], getline(1, '$')->mapnew((_, l) => l->strlen()))
+  assert_equal([8, 3, 4, 4, 0],
+	       getline(1, '$')->mapnew((_, l) => l->strutf16len(true)))
+  assert_equal([8, 3, 2, 4, 0],
+	       getline(1, '$')->mapnew((_, l) => l->strchars()))
+enddef
+
+# Test for encoding a position, which counts the composing characters
+# separately, in each position encoding.  A position past the end of a line is
+# at the end of the line.  A position on a line past the end of the buffer is
+# left unchanged.
+def g:Test_EncodePosition()
+  :new
+  var bnr = bufnr()
+  SetPositionEncodingTestLines()
+
+  # Per position encoding: [line, character, encoded character]
+  var cases: dict<list<list<number>>> = {
+    8: [
+      [0, 0, 0], [0, 3, 3], [0, 8, 8], [0, 9, 8], [0, 20, 8],
+      [1, 1, 2], [1, 3, 6], [1, 4, 6], [1, 7, 6],
+      [2, 1, 4], [2, 2, 8], [2, 3, 8],
+      [3, 1, 1], [3, 2, 3], [3, 3, 4], [3, 4, 6], [3, 5, 6],
+      [4, 0, 0], [4, 3, 0],
+      [5, 3, 3]
+    ],
+    16: [
+      [0, 0, 0], [0, 3, 3], [0, 8, 8], [0, 9, 8], [0, 20, 8],
+      [1, 1, 1], [1, 3, 3], [1, 4, 3], [1, 7, 3],
+      [2, 1, 2], [2, 2, 4], [2, 3, 4],
+      [3, 1, 1], [3, 2, 2], [3, 3, 3], [3, 4, 4], [3, 5, 4],
+      [4, 0, 0], [4, 3, 0],
+      [5, 3, 3]
+    ],
+    32: [
+      [0, 3, 3], [0, 9, 9], [1, 4, 4], [2, 3, 3], [3, 5, 5], [4, 3, 3],
+      [5, 3, 3]
+    ]
+  }
+  for [posEncoding, encCases] in cases->items()
+    var lspserver = {posEncoding: posEncoding->str2nr()}
+    for [line, character, expected] in encCases
+      var pos = {line: line, character: character}
+      offset.EncodePosition(lspserver, bnr, pos)
+      assert_equal({line: line, character: expected}, pos,
+		   $'UTF-{posEncoding}, line {line}, character {character}')
+    endfor
+  endfor
+  :bw!
+enddef
+
+# Test for decoding a position in each position encoding to one that counts
+# the composing characters separately.  A position past the end of a line is
+# at the end of the line.  A position on a line past the end of the buffer is
+# left unchanged.
+def g:Test_DecodePosition()
+  :new
+  var bnr = bufnr()
+  SetPositionEncodingTestLines()
+
+  # Per position encoding: [line, encoded character, character]
+  var cases: dict<list<list<number>>> = {
+    8: [
+      [0, 0, 0], [0, 3, 3], [0, 8, 8], [0, 9, 8], [0, 20, 8],
+      [1, 2, 1], [1, 6, 3], [1, 7, 3], [1, 12, 3],
+      [2, 4, 1], [2, 8, 2], [2, 9, 2], [2, 16, 2],
+      [3, 1, 1], [3, 3, 2], [3, 4, 3], [3, 6, 4], [3, 7, 4],
+      [4, 0, 0], [4, 3, 0],
+      [5, 3, 3]
+    ],
+    16: [
+      [0, 0, 0], [0, 3, 3], [0, 8, 8], [0, 9, 8], [0, 20, 8],
+      [1, 1, 1], [1, 3, 3], [1, 4, 3], [1, 7, 3],
+      [2, 2, 1], [2, 4, 2], [2, 5, 2], [2, 8, 2],
+      [3, 1, 1], [3, 2, 2], [3, 4, 4], [3, 5, 4],
+      [4, 0, 0], [4, 3, 0],
+      [5, 3, 3]
+    ],
+    32: [
+      [0, 3, 3], [0, 9, 9], [1, 4, 4], [2, 3, 3], [3, 5, 5], [4, 3, 3],
+      [5, 3, 3]
+    ]
+  }
+  for [posEncoding, decCases] in cases->items()
+    var lspserver = {posEncoding: posEncoding->str2nr()}
+    for [line, character, expected] in decCases
+      var pos = {line: line, character: character}
+      offset.DecodePosition(lspserver, bnr, pos)
+      assert_equal({line: line, character: expected}, pos,
+		   $'UTF-{posEncoding}, line {line}, character {character}')
+    endfor
+  endfor
+  :bw!
+enddef
+
+# Test for decoding and encoding again a range that ends past the end of a
+# line, as a language server sends and gets back a diagnostic.  The range ends
+# at the end of the line in the position encoding of the server.
+def g:Test_EncodeRange_DecodedRangePastEndOfLine()
+  :new
+  var bnr = bufnr()
+  SetPositionEncodingTestLines()
+
+  for [posEncoding, lineLens] in [[8, [8, 6, 8, 6, 0]], [16, [8, 3, 4, 4, 0]]]
+    var lspserver = {posEncoding: posEncoding}
+    for line in range(5)
+      var r = {start: {line: line, character: 0},
+	       end: {line: line, character: 20}}
+      offset.DecodeRange(lspserver, bnr, r)
+      offset.EncodeRange(lspserver, bnr, r)
+      assert_equal({start: {line: line, character: 0},
+		    end: {line: line, character: lineLens[line]}}, r,
+		   $'UTF-{posEncoding}, line {line}')
+    endfor
+  endfor
+  :bw!
 enddef
 
 # vim: tabstop=8 shiftwidth=2 softtabstop=2 noexpandtab

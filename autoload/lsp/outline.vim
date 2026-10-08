@@ -37,14 +37,15 @@ enddef
 def OutlineJumpToSymbol(stayInOutline: bool = false)
   var lnum: number = line('.') - 1
 
-  var entry = w:lspSymbols.lnumTable->get(lnum, {})
+  var lspSymbols: dict<any> = b:->get('lspSymbols', {})
+  var entry = lspSymbols->get('lnumTable', [])->get(lnum, {})
   if entry->empty()
     return
   endif
 
   var slnum: number = entry.lnum
   var scol: number = entry.col
-  var fname: string = w:lspSymbols.filename
+  var fname: string = lspSymbols.filename
   var outlineWinid = win_getid()
 
   # Highlight the selected symbol
@@ -150,15 +151,16 @@ export def UpdateOutlineWindow(fname: string,
   # stop refreshing the outline window recursively
   skipRefresh = true
 
+  var fullFname: string = fname->fnamemodify(':p')
   var prevWinID: number = win_getid()
   wid->win_gotoid()
 
-  # if the file displayed in the outline window is same as the new file, then
-  # save and restore the cursor position
-  var symbols = wid->getwinvar('lspSymbols', {})
-  var saveCursor: list<number> = []
-  if !symbols->empty() && symbols.filename == fname
-    saveCursor = getcurpos()
+  # if the file displayed in the outline buffer is same as the new file, then
+  # save and restore the cursor position in each window showing it
+  var savedCursors: list<list<any>> = []
+  if b:->get('lspSymbols', {})->get('filename', '') == fullFname
+    savedCursors = outlineBufnr->win_findbuf()
+      ->mapnew((_, winid) => [winid, getcurpos(winid)])
   endif
 
   :setlocal modifiable
@@ -172,16 +174,16 @@ export def UpdateOutlineWindow(fname: string,
   AddSymbolText(util.BufnrExact(fname), symbolTypeTable, '', text, lnumMap,
 		false)
   text->append('$')
-  w:lspSymbols = {
-    filename: fname,
+  b:lspSymbols = {
+    filename: fullFname,
     lnumTable: lnumMap,
     symbolsByLine: symbolLineTable
   }
   :setlocal nomodifiable
 
-  if !saveCursor->empty()
-    saveCursor->setpos('.')
-  endif
+  for [winid, curpos] in savedCursors
+    win_execute(winid, $'setpos(".", {curpos})')
+  endfor
 
   if exists('#User#LspOutlineUpdated')
     :doautocmd <nomodeline> User LspOutlineUpdated
@@ -239,7 +241,7 @@ def OutlineHighlightCurrentSymbol()
 
   # Check whether the symbols for this file are displayed in the outline
   # window
-  var lspSymbols = wid->getwinvar('lspSymbols', {})
+  var lspSymbols = outlineBufnr->getbufvar('lspSymbols', {})
   if lspSymbols->empty() || lspSymbols.filename != fname
     return
   endif
@@ -280,7 +282,8 @@ enddef
 
 # Show the details of a symbol in the current line in the outline window
 def OutlineShowSymbolDetail(lnum: number)
-  var symbolTable: list<dict<any>> = w:lspSymbols.symbolsByLine
+  var symbolTable: list<dict<any>> =
+    b:->get('lspSymbols', {})->get('symbolsByLine', [])
   if symbolTable->empty()
     return
   endif
@@ -436,18 +439,16 @@ def Open(cmdmods: string, winsize: number)
 
   var bnr: number = util.ScratchWindowOpen(outlineBufnr, 'LSP-Outline',
 					   $'{mods} :{size}')
-  :setlocal modifiable
-  :setlocal noreadonly
-  deletebufline('', 1, '$')
-
   SetOutlineBufferOptions()
-  SetupOutlineBufferMappings()
 
-  setline(1, ['# File Outline'])
-  :setlocal nomodifiable
-
+  # The outline buffer may already be shown in another tab page.  Keep its
+  # contents, which its symbol data describes, until the next update.
   if bnr != outlineBufnr
     outlineBufnr = bnr
+    :setlocal modifiable noreadonly
+    SetupOutlineBufferMappings()
+    setline(1, ['# File Outline'])
+    :setlocal nomodifiable
     SetupOutlineBufferSyntax()
   endif
 
