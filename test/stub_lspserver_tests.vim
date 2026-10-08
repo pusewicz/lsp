@@ -3416,6 +3416,43 @@ def g:Test_TextdocDidChange_FullSync_TrailingNewlineFollowsWriteRule()
   :%bw!
 enddef
 
+# With full sync, a change that leaves the text as it was is not sent, so the
+# version of the document stays that of its text, for which the language
+# server can make edits.  The text that is sent is the one that incremental
+# sync diffs against when it is turned on.
+def g:Test_TextdocDidChange_FullSync_SkipsUnchangedText()
+  silent! edit XFullSyncUnchanged.txt
+  setline(1, ['abc'])
+  var notifications: list<dict<any>> = []
+  var lspserver = MakeTestLspServer(notifications)
+  var bnr = bufnr()
+  lspserver.textdocDidOpen(bnr, 'text')
+  var version = lspserver.docVersions[bnr]
+
+  setline(1, 'xyz')
+  setline(1, 'abc')
+  lspserver.textdocDidChange(bnr)
+  assert_equal([], notifications)
+  assert_equal(version, lspserver.docVersions[bnr])
+
+  setline(1, 'ABC')
+  lspserver.textdocDidChange(bnr)
+  assert_equal([{text: "ABC\n"}], notifications[-1].params.contentChanges)
+  assert_true(notifications[-1].params.textDocument.version > version)
+
+  if opt.incrementalSyncSupported
+    g:LspOptionsSet({incrementalSync: true})
+    append('$', 'def')
+    lspserver.textdocDidChange(bnr)
+    assert_equal([{range: {start: {line: 1, character: 0},
+			   end: {line: 1, character: 0}},
+		   text: "def\n"}],
+		 notifications[-1].params.contentChanges)
+    g:LspOptionsSet({incrementalSync: false})
+  endif
+  :%bw!
+enddef
+
 # A buffer read from a file without a trailing newline is still written with
 # one when 'fixendofline' is set, so a line appended after the last one comes
 # after that newline in the server's document.
@@ -4026,10 +4063,10 @@ def g:Test_ApplyWorkspaceEdit_FileNameIsNotAPattern()
   endfor
 enddef
 
-# Returns a TextDocumentEdit inserting "text" at the start of the document
-# with URI "uri".
-def MakeInsertEdit(uri: string, text: string): dict<any>
-  return {textDocument: {uri: uri, version: v:null},
+# Returns a TextDocumentEdit inserting "text" at the start of version
+# "version" of the document with URI "uri".
+def MakeInsertEdit(uri: string, text: string, version: any = v:null): dict<any>
+  return {textDocument: {uri: uri, version: version},
 	  edits: [MakeTextEdit(0, 0, 0, 0, text)]}
 enddef
 
@@ -4064,6 +4101,56 @@ def g:Test_ApplyWorkspaceEdit_CreateOverwritesLoadedBuffer()
     assert_equal(['new'], getline(1, '$'))
     silent undo 0
     assert_equal(['old1', 'old2'], getline(1, '$'))
+  finally
+    delete(fname)
+    :%bwipe!
+  endtry
+enddef
+
+# Runs "Cmd" and returns true when Vim did not ask a question meanwhile.  Vim
+# asks it in a dialog that reads the keys typed by the user and ignores
+# typeahead, and the test runner types no keys, so the question would wait
+# forever.  <CR> is fed as typed first to answer it, and whether it is left
+# unread tells whether a question was asked.
+def AsksNoQuestion(Cmd: func()): bool
+  var unread: bool
+  test_feedinput("\r")
+  try
+    Cmd()
+  finally
+    unread = getcharstr(0) == "\r"
+  endtry
+  return unread
+enddef
+
+# Creating the file of a loaded buffer that has no file yet, as after ":edit"
+# of a new file, makes it the file of the buffer, so that Vim does not ask
+# what to do about a file created after editing started (W13).
+def g:Test_ApplyWorkspaceEdit_CreateFileOfNewBuffer()
+  var fname = 'XWorkspaceEditCreateNew.txt'
+  var uri = util.LspFileToUri(fname)
+  var Create = () => {
+    ApplyResourceOp({kind: 'create', uri: uri})
+  }
+  try
+    exe $'silent edit {fname}'
+    setlocal bomb
+    assert_true(AsksNoQuestion(Create))
+    assert_equal(0, getfsize(fname))
+    assert_notmatch('\[New\]', execute('file'))
+    bwipe!
+    delete(fname)
+
+    var bnr = bufadd(fname)
+    bnr->bufload()
+    assert_true(AsksNoQuestion(Create))
+    assert_equal(0, getfsize(fname))
+    assert_notmatch('\[New\]', util.ExecuteInBuffer(bnr, 'file'))
+    assert_equal([], win_findbuf(bnr))
+    var CheckTime = () => {
+      checktime
+    }
+    assert_true(AsksNoQuestion(CheckTime))
   finally
     delete(fname)
     :%bwipe!
@@ -4540,6 +4627,178 @@ def g:Test_ApplyWorkspaceEdit_AbortsAtFailedChange()
   finally
     delete(created)
     delete(existing)
+    :%bwipe!
+  endtry
+enddef
+
+# A text document edit for a version of a document that is open at the
+# language server is applied only when that is the version of the current
+# text, once the pending changes are sent.  Otherwise none of the changes of
+# the workspace edit is applied.  The versions are those of the documents
+# before the workspace edit.
+def g:Test_ApplyWorkspaceEdit_ChecksDocumentVersion()
+  var fname = 'XWorkspaceEdit+Version.txt'
+  var created = 'XWorkspaceEditVersionCreated.txt'
+  var other = 'XWorkspaceEditVersionOther.txt'
+  var uri = util.LspFileToUri(fname)
+  var notifications: list<dict<any>> = []
+  var lspserver = MakeTestLspServer(notifications)
+  silent! exe $'edit {fname}'
+  setline(1, ['one'])
+  var bnr = bufnr()
+  lspserver.textdocDidOpen(bnr, 'text')
+  var listenerId = listener_add((changedBnr, _, _, _, _) => {
+    lspserver.textdocDidChange(changedBnr)
+  }, bnr)
+  try
+    var version = lspserver.docVersions[bnr]
+    var edit = {documentChanges: [MakeInsertEdit(uri, 'a', version),
+				  MakeInsertEdit(uri, 'b', version)]}
+    assert_equal({applied: true}, textedit.ApplyWorkspaceEdit(edit, lspserver))
+    assert_equal(['baone'], getline(1, '$'))
+
+    edit = {documentChanges: [{kind: 'create', uri: util.LspFileToUri(created)},
+			      MakeInsertEdit(uri, 'c', version)]}
+    var result = textedit.ApplyWorkspaceEdit(edit, lspserver)
+    var current = lspserver.docVersions[bnr]
+    assert_true(current > version)
+    var reason = 'Text document edit failed, the edit is for version '
+      .. $'{version} of {fnamemodify(fname, ":p")}, which is at version {current}'
+    assert_equal({applied: false, failureReason: reason, failedChange: 1},
+		 result)
+    assert_equal($'Error: {reason}', LastMessage())
+    assert_false(filereadable(created))
+    assert_equal(['baone'], getline(1, '$'))
+
+    # A change that was not sent yet makes the version of the server stale.
+    # The document is found also by a URI that escapes fewer characters.
+    setline(1, 'two')
+    var unescapedUri = $'file://{fnamemodify(fname, ":p")}'
+    assert_notequal(uri, unescapedUri)
+    edit = {documentChanges: [MakeInsertEdit(unescapedUri, 'd', current)]}
+    assert_false(textedit.ApplyWorkspaceEdit(edit, lspserver).applied)
+    assert_equal(['two'], getline(1, '$'))
+    assert_equal('textDocument/didChange', notifications[-1].method)
+    assert_equal([{text: "two\n"}], notifications[-1].params.contentChanges)
+
+    # The version is not checked for an edit without one, for a document that
+    # is not open at the server or without a server.
+    edit = {documentChanges: [
+      MakeInsertEdit(uri, 'e'),
+      MakeInsertEdit(util.LspFileToUri(other), 'f', 1)
+    ]}
+    assert_equal({applied: true}, textedit.ApplyWorkspaceEdit(edit, lspserver))
+    assert_equal(['etwo'], getline(1, '$'))
+    assert_equal(['f'], getbufline(other, 1, '$'))
+    edit = {documentChanges: [MakeInsertEdit(uri, 'g', version)]}
+    assert_equal({applied: true}, textedit.ApplyWorkspaceEdit(edit))
+    assert_equal(['getwo'], getline(1, '$'))
+  finally
+    listener_remove(listenerId)
+    delete(created)
+    :%bwipe!
+  endtry
+enddef
+
+# The command of a code action is not run when the workspace edit of the code
+# action fails.
+def g:Test_CodeAction_SkipsCommandWhenEditFails()
+  var execCmds: list<string> = []
+  var lspserver = MakeCodeActionServer('test', [], execCmds)
+  var action = {title: 'Fix', edit: {documentChanges: [{kind: 'copy'}]},
+		command: {title: 'Fix', command: 'test.fix'}}
+  codeaction.HandleCodeAction(lspserver, action)
+  assert_equal([], execCmds)
+
+  action.edit = {documentChanges: []}
+  codeaction.HandleCodeAction(lspserver, action)
+  assert_equal(['test.fix'], execCmds)
+enddef
+
+# Returns a test language server that uses UTF-16 positions.
+def MakeUtf16LspServer(): dict<any>
+  var lspserver = MakeTestLspServer([])
+  lspserver.posEncoding = 16
+  lspserver.needOffsetEncoding = true
+  return lspserver
+enddef
+
+# Returns a workspace edit with UTF-16 positions that creates file "fname",
+# inserts in it a line starting with a character that takes two UTF-16 code
+# units, and then inserts "!" after that character.  Only the text of the
+# file after the changes before it tells where that is.
+def Utf16CreateAndEdit(fname: string): dict<any>
+  var uri = util.LspFileToUri(fname)
+  return {documentChanges: [
+    {kind: 'create', uri: uri},
+    MakeInsertEdit(uri, "😀ab\n"),
+    {textDocument: {uri: uri, version: v:null},
+     edits: [MakeTextEdit(0, 2, 0, 2, '!')]}
+  ]}
+enddef
+
+# The positions of the text edits of a rename are decoded for the text that
+# the edits are applied to, after the changes before them.
+def g:Test_RenameSymbol_DecodesEditsAfterPrecedingChanges()
+  var fname = 'XRenameUtf16Created.txt'
+  var lspserver = MakeUtf16LspServer()
+  lspserver.isRenameProvider = true
+  lspserver.rpc = (_: string, _: any): dict<any> => {
+    return {result: Utf16CreateAndEdit(fname)}
+  }
+  try
+    silent! edit XRenameUtf16Source.txt
+    lspserver.renameSymbol('new')
+    assert_equal(['😀!ab'], getbufline(fname, 1, '$'))
+  finally
+    delete(fname)
+    :%bwipe!
+  endtry
+enddef
+
+# The positions of the text edits of a code action, also of one that is
+# resolved, are decoded for the text that the edits are applied to, after the
+# changes before them.
+def g:Test_CodeAction_DecodesEditsAfterPrecedingChanges()
+  var fname = 'XCodeActionUtf16Created.txt'
+  var action = {title: 'Create'}
+  var lspserver = MakeUtf16LspServer()
+  lspserver.isCodeActionProvider = true
+  lspserver.isCodeActionResolveProvider = true
+  lspserver.rpc = (method: string, _: any): dict<any> => {
+    var resolved = action->extendnew({edit: Utf16CreateAndEdit(fname)})
+    return {result: method == 'codeAction/resolve' ? resolved : [resolved]}
+  }
+  try
+    silent! edit XCodeActionUtf16Source.txt
+    lspserver.codeAction(@%, 1, 1, '1')
+    assert_equal(['😀!ab'], getbufline(fname, 1, '$'))
+    exe $'bwipe! {fname}'
+    delete(fname)
+
+    codeaction.HandleCodeAction(lspserver, action)
+    assert_equal(['😀!ab'], getbufline(fname, 1, '$'))
+  finally
+    delete(fname)
+    :%bwipe!
+  endtry
+enddef
+
+# The positions of the text edits of a workspace edit that the language server
+# asks for are decoded for the text that the edits are applied to, after the
+# changes before them.
+def g:Test_ProcessApplyEditReq_DecodesEditsAfterPrecedingChanges()
+  var fname = 'XApplyEditUtf16Created.txt'
+  var responses: list<dict<any>> = []
+  var lspserver = MakeUtf16LspServer()
+  lspserver.sendResponse = function(CaptureResponse, [responses])
+  try
+    lspserver.processRequest({id: 1, method: 'workspace/applyEdit',
+			      params: {edit: Utf16CreateAndEdit(fname)}})
+    assert_equal({applied: true}, responses[0].result)
+    assert_equal(['😀!ab'], getbufline(fname, 1, '$'))
+  finally
+    delete(fname)
     :%bwipe!
   endtry
 enddef

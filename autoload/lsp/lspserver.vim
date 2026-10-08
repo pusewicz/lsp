@@ -1074,15 +1074,22 @@ def TextdocDidChange(lspserver: dict<any>, bnr: number): void
 
   var contentChanges: list<dict<any>>
   var hasEol = util.BufWritesEol(bnr)
+  var newBufLines = BufferLines(bnr)
+  var cachedBufferContent = lspserver.cachedBufferContent
+  var cachedBufferEol = lspserver.cachedBufferEol
 
   if textDocumentSync == 1 || !opt.lspOptions.incrementalSync
     # TextDocumentSyncKind: Full — send the entire buffer on every change.
-    contentChanges = [{text: LinesText(BufferLines(bnr), hasEol)}]
+    # A change that leaves the text as it was, which Vim also passes to the
+    # listeners, is not sent: the version of the document then stays that
+    # of its text.
+    if !cachedBufferContent->has_key(bnr)
+	|| cachedBufferContent[bnr] != newBufLines
+	|| cachedBufferEol->get(bnr, !hasEol) != hasEol
+      contentChanges = [{text: LinesText(newBufLines, hasEol)}]
+    endif
   elseif exists_compiled('*diff')
     # TextDocumentSyncKind: Incremental — send only the changed lines.
-    var newBufLines = BufferLines(bnr)
-    var cachedBufferContent = lspserver.cachedBufferContent
-    var cachedBufferEol = lspserver.cachedBufferEol
     if cachedBufferContent->has_key(bnr)
 	&& cachedBufferEol[bnr] == hasEol
 	&& cachedBufferContent[bnr]->empty() == newBufLines->empty()
@@ -1132,9 +1139,9 @@ def TextdocDidChange(lspserver: dict<any>, bnr: number): void
       # full-text change.
       contentChanges = [{text: LinesText(newBufLines, hasEol)}]
     endif
-    cachedBufferContent[bnr] = newBufLines
   endif
-  lspserver.cachedBufferEol[bnr] = hasEol
+  cachedBufferContent[bnr] = newBufLines
+  cachedBufferEol[bnr] = hasEol
 
   if contentChanges->empty()
     return
@@ -2123,42 +2130,6 @@ def TypeHierarchy(lspserver: dict<any>, direction: number)
   typehier.ShowTypeHierarchy(lspserver, isSuper, typeHierItem)
 enddef
 
-# Decode the ranges in "WorkspaceEdit"
-def DecodeWorkspaceEdit(lspserver: dict<any>, workspaceEdit: dict<any>)
-  if !lspserver.needOffsetEncoding
-    return
-  endif
-  if workspaceEdit->has_key('changes')
-    for [uri, changes] in workspaceEdit.changes->items()
-      var bnr: number = util.LspUriToBufnr(uri)
-      if bnr <= 0
-	continue
-      endif
-      # Decode the position encoding in all the text edit locations
-      changes->map((_, textEdit) => {
-	lspserver.decodeRange(bnr, textEdit.range)
-	return textEdit
-      })
-    endfor
-  endif
-
-  if workspaceEdit->has_key('documentChanges')
-    for change in workspaceEdit.documentChanges
-      if !change->has_key('kind')
-	var bnr: number = util.LspUriToBufnr(change.textDocument.uri)
-	if bnr <= 0
-	  continue
-	endif
-	# Decode the position encoding in all the text edit locations
-	change.edits->map((_, textEdit) => {
-	  lspserver.decodeRange(bnr, textEdit.range)
-	  return textEdit
-	})
-      endif
-    endfor
-  endif
-enddef
-
 # Request: "textDocument/rename"
 # Param: RenameParams
 def RenameSymbol(lspserver: dict<any>, newName: string)
@@ -2183,21 +2154,7 @@ def RenameSymbol(lspserver: dict<any>, newName: string)
   endif
 
   # result: WorkspaceEdit
-  DecodeWorkspaceEdit(lspserver, reply.result)
-  textedit.ApplyWorkspaceEdit(reply.result)
-enddef
-
-# Decode the range in "CodeAction"
-def DecodeCodeAction(lspserver: dict<any>, actionList: list<dict<any>>)
-  if !lspserver.needOffsetEncoding
-    return
-  endif
-  actionList->map((_, act) => {
-      if !act->has_key('disabled') && act->has_key('edit')
-	DecodeWorkspaceEdit(lspserver, act.edit)
-      endif
-      return act
-    })
+  textedit.ApplyWorkspaceEdit(reply.result, lspserver)
 enddef
 
 # Parse a code action query for request-side filtering.
@@ -2312,8 +2269,6 @@ def CodeAction(lspserver: dict<any>, fname_arg: string, line1: number,
     return
   endif
 
-  DecodeCodeAction(lspserver, reply.result)
-
   codeaction.ApplyCodeAction(lspserver, reply.result, reqInfo.selectorQuery)
 enddef
 
@@ -2332,12 +2287,8 @@ def CodeActionAsync(lspserver: dict<any>, fname_arg: string, line1: number,
   var reqid = lspserver.rpc_a('textDocument/codeAction', params,
 	(_: dict<any>, result, rpcError) => {
 	  var actionList: list<dict<any>> = []
-    # Decode edits here so downstream UI/execution uses buffer coordinates.
 	  if rpcError->empty() && result->type() == v:t_list
 	    actionList = result
-	    if !actionList->empty()
-	      DecodeCodeAction(lspserver, actionList)
-	    endif
 	  endif
 
 	  Cbfunc(lspserver, actionList, reqInfo.selectorQuery, rpcError)

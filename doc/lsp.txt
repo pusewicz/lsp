@@ -1329,7 +1329,9 @@ of such a file follows it:
 
 - Creating a file over an existing one, which the language server asks for
   with the "overwrite" option, empties its buffer too.  The buffer keeps its
-  undo history (see 'undoreload').
+  undo history (see 'undoreload').  A file that does not exist yet but has
+  an empty buffer, as after |:edit| of a new file, is created by writing
+  the buffer.
 - Renaming a file gives its buffer the new name.  The buffer keeps its text,
   its undo history and its unsaved changes, and the language servers get it
   as the document with the new name.  When the renamed file replaces a file,
@@ -1350,7 +1352,14 @@ would change or remove a buffer with unsaved changes, as |:edit| does without
 
 The changes of a workspace edit are applied in order.  When one fails, its
 error is shown and the changes after it are not applied, while the changes
-before it stay applied.
+before it stay applied.  When the workspace edit of a code action fails, the
+command of the code action is not run.
+
+The language server can make the text edits for a file that is open at the
+server for the version of its text that the server has.  When the buffer of
+the file has changed since, e.g. while the code action menu was shown, the
+edits are not for its text: none of the changes of the workspace edit is
+applied and an error is shown.  Make the request again.
 
 ------------------------------------------------------------------------------
 							*lsp-hierarchy-cmds*

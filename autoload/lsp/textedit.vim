@@ -208,20 +208,30 @@ export def ApplyTextEdits(bnr: number, text_edits: list<dict<any>>): void
   deletebufline(bnr, start_line + 1 + lines->len(), last_line)
 enddef
 
+# Returns text edits "edits" for buffer "bnr" with their positions decoded
+# from the position encoding of language server "lspserver" for the current
+# text of the buffer.  "edits" is not changed.  Without a language server the
+# positions are taken to be character indexes already.
+def DecodeTextEdits(lspserver: dict<any>, bnr: number,
+		    edits: list<dict<any>>): list<dict<any>>
+  if !lspserver->get('needOffsetEncoding', false)
+    return edits
+  endif
+  return edits->deepcopy()->map((_, e) => {
+    lspserver.decodeRange(bnr, e.range)
+    return e
+  })
+enddef
+
 # interface TextDocumentEdit
 # Returns why the edit failed, or an empty string when it did not.
-def ApplyTextDocumentEdit(textDocEdit: dict<any>): string
+def ApplyTextDocumentEdit(lspserver: dict<any>, textDocEdit: dict<any>): string
   var bnr: number = util.LspUriToBufnr(textDocEdit.textDocument.uri)
   if bnr <= 0
     return $'Text Document edit, buffer {textDocEdit.textDocument.uri} is not found'
   endif
-  ApplyTextEdits(bnr, textDocEdit.edits)
+  ApplyTextEdits(bnr, DecodeTextEdits(lspserver, bnr, textDocEdit.edits))
   return ''
-enddef
-
-# Returns the number of the buffer for file "fname", or 0 if there is none.
-def FileBufnr(fname: string): number
-  return fname->bufexists() ? fname->bufadd() : 0
 enddef
 
 # Reloads buffer "bnr", which is loaded and has no unsaved changes, from its
@@ -249,7 +259,8 @@ def FileCreate(createFile: dict<any>): string
   var overwrite: bool = opts->get('overwrite', false)
 
   # LSP Spec: Overwrite wins over `ignoreIfExists`
-  if !fname->getftype()->empty()
+  var fileExists: bool = !fname->getftype()->empty()
+  if fileExists
     if !overwrite
       if ignoreIfExists
 	return ''
@@ -262,12 +273,19 @@ def FileCreate(createFile: dict<any>): string
     endif
   endif
 
-  var bnr: number = FileBufnr(fname)
+  var bnr: number = util.BufnrExact(fname)
   if bnr > 0 && bnr->getbufvar('&modified')
     return $'File create failed, {fname} has unsaved changes'
   endif
 
   fname->fnamemodify(':p:h')->mkdir('p')
+  if bnr > 0 && bnr->bufloaded() && !fileExists && util.BufIsEmpty(bnr)
+    # When Vim finds the file of a buffer that it loaded before the file
+    # existed, it asks what to do (W13), so write the buffer, which has no
+    # text, to create the file.  "++bin" writes no BOM.
+    util.ExecuteInBuffer(bnr, 'noautocmd write! ++bin')
+    return ''
+  endif
   []->writefile(fname)
   if bnr > 0 && bnr->bufloaded()
     ReloadBuffer(bnr)
@@ -296,7 +314,7 @@ def FileDelete(deleteFile: dict<any>): string
     return $'File delete failed, {path} does not exist'
   endif
 
-  var bnrs: list<number> = [FileBufnr(path)]->filter((_, bnr) => bnr > 0)
+  var bnrs: list<number> = [util.BufnrExact(path)]->filter((_, bnr) => bnr > 0)
 			   + DirBuffers(path)
   for bnr in bnrs
     if bnr->getbufvar('&modified')
@@ -330,31 +348,6 @@ def DirBuffers(dir: string): list<number>
     ->map((_, b) => b.bufnr)
 enddef
 
-# Executes Ex command "cmd" with loaded buffer "bnr" as the current buffer and
-# returns its output.  The command runs in a window that shows the buffer, or
-# else in a hidden popup window that leaves no trace: opening and closing it
-# triggers no autocommands, and closing it does not unload the buffer
-# whatever its 'bufhidden' is.
-def ExecuteInBuffer(bnr: number, cmd: string): string
-  var winids: list<number> = bnr->win_findbuf()
-  if !winids->empty()
-    return win_execute(winids[0], cmd)
-  endif
-
-  var bufhidden: string = bnr->getbufvar('&bufhidden')
-  noautocmd setbufvar(bnr, '&bufhidden', '')
-  var winid: number
-  noautocmd winid = popup_create(bnr, {hidden: true})
-  var output: string
-  try
-    output = win_execute(winid, cmd)
-  finally
-    noautocmd popup_close(winid)
-    noautocmd setbufvar(bnr, '&bufhidden', bufhidden)
-  endtry
-  return output
-enddef
-
 # Names loaded buffer "bnr" "fname" after its file was renamed to "fname".
 # The buffer keeps its text, its undo history and its unsaved changes.  When
 # buffer "tbnr" was for the file the renamed file replaced, the windows that
@@ -371,7 +364,7 @@ def FollowRename(bnr: number, tbnr: number, fname: string)
 
   # ":file" keeps the old name in a new unlisted buffer.
   var oldName: string = bnr->getbufinfo()[0].name
-  ExecuteInBuffer(bnr, $'keepalt file {fname->fnameescape()}')
+  util.ExecuteInBuffer(bnr, $'keepalt file {fname->fnameescape()}')
   for b in getbufinfo()
     if b.bufnr != bnr && b.name ==# oldName
       exe $'bwipe {b.bufnr}'
@@ -384,7 +377,7 @@ def FollowRename(bnr: number, tbnr: number, fname: string)
   if !bnr->getbufvar('&modified') && !bnr->getbufvar('&readonly')
       && bnr->getbufvar('&buftype')->empty()
     try
-      ExecuteInBuffer(bnr, 'noautocmd write!')
+      util.ExecuteInBuffer(bnr, 'noautocmd write!')
     catch
     endtry
   endif
@@ -433,7 +426,7 @@ def FileRename(renameFile: dict<any>): string
   # The buffer of each renamed file ("bnr") and of the file it replaces
   # ("tbnr").  When a file that replaces a loaded buffer has no loaded buffer,
   # its buffer is loaded to take the place of that buffer.
-  var moves: list<dict<any>> = [{bnr: FileBufnr(oldPath), from: oldPath,
+  var moves: list<dict<any>> = [{bnr: util.BufnrExact(oldPath), from: oldPath,
 				 to: newPath}]
   for bnr in DirBuffers(oldPath)
     var name: string = bnr->getbufinfo()[0].name
@@ -441,15 +434,15 @@ def FileRename(renameFile: dict<any>): string
 		to: newPath .. name->strpart(oldPath->len())})
   endfor
   for move in moves
-    var tbnr: number = FileBufnr(move.to)
-    move.tbnr = tbnr == move.bnr ? 0 : tbnr
+    var tbnr: number = util.BufnrExact(move.to)
+    move.tbnr = tbnr == move.bnr ? -1 : tbnr
     if move.tbnr > 0 && move.tbnr->getbufvar('&modified')
       return $'File rename failed, {move.to} has unsaved changes'
     endif
   endfor
   for move in moves
     if move.tbnr > 0 && move.tbnr->bufloaded()
-	&& (move.bnr == 0 || !move.bnr->bufloaded())
+	&& (move.bnr <= 0 || !move.bnr->bufloaded())
       move.bnr = move.from->bufadd()
       move.bnr->bufload()
     endif
@@ -475,13 +468,14 @@ def FileRename(renameFile: dict<any>): string
   return ''
 enddef
 
-# Apply "change", one of the "documentChanges" of a workspace edit.  Returns
-# why the change failed, or an empty string when it did not.
-def ApplyDocumentChange(change: dict<any>): string
+# Apply "change", one of the "documentChanges" of a workspace edit from
+# language server "lspserver".  Returns why the change failed, or an empty
+# string when it did not.
+def ApplyDocumentChange(lspserver: dict<any>, change: dict<any>): string
   var kind: string = change->get('kind', '')
   try
     if kind->empty()
-      return ApplyTextDocumentEdit(change)
+      return ApplyTextDocumentEdit(lspserver, change)
     elseif kind == 'create'
       return FileCreate(change)
     elseif kind == 'delete'
@@ -495,19 +489,75 @@ def ApplyDocumentChange(change: dict<any>): string
   return $'Unsupported change in workspace edit [{kind}]'
 enddef
 
+# Returns why "change", one of the "documentChanges" of a workspace edit from
+# language server "lspserver", is a text document edit for another text than
+# the current text of its document, or an empty string when it is not.  A
+# text document edit with a version is for that version of its document.
+# That can be checked only for a document that is open at the language
+# server: the version of its current text is then the version of the last
+# change sent to the server, once the pending changes are sent.
+def StaleTextDocumentEdit(lspserver: dict<any>, change: dict<any>): string
+  if lspserver->empty() || change->has_key('kind')
+    return ''
+  endif
+  var version: any = change.textDocument->get('version', null)
+  if version->type() != v:t_number
+    return ''
+  endif
+  # A server may escape a URI differently (gopls doesn't escape "+"), so the
+  # URI is also looked up as this plugin escapes it.
+  var uri: string = change.textDocument.uri
+  var fname: string = util.LspUriToFile(uri)
+  var docBufnrs: dict<number> = lspserver.docBufnrs
+  var bnr: number = docBufnrs->get(uri,
+				   docBufnrs->get(util.LspFileToUri(fname), -1))
+  if !bnr->bufloaded() || !lspserver.docVersions->has_key(bnr)
+    return ''
+  endif
+  bnr->listener_flush()
+  var current: number = lspserver.docVersions[bnr]
+  if version == current
+    return ''
+  endif
+  return $'Text document edit failed, the edit is for version {version} of '
+    .. $'{fname}, which is at version {current}'
+enddef
+
+# Reports that change "idx" of a workspace edit failed because of
+# "failureReason".  Returns the ApplyWorkspaceEditResult.
+def ChangeFailed(failureReason: string, idx: number): dict<any>
+  util.ErrMsg(failureReason)
+  return {applied: false, failureReason: failureReason, failedChange: idx}
+enddef
+
 # interface WorkspaceEdit
-# Apply the changes of workspace edit "workspaceEdit" in order, up to the
-# first one that fails, which is reported (the "abort" failure handling).
-# Returns the ApplyWorkspaceEditResult.
-export def ApplyWorkspaceEdit(workspaceEdit: dict<any>): dict<any>
+# Apply the changes of workspace edit "workspaceEdit" from language server
+# "lspserver" in order, up to the first one that fails, which is reported (the
+# "abort" failure handling).  No change is applied when a text document edit
+# is for another version of its document than the current one.  The positions
+# of each text edit are decoded from the position encoding of the language
+# server right before it is applied, for the text that the changes before it
+# made.  Without a language server the versions are not checked and the
+# positions are taken to be character indexes.  Returns the
+# ApplyWorkspaceEditResult.
+export def ApplyWorkspaceEdit(workspaceEdit: dict<any>,
+			      lspserver: dict<any> = {}): dict<any>
   if workspaceEdit->has_key('documentChanges')
     var documentChanges: list<dict<any>> = workspaceEdit.documentChanges
+    # The version of a text document edit is that of its document before the
+    # workspace edit, which the changes before it can change.
     for idx in documentChanges->len()->range()
-      var failureReason: string = ApplyDocumentChange(documentChanges[idx])
+      var failureReason: string = StaleTextDocumentEdit(lspserver,
+							 documentChanges[idx])
       if !failureReason->empty()
-	util.ErrMsg(failureReason)
-	return {applied: false, failureReason: failureReason,
-		failedChange: idx}
+	return ChangeFailed(failureReason, idx)
+      endif
+    endfor
+    for idx in documentChanges->len()->range()
+      var failureReason: string = ApplyDocumentChange(lspserver,
+						      documentChanges[idx])
+      if !failureReason->empty()
+	return ChangeFailed(failureReason, idx)
       endif
     endfor
     return {applied: true}
@@ -522,7 +572,7 @@ export def ApplyWorkspaceEdit(workspaceEdit: dict<any>): dict<any>
     endif
 
     # interface TextEdit
-    ApplyTextEdits(bnr, changes)
+    ApplyTextEdits(bnr, DecodeTextEdits(lspserver, bnr, changes))
   endfor
   return {applied: true}
 enddef
