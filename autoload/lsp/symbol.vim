@@ -437,6 +437,8 @@ export def ShowLocations(lspserver: dict<any>, locations: list<dict<any>>,
     qflist->add({filename: fname,
 			lnum: rstart.line + 1,
 			col: util.GetLineByteFromPos(bnr, rstart) + 1,
+			end_lnum: range.end.line + 1,
+			end_col: util.GetLineByteFromPos(bnr, range.end) + 1,
 			text: text})
   endfor
 
