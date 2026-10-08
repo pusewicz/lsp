@@ -844,6 +844,33 @@ def CompletionInfoInPopup(): bool
   return &completeopt =~ '\<popup\%(hidden\)\=\>'
 enddef
 
+# Timer callback that shows the completion documentation "lines" with
+# 'filetype' "ft" in the preview window, or clears it when "lines" is empty.
+def UpdateCompletionPreview(lines: list<string>, ft: string, timer_id: number)
+  try
+    :wincmd P
+    :setlocal modifiable
+    bufnr()->deletebufline(1, '$')
+    if lines->empty()
+      :setlocal nomodifiable
+    else
+      lines->append(0)
+      [1, 1]->cursor()
+      exe $'setlocal ft={ft}'
+      exe $'resize {min([line('$') + 1, &previewheight])}'
+    endif
+    :wincmd p
+  catch /E441/ # No preview window
+  endtry
+enddef
+
+# Show the completion documentation "lines" with 'filetype' "ft" in the
+# preview window, or clear it when "lines" is empty.  Changing windows is not
+# allowed while handling CompleteChanged, so this is done from a timer.
+def SetCompletionPreviewContents(lines: list<string>, ft: string = '')
+  timer_start(0, function(UpdateCompletionPreview, [lines, ft]))
+enddef
+
 # Clear the preview window contents.  This is needed only when 'completeopt'
 # contains 'preview'.
 def ClearCompletionPreviewContents()
@@ -851,14 +878,7 @@ def ClearCompletionPreviewContents()
     return
   endif
 
-  try
-    :wincmd P
-    :setlocal modifiable
-    bufnr()->deletebufline(1, '$')
-    :setlocal nomodifiable
-    :wincmd p
-  catch /E441/ # No preview window
-  endtry
+  SetCompletionPreviewContents([])
 enddef
 
 # Process the completion documentation
@@ -938,17 +958,7 @@ def ShowCompletionDocumentation(cItem: any)
     id->popup_show()
   else
     # &omnifunc with &completeopt =~ 'preview'
-    try
-      :wincmd P
-      :setlocal modifiable
-      bufnr()->deletebufline(1, '$')
-      infoText->append(0)
-      [1, 1]->cursor()
-      exe $'setlocal ft={infoKind}'
-      exe 'resize ' .. min([line('$') + 1, &previewheight])
-      :wincmd p
-    catch /E441/ # No preview window
-    endtry
+    SetCompletionPreviewContents(infoText, infoKind)
   endif
 enddef
 

@@ -843,6 +843,26 @@ def g:Test_Completion_MarkdownDoc_LazyDocRenderedOnce()
   endtry
 enddef
 
+# Same without "popup" in 'completeopt': the documentation is shown and
+# rendered in the preview window.
+def g:Test_Completion_MarkdownDoc_LazyDocPreviewWindow()
+  if !exists('+autocomplete')
+    return
+  endif
+  g:LspOptionsSet({autoComplete: false, omniComplete: true,
+		   closePreviewOnComplete: false})
+  try
+    assert_equal({
+	popup: {},
+	preview: {ft: 'lspgfm', text: ['int x;'], codeBlocks: 1},
+      }, SelectMarkdownDocItem(MakeMarkdownDocServer("```c\nint x;\n```", true),
+			       'menuone,preview'))
+  finally
+    g:LspOptionsSet({autoComplete: true, omniComplete: null,
+		     closePreviewOnComplete: true})
+  endtry
+enddef
+
 # Regression test for CompletionItem.preselect ordering.
 def g:Test_Completion_Preselect_ItemFirst()
   silent! edit XCompletionPreselect.vim
