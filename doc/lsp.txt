@@ -1322,6 +1322,20 @@ Commands to modify, rename, or format your code using the language server.
 			successively to shrink the current symbol visual
 			region.
 
+							*lsp-workspace-edit*
+Besides changing text, the workspace edit of a rename, of a code action or
+sent by the language server can create, rename and delete files.  The buffer
+of such a file follows it:
+
+- Creating a file over an existing one, which the language server asks for
+  with the "overwrite" option, empties its buffer too.  The buffer keeps its
+  undo history (see 'undoreload').
+
+Creating a file that exists fails, unless the language server asks for the
+file to be overwritten or for the operation to be ignored.  An operation also
+fails when it would change or remove a buffer with unsaved changes, as |:edit|
+does without "!": write or undo the changes first.
+
 ------------------------------------------------------------------------------
 							*lsp-hierarchy-cmds*
 5.6 Hierarchies (Call & Type)~

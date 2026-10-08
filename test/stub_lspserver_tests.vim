@@ -3289,6 +3289,116 @@ def g:Test_ApplyWorkspaceEdit_EditsEmptyFile()
   endtry
 enddef
 
+# Returns a TextDocumentEdit inserting "text" at the start of the document
+# with URI "uri".
+def MakeInsertEdit(uri: string, text: string): dict<any>
+  return {textDocument: {uri: uri, version: v:null},
+	  edits: [MakeTextEdit(0, 0, 0, 0, text)]}
+enddef
+
+# Applies a workspace edit made of the resource operation "op".
+def ApplyResourceOp(op: dict<any>)
+  textedit.ApplyWorkspaceEdit({documentChanges: [op]})
+enddef
+
+# Creating a file over an existing one that is loaded in a buffer empties the
+# buffer too, so that the text edits that follow apply to the new, empty,
+# document.  The buffer keeps its undo history.
+def g:Test_ApplyWorkspaceEdit_CreateOverwritesLoadedBuffer()
+  var fname = 'XWorkspaceEditCreate.txt'
+  var uri = util.LspFileToUri(fname)
+  var createAndEdit = {documentChanges: [
+    {kind: 'create', uri: uri, options: {overwrite: true}},
+    MakeInsertEdit(uri, "new\n")
+  ]}
+  try
+    writefile(['old1', 'old2'], fname)
+    var bnr = bufadd(fname)
+    bufload(bnr)
+    textedit.ApplyWorkspaceEdit(createAndEdit)
+    assert_equal([], readfile(fname))
+    assert_equal(['new'], getbufline(bnr, 1, '$'))
+    exe $'bwipe! {bnr}'
+
+    writefile(['old1', 'old2'], fname)
+    exe $'edit {fname}'
+    textedit.ApplyWorkspaceEdit(createAndEdit)
+    assert_equal([], readfile(fname))
+    assert_equal(['new'], getline(1, '$'))
+    silent undo 0
+    assert_equal(['old1', 'old2'], getline(1, '$'))
+  finally
+    delete(fname)
+    :%bwipe!
+  endtry
+enddef
+
+# Creating a file over one whose buffer has unsaved changes fails, and leaves
+# both unchanged.
+def g:Test_ApplyWorkspaceEdit_CreateKeepsModifiedBuffer()
+  var fname = 'XWorkspaceEditCreateModified.txt'
+  var uri = util.LspFileToUri(fname)
+  try
+    writefile(['old'], fname)
+    var bnr = bufadd(fname)
+    bufload(bnr)
+    setbufline(bnr, 1, 'unsaved')
+    ApplyResourceOp({kind: 'create', uri: uri, options: {overwrite: true}})
+    assert_equal('Error: File create failed, '
+		 .. $'{util.LspUriToFile(uri)} has unsaved changes', LastMessage())
+    assert_equal(['old'], readfile(fname))
+    assert_equal(['unsaved'], getbufline(bnr, 1, '$'))
+    assert_true(getbufvar(bnr, '&modified'))
+  finally
+    delete(fname)
+    :%bwipe!
+  endtry
+enddef
+
+# Creating a file that exists fails, unless "overwrite" or "ignoreIfExists"
+# is set.  A directory is never overwritten.
+def g:Test_ApplyWorkspaceEdit_CreateExistingFile()
+  var fname = 'XWorkspaceEditCreateExisting.txt'
+  var dname = 'XWorkspaceEditCreateDir'
+  var uri = util.LspFileToUri(fname)
+  try
+    writefile(['old'], fname)
+    ApplyResourceOp({kind: 'create', uri: uri})
+    assert_equal('Error: File create failed, '
+		 .. $'{util.LspUriToFile(uri)} already exists', LastMessage())
+    assert_equal(['old'], readfile(fname))
+
+    var messages = execute('messages')
+    ApplyResourceOp({kind: 'create', uri: uri,
+		     options: {ignoreIfExists: true}})
+    assert_equal(messages, execute('messages'))
+    assert_equal(['old'], readfile(fname))
+
+    ApplyResourceOp({kind: 'create', uri: uri,
+		     options: {overwrite: true, ignoreIfExists: true}})
+    assert_equal(messages, execute('messages'))
+    assert_equal([], readfile(fname))
+
+    mkdir(dname)
+    var duri = util.LspFileToUri(dname)
+    ApplyResourceOp({kind: 'create', uri: duri})
+    assert_equal('Error: File create failed, '
+		 .. $'{util.LspUriToFile(duri)} already exists', LastMessage())
+    ApplyResourceOp({kind: 'create', uri: duri, options: {overwrite: true}})
+    assert_equal('Error: File create failed, '
+		 .. $'{util.LspUriToFile(duri)} is a directory', LastMessage())
+    messages = execute('messages')
+    ApplyResourceOp({kind: 'create', uri: duri,
+		     options: {ignoreIfExists: true}})
+    assert_equal(messages, execute('messages'))
+    assert_true(isdirectory(dname))
+  finally
+    delete(fname)
+    delete(dname, 'd')
+    :%bwipe!
+  endtry
+enddef
+
 # A completion request supersedes the pending one, which is cancelled, so a
 # late reply to it must not be taken as the reply to the latest one.
 def g:Test_GetCompletion_CancelsSupersededRequest()
