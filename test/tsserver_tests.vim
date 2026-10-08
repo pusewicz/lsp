@@ -185,6 +185,43 @@ def g:Test_LspUtf16Positions()
   :%bw!
 enddef
 
+# Test that the edit of a code action, which typescript-language-server makes
+# for the version of the document that it has, is applied when that is the
+# version of the buffer, with the UTF-16 positions after the emoji decoded,
+# and that it is not applied when the buffer changed after the code actions
+# were requested.
+def g:Test_LspCodeActionDocumentVersion()
+  :silent! edit XLspCodeActionVersion.ts
+  sleep 200m
+  var line = "const smile = '😀😀'; consol.log(smile);"
+  setline(1, line)
+  g:WaitForServerFileLoad(1)
+
+  g:LspOptionsSet({usePopupInCodeAction: true})
+  try
+    cursor(1, 27)
+    :LspCodeAction
+    var winid = popup_list()[0]
+    var choice = getbufline(winbufnr(winid), 1, '$')->match('Change spelling')
+    assert_true(choice >= 0)
+    append('$', '// changed while the menu is shown')
+    feedkeys(repeat('j', choice) .. "\<CR>", 'xt')
+    assert_equal([], popup_list())
+    assert_equal([line, '// changed while the menu is shown'], getline(1, '$'))
+    assert_match('^Error: Text document edit failed, the edit is for version ',
+		 execute('messages')->split("\n")[-1])
+
+    :$delete
+    cursor(1, 27)
+    :LspCodeAction /Change spelling
+    assert_equal(["const smile = '😀😀'; console.log(smile);"], getline(1, '$'))
+  finally
+    g:LspOptionsSet({usePopupInCodeAction: false})
+    popup_clear()
+    :%bw!
+  endtry
+enddef
+
 # Start the typescript language server.  Returns true on success and false on
 # failure.
 def g:StartLangServer(): bool
