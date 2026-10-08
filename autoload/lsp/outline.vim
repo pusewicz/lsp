@@ -8,7 +8,7 @@ import './options.vim' as opt
 def OpenFileInWindow(fname: string)
   # If the file is already opened in a window, jump to it. Otherwise open it
   # in another window
-  var wid: number = fname->bufwinid()
+  var wid: number = util.BufnrExact(fname)->bufwinid()
   if wid == -1
     # Find a window showing a normal buffer and use it
     for w in getwininfo()
@@ -155,7 +155,8 @@ export def UpdateOutlineWindow(fname: string,
   # First two lines in the buffer display comment information
   var lnumMap: list<dict<any>> = [{}, {}]
   var text: list<string> = []
-  AddSymbolText(fname->bufnr(), symbolTypeTable, '', text, lnumMap, false)
+  AddSymbolText(util.BufnrExact(fname), symbolTypeTable, '', text, lnumMap,
+		false)
   text->append('$')
   w:lspSymbols = {
     filename: fname,

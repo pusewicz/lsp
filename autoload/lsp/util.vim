@@ -67,7 +67,7 @@ export def ServerMessagesShow(fname: string)
     WarnMsg($'File {fullname} is not found')
     return
   endif
-  var wid = fullname->bufwinid()
+  var wid = BufnrExact(fullname)->bufwinid()
   if wid == -1
     exe $'split {fullname->fnameescape()}'
   else
@@ -180,6 +180,16 @@ enddef
 # Returns 0 on error.
 export def LspUriToBufnr(uri: string): number
   return LspUriToFile(uri)->bufadd()
+enddef
+
+# Returns the number of the buffer for the file "fname", or -1 if there is no
+# such buffer.  Unlike bufnr(), which takes a String for a file pattern (so
+# that "foo[1].c" finds the buffer for "foo1.c"), the buffer name must match
+# "fname" exactly, as for bufexists().  Not for a 'buftype' "nofile" buffer:
+# after a change of the current directory bufexists() still finds it by its
+# short name, but bufadd() then adds another buffer.
+export def BufnrExact(fname: string): number
+  return fname->bufexists() ? fname->bufadd() : -1
 enddef
 
 # Returns if the URI refers to a remote file (e.g. ssh://)
@@ -375,14 +385,14 @@ export def JumpToLspLocation(location: dict<any>, cmdmods: string)
   var fname = LspUriToFile(uri)
 
   # jump to the file and line containing the symbol
-  var bnr: number = fname->bufnr()
+  var bnr: number = BufnrExact(fname)
   if cmdmods->empty()
     if bnr == bufnr()
       # Set the previous cursor location mark. Instead of using setpos(), m' is
       # used so that the current location is added to the jump list.
       :normal m'
     else
-      var wid = fname->bufwinid()
+      var wid = bnr->bufwinid()
       if wid != -1
         wid->win_gotoid()
       else
