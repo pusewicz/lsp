@@ -337,7 +337,8 @@ def g:Test_ServerState_StaysTyped()
     workDoneProgressTokens: 'dict<bool>',
     cachedBufferContent: 'dict<list<string>>',
     cachedBufferEol: 'dict<bool>',
-    docVersions: 'dict<number>'
+    docVersions: 'dict<number>',
+    docBufnrs: 'dict<number>'
   }
   # typename() gives the type of an empty dict or list only when it has one.
   var AssertTyped = (lspserver: dict<any>, when: string) => {
@@ -425,77 +426,110 @@ def MakeRecordingLspServer(messages: list<dict<any>>): dict<any>
   return lspserver
 enddef
 
-# Test that a request made right after a change, before Vim passes the change
-# to the listeners (e.g. in a mapping or an autocmd), is sent after the
-# change, so that the formatting is for the new text.
-def g:Test_Rpc_SendsPendingChangesFirst()
-  silent! edit XRpcPendingChanges.txt
-  setline(1, ['old'])
-  var bnr = bufnr()
-  var messages: list<dict<any>> = []
+# Edit two buffers in split windows and open their documents on a recording
+# test language server, with a listener sending the changes of each, as
+# attaching a buffer does.  The server replies to the first synchronous
+# requests with "results".  Returns [lspserver, bufnrs, listenerIds].
+def OpenTwoTestDocuments(messages: list<dict<any>>,
+			 results: list<any>): list<any>
+  silent! edit XPendingChanges1.txt
+  setline(1, ['one'])
+  silent! new XPendingChanges2.txt
+  setline(1, ['two'])
+  var bufnrs = [bufnr('XPendingChanges1.txt'), bufnr('XPendingChanges2.txt')]
   var lspserver = MakeRecordingLspServer(messages)
   lspserver.isDocumentFormattingProvider = true
-  lspserver.job = StartStubServerJob(
-    [{jsonrpc: '2.0', id: lspserver.nextSyncRpcId, result: []}])
-  buf.BufLspServerSet(bnr, lspserver)
-  var listenerId = listener_add((changedBnr, _, _, _, _) => {
-    lspserver.textdocDidChange(changedBnr)
-  }, bnr)
-  try
-    setline(1, 'new')
-    lspserver.textDocFormat(@%, false, 0, 0)
-
-    assert_equal(['textDocument/didChange', 'textDocument/formatting'],
-		 messages->mapnew((_, msg) => msg.method))
-    assert_equal([{text: "new\n"}], messages[0].params.contentChanges)
-  finally
-    listener_remove(listenerId)
-    job_stop(lspserver.job)
-    buf.BufLspServerRemove(bnr, lspserver)
-    :%bw!
-  endtry
-enddef
-
-# Test that an asynchronous request is sent after the pending changes of all
-# the buffers attached to the language server, not only of the buffer it is
-# about: the reply can depend on them, e.g. for the references in other files.
-def g:Test_AsyncRpc_SendsPendingChangesOfAllBuffersFirst()
-  silent! edit XAsyncRpcPendingChanges1.txt
-  setline(1, ['one'])
-  var bnr1 = bufnr()
-  silent! new XAsyncRpcPendingChanges2.txt
-  var bnr2 = bufnr()
-  var messages: list<dict<any>> = []
-  var lspserver = MakeRecordingLspServer(messages)
-  lspserver.job = StartStubServerJob([])
+  lspserver.job = StartStubServerJob(results->mapnew((i, result) => ({
+    jsonrpc: '2.0', id: lspserver.nextSyncRpcId + i, result: result})))
   var listenerIds: list<number> = []
-  for bnr in [bnr1, bnr2]
+  for bnr in bufnrs
     buf.BufLspServerSet(bnr, lspserver)
+    lspserver.textdocDidOpen(bnr, 'text')
     listenerIds->add(listener_add((changedBnr, _, _, _, _) => {
       lspserver.textdocDidChange(changedBnr)
     }, bnr))
   endfor
+  return [lspserver, bufnrs, listenerIds]
+enddef
+
+# Undo OpenTwoTestDocuments().
+def CloseTwoTestDocuments(lspserver: dict<any>, bufnrs: list<number>,
+			  listenerIds: list<number>)
+  for id in listenerIds
+    listener_remove(id)
+  endfor
+  job_stop(lspserver.job)
+  for bnr in bufnrs
+    buf.BufLspServerRemove(bnr, lspserver)
+  endfor
+  :%bw!
+enddef
+
+# Test that a request made right after a change, before Vim passes the change
+# to the listeners (e.g. in a mapping or an autocmd), is sent after the
+# change, so that the formatting is for the new text.  Only the change to the
+# document that the request is about is sent first.
+def g:Test_Rpc_SendsPendingChangesOfItsDocumentFirst()
+  var messages: list<dict<any>> = []
+  var [lspserver, bufnrs, listenerIds] = OpenTwoTestDocuments(messages, [[]])
+  try
+    setbufline(bufnrs[0], 1, 'ONE')
+    setbufline(bufnrs[1], 1, 'TWO')
+    lspserver.textDocFormat(bufnrs[0]->bufname(), false, 0, 0)
+
+    assert_equal(['textDocument/didChange', 'textDocument/formatting'],
+		 messages->mapnew((_, msg) => msg.method))
+    assert_equal(util.LspBufnrToUri(bufnrs[0]),
+		 messages[0].params.textDocument.uri)
+    assert_equal([{text: "ONE\n"}], messages[0].params.contentChanges)
+  finally
+    CloseTwoTestDocuments(lspserver, bufnrs, listenerIds)
+  endtry
+enddef
+
+# Test that a request whose reply can refer to other documents, like the
+# references, is sent after the pending changes of all the open documents.
+def g:Test_Rpc_SendsPendingChangesOfAllDocumentsForReferences()
+  var messages: list<dict<any>> = []
+  var [lspserver, bufnrs, listenerIds] = OpenTwoTestDocuments(messages, [[]])
+  try
+    setbufline(bufnrs[1], 1, 'TWO')
+    lspserver.rpc('textDocument/references', {
+      textDocument: {uri: util.LspBufnrToUri(bufnrs[0])},
+      position: {line: 0, character: 0},
+      context: {includeDeclaration: true}
+    })
+
+    assert_equal(['textDocument/didChange', 'textDocument/references'],
+		 messages->mapnew((_, msg) => msg.method))
+    assert_equal(util.LspBufnrToUri(bufnrs[1]),
+		 messages[0].params.textDocument.uri)
+    assert_equal([{text: "TWO\n"}], messages[0].params.contentChanges)
+  finally
+    CloseTwoTestDocuments(lspserver, bufnrs, listenerIds)
+  endtry
+enddef
+
+# Test that an asynchronous request that doesn't name a document is sent
+# after the pending changes of all the open documents.
+def g:Test_AsyncRpc_SendsPendingChangesOfAllDocumentsForWorkspaceRequest()
+  var messages: list<dict<any>> = []
+  var [lspserver, bufnrs, listenerIds] = OpenTwoTestDocuments(messages, [])
   # Send the request asynchronously, as outside the tests
   g:LSPTest = false
   try
-    setbufline(bnr1, 1, 'ONE')
+    setbufline(bufnrs[0], 1, 'ONE')
     lspserver.rpc_a('workspace/symbol', {query: ''}, (_, _, _) => {
     })
 
     assert_equal(['textDocument/didChange', 'workspace/symbol'],
 		 messages->mapnew((_, msg) => msg.method))
-    assert_equal(util.LspBufnrToUri(bnr1),
+    assert_equal(util.LspBufnrToUri(bufnrs[0]),
 		 messages[0].params.textDocument.uri)
     assert_equal([{text: "ONE\n"}], messages[0].params.contentChanges)
   finally
     g:LSPTest = true
-    for id in listenerIds
-      listener_remove(id)
-    endfor
-    job_stop(lspserver.job)
-    buf.BufLspServerRemove(bnr1, lspserver)
-    buf.BufLspServerRemove(bnr2, lspserver)
-    :%bw!
+    CloseTwoTestDocuments(lspserver, bufnrs, listenerIds)
   endtry
 enddef
 
@@ -831,6 +865,67 @@ def g:Test_PullDiagnostics_RetriesStaleRequest()
     'Error: request textDocument/diagnostic failed (failed, error = InternalError)',
     LastMessage())
   :%bw!
+enddef
+
+# Returns a running test language server providing pull diagnostics, which
+# adds the buffer number of each document it pulls the diagnostics of to
+# "pulled".
+def MakePullDiagnosticsTestLspServer(pulled: list<number>): dict<any>
+  var lspserver = MakeTestLspServer([])
+  lspserver.running = true
+  lspserver.ready = true
+  lspserver.isDiagnosticsProvider = true
+  lspserver.sendResponse = (_, _, _) => {
+  }
+  lspserver.pullDiagnostics = (bnr: number) => {
+    pulled->add(bnr)
+  }
+  return lspserver
+enddef
+
+# Test that a "workspace/diagnostic/refresh" request, and the end of the work
+# of the server, pull the diagnostics of every document open on that server.
+# Not of a buffer attached to it whose document isn't open yet, and not of a
+# document open on another server only.
+def g:Test_DiagnosticRefresh_PullsDocumentsOpenOnTheServer()
+  var bufnrs: list<number> = []
+  for i in range(4)
+    exe $'silent! new XDiagRefresh{i}.txt'
+    bufnrs->add(bufnr())
+  endfor
+  var pulled: list<number> = []
+  var otherPulled: list<number> = []
+  var lspserver = MakePullDiagnosticsTestLspServer(pulled)
+  var otherServer = MakePullDiagnosticsTestLspServer(otherPulled)
+  for bnr in bufnrs[0 : 2]
+    buf.BufLspServerSet(bnr, lspserver)
+  endfor
+  lspserver.textdocDidOpen(bufnrs[0], 'text')
+  lspserver.textdocDidOpen(bufnrs[1], 'text')
+  for bnr in [bufnrs[0], bufnrs[3]]
+    buf.BufLspServerSet(bnr, otherServer)
+    otherServer.textdocDidOpen(bnr, 'text')
+  endfor
+  try
+    lspserver.processRequest({jsonrpc: '2.0', id: 1,
+			      method: 'workspace/diagnostic/refresh'})
+    assert_equal(bufnrs[0 : 1], pulled->sort('n'))
+    assert_equal([], otherPulled)
+
+    lspserver.queuePullDiagnosticsAllBuffers()
+    assert_equal(bufnrs[0 : 1],
+		 lspserver.pendingPullBufnrs->keys()->map((_, k) => str2nr(k))
+		 ->sort('n'))
+  finally
+    if lspserver.diagnosticPullTimer != -1
+      timer_stop(lspserver.diagnosticPullTimer)
+    endif
+    for bnr in bufnrs
+      buf.BufLspServerRemove(bnr, lspserver)
+      buf.BufLspServerRemove(bnr, otherServer)
+    endfor
+    :%bw!
+  endtry
 enddef
 
 def g:Test_DiagNotification_PushAndPull_AreBothRetained()

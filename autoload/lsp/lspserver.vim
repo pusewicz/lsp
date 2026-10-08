@@ -100,6 +100,8 @@ def StartServer(lspserver: dict<any>, bnr: number): number
   ClearMap(lspserver.pendingPullBufnrs)
   lspserver.diagnosticPullTimer = -1
   ClearMap(lspserver.supersedableRequests)
+  # A new server process has no open documents
+  ClearMap(lspserver.docBufnrs)
 
   var job = cmd->job_start(opts)
   if job->job_status() == 'fail'
@@ -464,12 +466,52 @@ def ProcessLspServerError(method: string, responseError: dict<any>)
   util.ErrMsg($'request {method} failed ({emsg})')
 enddef
 
-# Send the changes made to the buffers attached to "lspserver" that Vim hasn't
-# passed to the listeners yet, so that a request is answered for the current
-# text.  Vim invokes the listeners only before redrawing, which a mapping, an
-# autocmd or a script making a request right after a change doesn't do.
-def SendPendingChanges(lspserver: dict<any>)
-  for bnr in buf.BufGetServerBufnrs(lspserver)
+# Requests about a document whose reply can hold positions or edits in other
+# documents.  The changes to all the documents open on the server are sent
+# before them, like before the requests that don't name a document (e.g.
+# "workspace/symbol" or "callHierarchy/incomingCalls").
+const CROSS_DOCUMENT_REQUESTS: dict<bool> = {
+  'textDocument/codeAction': true,
+  'textDocument/declaration': true,
+  'textDocument/definition': true,
+  'textDocument/implementation': true,
+  'textDocument/references': true,
+  'textDocument/rename': true,
+  'textDocument/typeDefinition': true
+}
+
+# Returns the URI of the document named by the "params" of a request, or an
+# empty string when it doesn't name one.
+def RequestDocumentUri(params: any): string
+  if params->type() != v:t_dict
+    return ''
+  endif
+  var textDocument: any = params->get('textDocument', {})
+  if textDocument->type() != v:t_dict
+    return ''
+  endif
+  var uri: any = textDocument->get('uri', '')
+  return uri->type() == v:t_string ? uri : ''
+enddef
+
+# Send the changes made to the open documents "docBufnrs" (buffer numbers by
+# URI) that Vim hasn't passed to the listeners yet, so that the request
+# "method" with "params" is answered for the current text.  Vim invokes the
+# listeners only before redrawing, which a mapping, an autocmd or a script
+# making a request right after a change doesn't do.  Only the changes to the
+# document that the request names are sent, unless it names no open document
+# or its reply can depend on other documents (see CROSS_DOCUMENT_REQUESTS):
+# requests are made on most keystrokes and cursor moves, so they must not
+# take time proportional to the number of open documents.
+def SendPendingChanges(docBufnrs: dict<number>, method: string, params: any)
+  var uri = RequestDocumentUri(params)
+  var bufnrs: list<number>
+  if docBufnrs->has_key(uri) && !CROSS_DOCUMENT_REQUESTS->has_key(method)
+    bufnrs = [docBufnrs[uri]]
+  else
+    bufnrs = docBufnrs->values()
+  endif
+  for bnr in bufnrs
     if bnr->bufloaded()
       bnr->listener_flush()
     endif
@@ -502,7 +544,7 @@ def Rpc(lspserver: dict<any>, method: string, params: any, opts: dict<any> = {})
     return {}
   endif
 
-  SendPendingChanges(lspserver)
+  SendPendingChanges(lspserver.docBufnrs, method, params)
 
   var id = lspserver.nextSyncRpcId
   lspserver.nextSyncRpcId += 1
@@ -635,7 +677,7 @@ def AsyncRpc(lspserver: dict<any>, method: string, params: any, Cbfunc: func): n
     return -1
   endif
 
-  SendPendingChanges(lspserver)
+  SendPendingChanges(lspserver.docBufnrs, method, params)
 
   # Do the asynchronous RPC call
   var Fn = function('AsyncRpcCb', [lspserver, method, Cbfunc])
@@ -822,8 +864,10 @@ def TextdocDidOpen(lspserver: dict<any>, bnr: number, ftype: string): void
     endtry
   endif
 
+  var uri = util.LspBufnrToUri(bnr)
   var newBufLines = BufferLines(bnr)
   var hasEol = util.BufWritesEol(bnr)
+  lspserver.docBufnrs[uri] = bnr
   lspserver.cachedBufferContent[bnr] = newBufLines
   lspserver.cachedBufferEol[bnr] = hasEol
   # Use Vim 'changedtick' as the LSP document version number
@@ -836,7 +880,7 @@ def TextdocDidOpen(lspserver: dict<any>, bnr: number, ftype: string): void
 
   var params = {
     textDocument: {
-      uri: util.LspBufnrToUri(bnr),
+      uri: uri,
       languageId: languageId,
       version: version,
       text: LinesText(newBufLines, hasEol)
@@ -858,6 +902,8 @@ def TextdocDidClose(lspserver: dict<any>, bnr: number): void
   if lspserver.supportsDidOpenClose
     lspserver.sendNotification('textDocument/didClose', params)
   endif
+  # By buffer number, as the buffer may have been renamed since it was opened
+  lspserver.docBufnrs->filter((_, docBnr) => docBnr != bnr)
   if lspserver.cachedBufferContent->has_key(bnr)
     lspserver.cachedBufferContent->remove(bnr)
   endif
@@ -903,7 +949,7 @@ def QueuePullDiagnosticsAllBuffers(lspserver: dict<any>)
     return
   endif
 
-  for bnr in buf.BufGetServerBufnrs(lspserver)
+  for bnr in lspserver.docBufnrs->values()
     if bnr->bufloaded() == 1
       lspserver.pendingPullBufnrs[bnr] = true
     endif
@@ -2846,6 +2892,7 @@ export def NewLspServer(serverParams: dict<any>): dict<any>
   var cachedBufferContent: dict<list<string>> = {}
   var cachedBufferEol: dict<bool> = {}
   var docVersions: dict<number> = {}
+  var docBufnrs: dict<number> = {}
 
   var lspserver: dict<any> = {
     id: GetUniqueServerId(),
@@ -2894,6 +2941,7 @@ export def NewLspServer(serverParams: dict<any>): dict<any>
     cachedBufferContent: cachedBufferContent,
     cachedBufferEol: cachedBufferEol,
     docVersions: docVersions,
+    docBufnrs: docBufnrs,
     syncInit: serverParams.syncInit,
     traceLevel: serverParams.traceLevel,
     typeHierFilePopup: -1,
