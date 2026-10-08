@@ -461,7 +461,7 @@ export def GetClientCaps(): dict<any>
       positionEncodings: ['utf-32', 'utf-16'],
       staleRequestSupport: {
 	cancel: true,
-	retryOnContentModified: []
+	retryOnContentModified: ['textDocument/diagnostic']
       }
     },
     textDocument: {
