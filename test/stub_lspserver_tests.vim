@@ -5830,6 +5830,57 @@ def g:Test_OmniFunc_CancelsAbandonedRequest()
   endtry
 enddef
 
+# Test that ":LspCodeLens" resolves the code lens items without a command,
+# leaves out of the menu those that cannot be resolved, and runs the command
+# of the selected item.
+def g:Test_LspCodeLens_ResolvesItems()
+  silent! edit XCodeLens.txt
+  setline(1, ['one', 'two', 'three'])
+  var LineRange = (lnum: number): dict<any> => ({
+    start: {line: lnum, character: 0}, end: {line: lnum, character: 1}})
+  var lenses = [
+    {range: LineRange(0), data: 'unresolvable'},
+    {range: LineRange(1), command: {title: 'Run', command: 'run'}},
+    {range: LineRange(2), data: 'resolvable'}
+  ]
+  var resolved = {range: LineRange(2),
+		  command: {title: 'Debug', command: 'debug'}}
+  var lspserver = MakeTestLspServer([])
+  lspserver.running = true
+  lspserver.ready = true
+  lspserver.isCodeLensProvider = true
+  lspserver.isCodeLensResolveProvider = true
+  var resolveRequests: list<string> = []
+  lspserver.rpc_a = (method: string, params: any, Cbfunc: func, _ = {}) => {
+    var result: any = null
+    if method == 'textDocument/codeLens'
+      result = lenses->deepcopy()
+    elseif method == 'codeLens/resolve'
+      resolveRequests->add(params.data)
+      if params.data == 'resolvable'
+	result = resolved->deepcopy()
+      endif
+    endif
+    Cbfunc(lspserver, result, {})
+    return 1
+  }
+  var execCmds: list<string> = []
+  lspserver.executeCommand = (cmd: dict<any>) => {
+    execCmds->add(cmd.command)
+  }
+  buf.BufLspServerSet(bufnr(), lspserver)
+
+  try
+    # Select the second item in the menu, which is the second resolved item
+    feedkeys(":LspCodeLens\<CR>2\<CR>", 'xt')
+    assert_equal(['unresolvable', 'resolvable'], resolveRequests)
+    assert_equal(['debug'], execCmds)
+  finally
+    buf.BufLspServerRemove(bufnr(), lspserver)
+    :%bw!
+  endtry
+enddef
+
 # Returns a stub language server that replies to "textDocument/documentLink"
 # with "links" and to "documentLink/resolve" with "resolved".  The server is a
 # resolve provider only if "resolved" is not empty.  The requests sent to the
