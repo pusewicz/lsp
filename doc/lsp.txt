@@ -1843,35 +1843,51 @@ popupHighlight		|String| option.  The name of the highlight group used
 			for popup contents.  By default this is set to
 			'LspPopup'.
 
+						*lsp-opt-popupOpacity*
+popupOpacity		|Number| option.  The opacity of popups, from 0 (fully
+			transparent) to 100 (fully opaque), see
+			|popup-opacity|.  By default this is set to 100.
+			Values outside this range are ignored.  Has no effect
+			unless the GUI, 'termguicolors' or a 256 color
+			terminal is used.  The completion menu itself is not
+			a popup window, so "popupOpacityCompletion" only
+			applies to the completion documentation popup.
+			Note: Needs Vim version 9.2.0017 or later.
+
 						*lsp-opt-popup-CodeAction*
 			Override options for CodeAction popups:
 popupBorderCodeAction			|Boolean| option.
 popupBorderHighlightCodeAction		|String| option.
 popupHighlightCodeAction		|String| option.
+popupOpacityCodeAction			|Number| option.
 
 						*lsp-opt-popup-Completion*
 			Override options for Completion popups:
 popupBorderCompletion			|Boolean| option.
 popupBorderHighlightCompletion		|String| option.
 popupHighlightCompletion		|String| option.
+popupOpacityCompletion			|Number| option.
 
 						*lsp-opt-popup-Diag*
 			Override options for Diagnostic popups:
 popupBorderDiag				|Boolean| option.
 popupBorderHighlightDiag		|String| option.
 popupHighlightDiag			|String| option.
+popupOpacityDiag			|Number| option.
 
 						*lsp-opt-popup-Hover*
 			Override options for Hover popups:
 popupBorderHover			|Boolean| option.
 popupBorderHighlightHover		|String| option.
 popupHighlightHover			|String| option.
+popupOpacityHover			|Number| option.
 
 						*lsp-opt-popup-Peek*
 			Override options for Peek popups:
 popupBorderPeek				|Boolean| option.
 popupBorderHighlightPeek		|String| option.
 popupHighlightPeek			|String| option.
+popupOpacityPeek			|Number| option.
 
 						*lsp-opt-popup-SignatureHelp*
 			Override options for SignatureHelp popups displayed
@@ -1891,23 +1907,29 @@ popupHighlightSignatureHelp		|String| option.
 			Highlight group for the signature popup background
 			and text.
 
+popupOpacitySignatureHelp		|Number| option.
+			Opacity of the signature popup.
+
 						*lsp-opt-popup-SymbolMenu*
 			Override options for SymbolMenu popups:
 popupBorderSymbolMenu			|Boolean| option.
 popupBorderHighlightSymbolMenu		|String| option.
 popupHighlightSymbolMenu		|String| option.
+popupOpacitySymbolMenu			|Number| option.
 
 						*lsp-opt-popup-SymbolMenuInput*
 			Override options for SymbolMenuInput popups:
 popupBorderSymbolMenuInput		|Boolean| option.
 popupBorderHighlightSymbolMenuInput	|String| option.
 popupHighlightSymbolMenuInput		|String| option.
+popupOpacitySymbolMenuInput		|Number| option.
 
 						*lsp-opt-popup-TypeHierarchy*
 			Override options for TypeHierarchy popups:
 popupBorderTypeHierarchy		|Boolean| option.
 popupBorderHighlightTypeHierarchy	|String| option.
 popupHighlightTypeHierarchy		|String| option.
+popupOpacityTypeHierarchy		|Number| option.
 
 						*lsp-opt-semanticHighlight*
 semanticHighlight	|Boolean| option.  Enables or disables semantic

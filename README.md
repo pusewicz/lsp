@@ -147,6 +147,7 @@ call LspOptionsSet(#{
         \   popupBorderSignatureHelp: v:false,
         \   popupHighlightSignatureHelp: 'Pmenu',
         \   popupHighlight: 'Normal',
+        \   popupOpacity: 100,
         \   semanticHighlight: v:true,
         \   showDiagInBalloon: v:true,
         \   showDiagInPopup: v:true,
