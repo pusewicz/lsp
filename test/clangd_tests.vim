@@ -80,7 +80,6 @@ call LspAddServer(lspServers)
 # Test for disabling and then re-enabling LSP
 def g:Test_LspEnableDisable()
   :silent! edit XLspEnableDisable.c
-  :sleep 200m
   var lines: list<string> =<< trim END
     int i:
     int j;
@@ -102,7 +101,6 @@ enddef
 # Test for formatting a file using LspFormat
 def g:Test_LspFormat()
   :silent! edit XLspFormat.c
-  sleep 200m
   var lines: list<string> =<< trim END
     int i;
     int j;
@@ -258,7 +256,6 @@ enddef
 # that precedes it.
 def g:Test_LspFormat_NoEolTrailingBlankLine()
   :silent! edit XLspFormatNoEol.c
-  sleep 200m
   setlocal noeol fixeol
   setline(1, ['int x;', ''])
   g:WaitForServerFileLoad(0)
@@ -271,7 +268,6 @@ enddef
 # BufWritePre autocmd), formats the changed text.
 def g:Test_LspFormat_RightAfterChange()
   :silent! edit XLspFormatAfterChange.c
-  sleep 200m
   setline(1, ['int i;'])
   g:WaitForServerFileLoad(0)
   setline(1, ['int f1(int i)', '{', 'int j = 10; return j;', '}'])
@@ -284,7 +280,6 @@ enddef
 # Test for formatting a file using 'formatexpr'
 def g:Test_LspFormatExpr()
   :silent! edit XLspFormat.c
-  sleep 200m
   setlocal formatexpr=lsp#lsp#FormatExpr()
   setline(1, ['  int i;', '  int j;'])
   :redraw!
@@ -390,7 +385,6 @@ def g:Test_LspOnTypeFormatting()
   g:LspOptionsSet({onTypeFormatting: true})
 
   :silent! edit XLspOnTypeFormat.c
-  sleep 200m
   var lines = ['int f1() {', 'int i;', '}']
   setline(1, lines)
   g:WaitForServerFileLoad(0)
@@ -431,7 +425,6 @@ def g:Test_LspOnTypeFormatting_NoNewline()
   g:LspOptionsSet({onTypeFormatting: true})
 
   :silent! edit XLspOnTypeFormatNoNewline.c
-  sleep 200m
   var lines = ['int f1(int a, int b) {', '  return f1(a, b);', '}']
   setline(1, lines)
   g:WaitForServerFileLoad(0)
@@ -462,7 +455,6 @@ def g:Test_LspOnTypeFormatting_TypedTrigger()
   g:LspOptionsSet({onTypeFormatting: true})
 
   :silent! edit XLspOnTypeFormatTrigger.c
-  sleep 200m
   setline(1, ['int f1(int a) {', '  a = 1;a = 2', '  return a;', '}'])
   g:WaitForServerFileLoad(1)
   :redraw!
@@ -529,7 +521,6 @@ enddef
 # file using LSP
 def g:Test_LspShowReferences()
   :silent! edit XshowRefs.c
-  sleep 200m
   var lines: list<string> =<< trim END
     int count;
     void redFunc()
@@ -644,7 +635,6 @@ enddef
 # Test for LSP diagnostics
 def g:Test_LspDiag()
   :silent! edit XLspDiag.c
-  sleep 200m
   var lines: list<string> =<< trim END
     void blueFunc()
     {
@@ -731,7 +721,6 @@ def g:Test_LspProcessDiagHandler()
   g:LspOptionsSet({showDiagInPopup: false})
 
   :silent! edit XLspProcessDiag.c
-  sleep 200m
   var lines: list<string> =<< trim END
     void blueFunc()
     {
@@ -758,7 +747,6 @@ enddef
 # changes.
 def g:Test_DiagLocListAutoUpdate()
   :silent! edit XdiagLocListAutoUpdate.c
-  :sleep 200m
   setloclist(0, [], 'f')
   var lines: list<string> =<< trim END
     int i:
@@ -801,7 +789,6 @@ enddef
 # Test that the client have been able to configure the server to speak utf-32
 def g:Test_UnicodeColumnCalc()
   :silent! edit XUnicodeColumn.c
-  sleep 200m
   var lines: list<string> =<< trim END
     int count;
     int fn(int a)
@@ -835,7 +822,6 @@ enddef
 # Test for multiple LSP diagnostics on the same line
 def g:Test_LspDiag_Multi()
   :silent! edit XLspDiagMulti.c
-  sleep 200m
 
   var bnr: number = bufnr()
 
@@ -990,7 +976,6 @@ enddef
 # Test for highlight diag inline
 def g:Test_LspHighlightDiagInline()
   :silent! edit XLspHighlightDiag.c
-  sleep 200m
   setline(1, [
     'int main()',
     '{',
@@ -1033,7 +1018,6 @@ enddef
 # Test for :LspCodeAction
 def g:Test_LspCodeAction()
   silent! edit XLspCodeAction.c
-  sleep 200m
   var lines: list<string> =<< trim END
     void testFunc()
     {
@@ -1050,7 +1034,8 @@ def g:Test_LspCodeAction()
 
   setline(4, "\tcount = 20:")
   cursor(4, 1)
-  sleep 500m
+  :redraw!
+  g:WaitForDiags(1)
   :LspCodeAction 0
   assert_equal("\tcount = 20:", getline(4))
 
@@ -1065,7 +1050,6 @@ def g:Test_LspCodeAction()
 
   # pattern and string prefix
   silent! edit XLspCodeActionPattern.c
-  sleep 200m
   var lines2: list<string> =<< trim END
     void testFunc()
     {
@@ -1081,15 +1065,19 @@ def g:Test_LspCodeAction()
   :LspCodeAction use
   assert_equal("\tif (count == 1) {", getline(4))
 
+  g:WaitForDiags(0, 'Warn')
   setline(4, "\tif (count = 1) {")
   cursor(4, 1)
-  sleep 500m
+  :redraw!
+  g:WaitForDiags(1, 'Warn')
   :LspCodeAction /paren
   assert_equal("\tif ((count = 1)) {", getline(4))
 
+  g:WaitForDiags(0, 'Warn')
   setline(4, "\tif (count = 1) {")
   cursor(4, 1)
-  sleep 500m
+  :redraw!
+  g:WaitForDiags(1, 'Warn')
   :LspCodeAction NON_EXISTING_PREFIX
   assert_equal("\tif (count = 1) {", getline(4))
 
@@ -1218,7 +1206,6 @@ enddef
 # Test for :LspRename
 def g:Test_LspRename()
   silent! edit XLspRename.c
-  sleep 200m
   var lines: list<string> =<< trim END
     void F1(int count)
     {
@@ -1288,7 +1275,6 @@ enddef
 # Test for :LspSelectionExpand and :LspSelectionShrink
 def g:Test_LspSelection()
   silent! edit XLspSelection.c
-  sleep 200m
   var lines: list<string> =<< trim END
     void fnSel(int count)
     {
@@ -1421,7 +1407,6 @@ enddef
 def g:Test_LspGotoSymbol()
   settagstack(0, {items: []})
   silent! edit XLspGotoSymbol.cpp
-  sleep 600m
   var lines: list<string> =<< trim END
     class base {
 	public:
@@ -1564,7 +1549,6 @@ def g:Test_LspGotoDefinition_SpecialFileName()
 
   try
     :silent! edit Xgoto.c
-    sleep 200m
     g:WaitForServerFileLoad(0)
     :setlocal nomodified
 
@@ -1603,7 +1587,6 @@ def g:Test_LspDiagAndGotoDefinition_FileNameIsNotAPattern()
     :silent! edit Xexact1.h
     :silent! edit Xexact1.c
     exe $'silent! edit {src->fnameescape()}'
-    sleep 200m
     g:WaitForDiags(1)
 
     cursor(2, 31)
@@ -1628,7 +1611,6 @@ def g:Test_LspSwitchSourceHeader_SpecialFileName()
 
   try
     exe $'silent! edit {src->fnameescape()}'
-    sleep 200m
     g:WaitForServerFileLoad(0)
     :setlocal nomodified
 
@@ -1644,7 +1626,6 @@ enddef
 # Test for :LspHighlight
 def g:Test_LspHighlight()
   silent! edit XLspHighlight.c
-  sleep 200m
   var lines: list<string> =<< trim END
     void f1(int arg)
     {
@@ -1683,7 +1664,6 @@ enddef
 # Test for :LspHover
 def g:Test_LspHover()
   silent! edit XLspHover.c
-  sleep 200m
   var lines: list<string> =<< trim END
     int f1(int a)
     {
@@ -1833,7 +1813,6 @@ def g:Test_LspShowSignature()
   g:LspOptionsSet({echoSignature: false, showSignatureDocs: false})
 
   silent! edit XLspShowSignature.c
-  sleep 200m
   var lines: list<string> =<< trim END
     int MyFunc(int a, int b)
     {
@@ -2398,7 +2377,6 @@ enddef
 # Test for :LspSymbolSearch
 def g:Test_LspSymbolSearch()
   silent! edit XLspSymbolSearch.c
-  sleep 200m
   var lines: list<string> =<< trim END
     void lsptest_funcA()
     {
@@ -2443,14 +2421,12 @@ def g:Test_LspSymbolSearch_SpecialFileName()
 
   try
     exe $'silent! edit {fname->fnameescape()}'
-    sleep 200m
     g:WaitForServerFileLoad(0)
     :setlocal nomodified
     # Keep the file loaded but not displayed in a window
     :silent! split Xsymsearch.c
     :wincmd p
     :hide
-    sleep 200m
     g:WaitForServerFileLoad(0)
     :setlocal nomodified
 
@@ -2467,7 +2443,6 @@ enddef
 # Test for :LspIncomingCalls
 def g:Test_LspIncomingCalls()
   silent! edit XLspIncomingCalls.c
-  sleep 200m
   var lines: list<string> =<< trim END
     void xFuncIncoming(void)
     {
@@ -2499,7 +2474,6 @@ enddef
 # Test for :LspOutline
 def g:Test_LspOutline()
   silent! edit XLspOutline.c
-  sleep 200m
   var lines: list<string> =<< trim END
     void aFuncOutline(void)
     {
@@ -2578,7 +2552,6 @@ def g:Test_LspOutline_SpecialFileName()
 
   try
     exe $'silent! edit {fname->fnameescape()}'
-    sleep 200m
     g:WaitForServerFileLoad(0)
     :setlocal nomodified
     :LspOutline
@@ -2644,7 +2617,6 @@ def g:Test_LspDiagsUpdated_Autocmd()
   g:LspAutoCmd = 0
   autocmd_add([{event: 'User', pattern: 'LspDiagsUpdated', cmd: 'g:LspAutoCmd = g:LspAutoCmd + 1'}])
   silent! edit XLspDiagsAutocmd.c
-  sleep 200m
   var lines: list<string> =<< trim END
     void aFuncDiag(void)
     {
@@ -2676,7 +2648,6 @@ def g:Test_LspCustomNotificationHandlers()
   g:LSPTest_customNotificationHandlerReplied = false
 
   silent! edit XcustomNotification.c
-  sleep 200m
   var lines: list<string> =<< trim END
     int a = 1;
     int main(void) {
@@ -2690,7 +2661,6 @@ enddef
 
 def g:Test_ScanFindIdent()
   :silent! edit XscanFindIdent.c
-  sleep 200m
   var lines: list<string> =<< trim END
     int countFI;
     int fnFI(int a)
@@ -2731,7 +2701,6 @@ enddef
 # Test for doing omni completion from the first column
 def g:Test_OmniComplete_FirstColumn()
   :silent! edit XOmniCompleteFirstColumn.c
-  sleep 200m
   var lines: list<string> =<< trim END
     typedef struct Foo_ {
     } Foo_t;
@@ -2750,7 +2719,6 @@ enddef
 # Test for doing omni completion with a multibyte character
 def g:Test_OmniComplete_Multibyte()
   :silent! edit XOmniCompleteMultibyte.c
-  sleep 200m
   var lines: list<string> =<< trim END
     #include <string.h>
     void Fn(void)
@@ -2772,7 +2740,6 @@ enddef
 # Test for doing omni completion for a struct field
 def g:Test_OmniComplete_Struct()
   :silent! edit XOmniCompleteStruct.c
-  sleep 200m
   var lines: list<string> =<< trim END
     struct test_ {
         int foo;
@@ -2804,7 +2771,6 @@ enddef
 # This used to result in an error message.
 def g:Test_OmniComplete_AfterParen()
   :silent! edit XOmniCompleteAfterParen.c
-  sleep 200m
   var lines: list<string> =<< trim END
     #include <stdio.h>
     void Fn(void)
@@ -2828,7 +2794,6 @@ enddef
 # Test for inlay hints
 def g:Test_InlayHints()
   :silent! edit XinlayHints.c
-  sleep 200m
   var lines: list<string> =<< trim END
     void func1(int a, int b)
     {
@@ -2997,7 +2962,6 @@ enddef
 def g:Test_DiagVirtualText()
   g:LspOptionsSet({highlightDiagInline: false})
   :silent! edit XdiagVirtualText.c
-  sleep 200m
   var lines: list<string> =<< trim END
     void DiagVirtualTextFunc1()
     {
@@ -3027,7 +2991,6 @@ enddef
 # Test for enabling and disabling the "showDiagWithSign" option.
 def g:Test_DiagSigns()
   :silent! edit Xdiagsigns.c
-  sleep 200m
   var lines: list<string> =<< trim END
     void DiagSignsFunc1(void)
     {
@@ -3061,7 +3024,6 @@ enddef
 
 def g:Test_DocumentSymbol()
   :silent! edit Xdocsymbol.c
-  sleep 200m
   var lines: list<string> =<< trim END
     void DocSymFunc1(void)
     {
@@ -3086,7 +3048,6 @@ def g:Test_LspDocumentLink()
   writefile(['int xdoclink_one;', 'int xdoclink_two;'], 'Xdoclink.h')
   writefile(['#include "Xdoclink.h"', 'int xdoclink_three;'], 'Xdoclink.c')
   :silent! edit Xdoclink.c
-  sleep 200m
   g:WaitForServerFileLoad(0)
   setlocal nomodified
   var bnr: number = bufnr()
@@ -3160,7 +3121,6 @@ enddef
 # the channel callback handles other messages from the server.
 def g:Test_RpcReplyDuringNotifications()
   :silent! edit XRpcReplyDuringNotifications.c
-  sleep 200m
   setline(1, ['int f1(int a) {', '  return a;', '}'])
   g:WaitForServerFileLoad(0)
   var lspserver = buf.CurbufGetServerChecked()
@@ -3191,7 +3151,6 @@ def g:Test_LspAttached_Autocmd()
   augroup END
 
   :silent! edit XlspAttached.c
-  sleep 200m
   g:WaitForServerFileLoad(0)
 
   assert_equal('XlspAttached.c', g:save_lspctx.file->fnamemodify(':t'))
@@ -3211,7 +3170,6 @@ def g:Test_LspDetached_Autocmd()
   augroup END
 
   :silent! edit XlspDetached.c
-  sleep 200m
   g:WaitForServerFileLoad(0)
   :bw!
 
