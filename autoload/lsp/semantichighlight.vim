@@ -235,8 +235,11 @@ def SemanticHighlightBufUnload(bnr: number)
 enddef
 
 # Parse the semantic highlight reply from the language server and update the
-# text properties
-export def UpdateTokens(lspserver: dict<any>, semTokens: dict<any>,
+# text properties.  Without a result ("semTokens" is null), as when the
+# request was cancelled or the content was modified, the semantic highlighting
+# is left as it is.
+# Result: SemanticTokens | SemanticTokensDelta | null
+export def UpdateTokens(lspserver: dict<any>, semTokens: any,
                         updateError: dict<any>, bnr: number,
                         requestTick: number)
   # Handle semantic tokens error
@@ -250,6 +253,10 @@ export def UpdateTokens(lspserver: dict<any>, semTokens: dict<any>,
     # Clear the data as our local copy will be out of sync
     SemanticHighlightCleanup(bnr)
     ClearSemanticHighlightProps(bnr)
+    return
+  endif
+
+  if semTokens->type() != v:t_dict
     return
   endif
 

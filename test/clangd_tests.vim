@@ -1546,6 +1546,62 @@ def g:Test_LspGotoSymbol()
   :%bw!
 enddef
 
+# Test for :LspGotoDefinition jumping to a file whose name has characters that
+# are special in the file name argument of an Ex command
+def g:Test_LspGotoDefinition_SpecialFileName()
+  var hdr: string = 'Xgoto [1]%#.h'
+  writefile(['int xgoto_special;'], hdr)
+  writefile([$'#include "{hdr}"',
+	     'int xgoto_use(void) { return xgoto_special; }'], 'Xgoto.c')
+
+  try
+    :silent! edit Xgoto.c
+    sleep 200m
+    g:WaitForServerFileLoad(0)
+    :setlocal nomodified
+
+    cursor(2, 30)
+    :LspGotoDefinition
+    assert_equal([hdr, 1, 5, 1],
+		 [expand('%:t'), line('.'), col('.'), winnr('$')])
+    var hdrBnr: number = bufnr()
+    exe "normal! \<C-t>"
+    assert_equal(['Xgoto.c', 2, 30], [expand('%:t'), line('.'), col('.')])
+
+    exe $'bwipe {hdrBnr}'
+    :topleft LspGotoDefinition
+    assert_equal([hdr, 1, 5, 1, 2],
+		 [expand('%:t'), line('.'), col('.'), winnr(), winnr('$')])
+  finally
+    delete('Xgoto.c')
+    delete(hdr)
+    :%bw!
+  endtry
+enddef
+
+# Test for :LspSwitchSourceHeader with file names that have characters that
+# are special in the file name argument of an Ex command
+def g:Test_LspSwitchSourceHeader_SpecialFileName()
+  var src: string = 'Xswitch [1]%#.c'
+  var hdr: string = 'Xswitch [1]%#.h'
+  writefile(['int xswitch_special;'], hdr)
+  writefile([$'#include "{hdr}"', 'int xswitch_special = 1;'], src)
+
+  try
+    exe $'silent! edit {src->fnameescape()}'
+    sleep 200m
+    g:WaitForServerFileLoad(0)
+    :setlocal nomodified
+
+    :LspSwitchSourceHeader
+    assert_equal(hdr, expand('%:t'))
+  finally
+    delete(src)
+    delete(hdr)
+    :%bw!
+  endtry
+enddef
+
 # Test for :LspHighlight
 def g:Test_LspHighlight()
   silent! edit XLspHighlight.c
@@ -2342,6 +2398,37 @@ def g:Test_LspSymbolSearch()
   :%bw!
 enddef
 
+# Test for selecting a :LspSymbolSearch match in a file whose name has
+# characters that are special in the file name argument of an Ex command
+def g:Test_LspSymbolSearch_SpecialFileName()
+  var fname: string = 'Xsymsearch [1]%#.c'
+  writefile(['void xsymsearch_funcA(void)', '{', '}',
+	     'void xsymsearch_funcB(void)', '{', '}'], fname)
+  writefile(['int xsymsearch_other;'], 'Xsymsearch.c')
+
+  try
+    exe $'silent! edit {fname->fnameescape()}'
+    sleep 200m
+    g:WaitForServerFileLoad(0)
+    :setlocal nomodified
+    # Keep the file loaded but not displayed in a window
+    :silent! split Xsymsearch.c
+    :wincmd p
+    :hide
+    sleep 200m
+    g:WaitForServerFileLoad(0)
+    :setlocal nomodified
+
+    feedkeys(":LspSymbolSearch xsymsearch_func\<CR>A\<BS>B\<CR>", "xt")
+    assert_equal([fname, 4, 6, 1],
+		 [expand('%:t'), line('.'), col('.'), winnr('$')])
+  finally
+    delete(fname)
+    delete('Xsymsearch.c')
+    :%bw!
+  endtry
+enddef
+
 # Test for :LspIncomingCalls
 def g:Test_LspIncomingCalls()
   silent! edit XLspIncomingCalls.c
@@ -2445,6 +2532,35 @@ def g:Test_LspOutline()
   execute $':{bnum}bw'
 
   :%bw!
+enddef
+
+# Test for jumping from the :LspOutline window to a symbol in a file whose
+# name has characters that are special in the file name argument of an Ex
+# command
+def g:Test_LspOutline_SpecialFileName()
+  var fname: string = '+Xoutline [1]%#.c'
+  writefile(['void xFuncOutlineSpecial(void)', '{', '}'], fname)
+
+  try
+    exe $'silent! edit {fname->fnameescape()}'
+    sleep 200m
+    g:WaitForServerFileLoad(0)
+    :setlocal nomodified
+    :LspOutline
+    assert_equal(['Function@', '  xFuncOutlineSpecial'],
+		 getbufline('LSP-Outline', 4, '$'))
+    # Close the file window so that the jump opens the file again
+    :close
+    assert_equal('LSP-Outline', bufname())
+
+    cursor(5, 1)
+    exe "normal \<CR>"
+    assert_equal([fname, 1, 6, 2],
+		 [bufname(), line('.'), col('.'), winnr('$')])
+  finally
+    delete(fname)
+    :%bw!
+  endtry
 enddef
 
 # Test for setting the 'tagfunc'

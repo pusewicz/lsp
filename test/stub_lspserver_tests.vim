@@ -13,6 +13,7 @@ import '../autoload/lsp/util.vim' as util
 import '../autoload/lsp/buffer.vim' as buf
 import '../autoload/lsp/ontypeformat.vim' as ontypeformat
 import '../autoload/lsp/textedit.vim' as textedit
+import '../autoload/lsp/hover.vim' as hover
 import '../autoload/lsp/options.vim' as opt
 
 def CaptureNotification(notifications: list<dict<any>>, method: string,
@@ -286,30 +287,31 @@ def g:Test_Rpc_CancelsInterruptedRequest()
 enddef
 
 # Test that a reply saying that the request was cancelled, by the client or by
-# the server, is not reported as an error, and that the callback of an
-# asynchronous request then gets no result.
-def g:Test_Rpc_CancelledReplyIsNotAnError()
+# the server, or that the content it was about was modified, is not reported
+# as an error, and that the callback of an asynchronous request then gets no
+# result.
+def g:Test_Rpc_StaleRequestReplyIsNotAnError()
   # Send the asynchronous requests asynchronously, as outside the tests.
   g:LSPTest = false
   try
-    for code in [-32800, -32802]
+    for code in [-32800, -32801, -32802]
       var notifications: list<dict<any>> = []
       var lspserver = MakeTestLspServer(notifications)
       var syncId = lspserver.nextSyncRpcId
-      var cancelled = {code: code, message: 'cancelled'}
+      var stale = {code: code, message: 'stale'}
       # Vim numbers the asynchronous requests on a new channel from 1.
       lspserver.job = StartStubServerJob([
-	{jsonrpc: '2.0', id: 1, error: cancelled},
-	{jsonrpc: '2.0', id: syncId, error: cancelled}
+	{jsonrpc: '2.0', id: 1, error: stale},
+	{jsonrpc: '2.0', id: syncId, error: stale}
       ])
       var beforeMessages = execute('messages')
 
       var replies: list<list<any>> = []
-      assert_equal(1, lspserver.rpc_a('test/cancelled', {},
+      assert_equal(1, lspserver.rpc_a('test/stale', {},
 	(_, reply, error) => {
 	  replies->add([reply, error])
 	}))
-      assert_equal({}, lspserver.rpc('test/cancelled', {}))
+      assert_equal({}, lspserver.rpc('test/stale', {}))
       g:WaitForAssert(() => assert_equal([[v:null, {}]], replies))
       job_stop(lspserver.job)
 
@@ -321,6 +323,7 @@ def g:Test_Rpc_CancelledReplyIsNotAnError()
   endtry
 enddef
 
+<<<<<<< HEAD
 # Returns a running test language server that records the notifications and
 # the requests it is sent in "messages", in the order they are sent.
 def MakeRecordingLspServer(messages: list<dict<any>>): dict<any>
@@ -411,6 +414,132 @@ def g:Test_AsyncRpc_SendsPendingChangesOfAllBuffersFirst()
   endtry
 enddef
 
+=======
+# Test that the reply to a semantic tokens request saying that the content was
+# modified leaves the semantic highlighting as it is, without an error.
+def g:Test_SemanticHighlightUpdate_ContentModifiedIsNotAnError()
+  silent! edit XSemanticTokensContentModified.txt
+  setbufvar(bufnr(), 'LspSemanticResultId', 'previous')
+  var lspserver = MakeTestLspServer([])
+  lspserver.isSemanticTokensProvider = true
+  lspserver.semanticTokensDelta = false
+  var errors: list<string> = []
+  lspserver.errorLog = (msg: string) => {
+    errors->add(msg)
+  }
+  # Send the request asynchronously, as outside the tests.
+  g:LSPTest = false
+  # Vim numbers the asynchronous requests on a new channel from 1.
+  lspserver.job = StartStubServerJob([{jsonrpc: '2.0', id: 1,
+    error: {code: -32801, message: 'content modified'}}])
+  try
+    var beforeMessages = execute('messages')
+    lspserver.semanticHighlightUpdate(bufnr())
+    g:WaitForAssert(() => assert_equal({}, lspserver.supersedableRequests))
+    assert_equal(beforeMessages, execute('messages'))
+    assert_equal([], errors)
+    assert_equal('previous', getbufvar(bufnr(), 'LspSemanticResultId'))
+  finally
+    g:LSPTest = true
+    job_stop(lspserver.job)
+  endtry
+  :%bw!
+enddef
+
+# Test that the reply to a hover request saying that the content was modified
+# is not cached, so that hovering again at the same position asks the server
+# again, while an empty hover result is still cached.
+def g:Test_ShowHoverInfo_ContentModifiedIsNotCached()
+  silent! edit XHoverContentModified.txt
+  var lspserver = MakeTestLspServer([])
+  lspserver.isHoverProvider = true
+  # Send the request asynchronously, as outside the tests.
+  g:LSPTest = false
+  # Vim numbers the asynchronous requests on a new channel from 1.
+  lspserver.job = StartStubServerJob([{jsonrpc: '2.0', id: 1,
+    error: {code: -32801, message: 'content modified'}}])
+  try
+    var beforeMessages = execute('messages')
+    lspserver.hover('silent')
+    g:WaitForAssert(() => assert_equal({}, lspserver.supersedableRequests))
+    assert_equal(beforeMessages, execute('messages'))
+    var reqctx = hover.HoverRequestContextGet(lspserver)
+    assert_false(hover.HoverShowCached(reqctx, lspserver, 'silent'))
+
+    hover.HoverReply(lspserver, {contents: ''}, {}, 'silent', reqctx)
+    assert_true(hover.HoverShowCached(reqctx, lspserver, 'silent'))
+  finally
+    g:LSPTest = true
+    job_stop(lspserver.job)
+  endtry
+  :%bw!
+enddef
+
+# Returns the last message in the message history.
+def LastMessage(): string
+  return execute('messages')->split("\n")[-1]
+enddef
+
+# Test that a synchronous request whose caller handles the errors returns the
+# reply with the error, which is not reported, while for the other callers the
+# error is reported and an empty Dict is returned.
+def g:Test_Rpc_ReturnsErrorToCallerHandlingIt()
+  var lspserver = MakeTestLspServer([])
+  for code in [-32603, -32801]
+    var syncId = lspserver.nextSyncRpcId
+    var failed = {code: code, message: 'failed'}
+    lspserver.job = StartStubServerJob(
+      [{jsonrpc: '2.0', id: syncId, error: failed}])
+    try
+      var beforeMessages = execute('messages')
+      assert_equal({jsonrpc: '2.0', id: syncId, error: failed},
+		   lspserver.rpc('test/fails', {}, {handleError: false}))
+      assert_equal(beforeMessages, execute('messages'))
+    finally
+      job_stop(lspserver.job)
+    endtry
+  endfor
+
+  lspserver.job = StartStubServerJob([{jsonrpc: '2.0',
+    id: lspserver.nextSyncRpcId, error: {code: -32603, message: 'failed'}}])
+  try
+    assert_equal({}, lspserver.rpc('test/fails', {}))
+    assert_equal('Error: request test/fails failed (failed, error = InternalError)',
+		 LastMessage())
+  finally
+    job_stop(lspserver.job)
+  endtry
+enddef
+
+# Test that jumping to a definition and looking up a tag treat an error reply
+# like a reply without a location.
+def g:Test_GotoDefinitionAndTagFunc_ErrorReplyFindsNothing()
+  silent! edit XGotoDefinitionError.txt
+  var lspserver = MakeTestLspServer([])
+  lspserver.isDefinitionProvider = true
+  lspserver.isWorkspaceSymbolProvider = true
+  var lookups: list<func> = [
+    () => {
+      lspserver.gotoDefinition(false, '', 0)
+    },
+    () => {
+      assert_equal(null, lspserver.tagFunc('XNoSuchTag', '', {}))
+    }
+  ]
+  for Lookup in lookups
+    lspserver.job = StartStubServerJob([{jsonrpc: '2.0',
+      id: lspserver.nextSyncRpcId, error: {code: -32603, message: 'failed'}}])
+    try
+      Lookup()
+    finally
+      job_stop(lspserver.job)
+    endtry
+  endfor
+  assert_equal('Warn: symbol definition is not found', LastMessage())
+  :%bw!
+enddef
+
+>>>>>>> origin/main
 # Test that a "$/cancelRequest" notification from the server is accepted
 # quietly.
 def g:Test_ProcessNotif_CancelRequestIsIgnored()
@@ -544,42 +673,46 @@ def g:Test_ProcessMessages_AcceptsValidJsonRpcVersion()
   assert_equal(0, traceMsgs->len())
 enddef
 
-def g:Test_PullDiagnostics_RetriggersServerCancelledRequest()
-  silent! edit XPullDiagnosticsRetrigger.rs
-  setline(1, ['fn main() {}'])
-
-  var queued: list<number> = []
-  var rpcOpts: list<dict<any>> = []
-  def MockDiagnosticRpc(_method: string, _params: any,
-                        opts: dict<any> = {}): dict<any>
-    rpcOpts->add(opts->deepcopy())
-    return {
-      error: {
-        code: -32802,
-        message: 'server cancelled the request',
-        data: {
-          retriggerRequest: true
-        }
-      }
-    }
-  enddef
-
+# Pull the diagnostics for the current buffer from a stand-in for a language
+# server that replies with "error".  Returns the buffers for which another
+# pull was queued.
+def PullDiagnosticsWithError(error: dict<any>): list<number>
   var lspserver = MakeTestLspServer([])
-  lspserver.running = true
-  lspserver.ready = true
   lspserver.isDiagnosticsProvider = true
-  lspserver.features = {diagnostics: true}
-  lspserver.featureEnabled = (_) => true
-  lspserver.queuePullDiagnostics = (bnr: number) => queued->add(bnr)
-  lspserver.rpc = MockDiagnosticRpc
+  var queued: list<number> = []
+  lspserver.queuePullDiagnostics = (bnr: number) => {
+    queued->add(bnr)
+  }
+  lspserver.job = StartStubServerJob(
+    [{jsonrpc: '2.0', id: lspserver.nextSyncRpcId, error: error}])
+  try
+    lspserver.pullDiagnostics(bufnr())
+  finally
+    job_stop(lspserver.job)
+  endtry
+  return queued
+enddef
 
-  buf.BufLspServerSet(bufnr(), lspserver)
-  lspserver.pullDiagnostics(bufnr())
+# Test that the pull diagnostics request is sent again, without reporting an
+# error, when the server cancels it and asks for it to be retriggered, or when
+# the content was modified.
+def g:Test_PullDiagnostics_RetriesStaleRequest()
+  silent! edit XPullDiagnosticsRetry.rs
+  var beforeMessages = execute('messages')
 
-  assert_equal([{handleError: false}], rpcOpts)
-  assert_equal([bufnr()], queued)
+  assert_equal([bufnr()], PullDiagnosticsWithError({code: -32802,
+    message: 'server cancelled', data: {retriggerRequest: true}}))
+  assert_equal([bufnr()], PullDiagnosticsWithError({code: -32801,
+    message: 'content modified'}))
+  assert_equal([], PullDiagnosticsWithError({code: -32802,
+    message: 'server cancelled', data: {retriggerRequest: false}}))
+  assert_equal(beforeMessages, execute('messages'))
 
-  buf.BufLspServerRemove(bufnr(), lspserver)
+  assert_equal([], PullDiagnosticsWithError({code: -32603,
+    message: 'failed'}))
+  assert_equal(
+    'Error: request textDocument/diagnostic failed (failed, error = InternalError)',
+    LastMessage())
   :%bw!
 enddef
 
@@ -719,7 +852,8 @@ def InstallAleStub(): string
     'endfunction',
     'function ale#other_source#ShowResults(buffer, linter_name, loclist) abort',
     '  call add(g:LspTestAleCalls,',
-    '        \ ["show", a:buffer, a:linter_name, map(copy(a:loclist), "v:val.text")])',
+    '        \ ["show", a:buffer, a:linter_name, map(copy(a:loclist), "v:val.text"),',
+    '        \  deepcopy(a:loclist)])',
     'endfunction'
   ], fname)
   execute 'source' fnameescape(fname)
@@ -897,6 +1031,54 @@ def g:Test_AleSupport_InsertModeFollowsAleLintOnTextChanged()
   assert_equal({clangd: ['clangd diag']}, AleResultsByLinter())
 
   unlet g:LspTestPublishDiags
+  diag.DiagRemoveFile(bnr)
+  buf.BufLspServerRemove(bnr, clangd)
+  RemoveAleStub(aleStub)
+  :%bw!
+enddef
+
+# ALE highlights a diagnostic up to and including its end column, so the
+# exclusive end of a diagnostic range is sent to ALE as the position of the
+# last byte in the range, kept within the buffer.
+def g:Test_AleSupport_InclusiveEndColumn()
+  var aleStub = InstallAleStub()
+  silent! edit XAleSupportEndCol.c
+  setline(1, ['int abc;', "x = éé;", 'int b;', '', "ééé"])
+  var bnr = bufnr()
+  var uri = util.LspBufnrToUri(bnr)
+  var clangd = MakeDiagServer('clangd')
+  buf.BufLspServerSet(bnr, clangd)
+
+  # [description, LSP [start line, start char, end line, end char],
+  #  ALE [lnum, col, end_lnum, end_col]]
+  var cases: list<list<any>> = [
+    ['single line', [0, 4, 0, 7], [1, 5, 1, 7]],
+    ['multibyte last character', [1, 4, 1, 6], [2, 5, 2, 8]],
+    ['multiple lines', [0, 4, 1, 5], [1, 5, 2, 6]],
+    ['zero width', [0, 4, 0, 4], [1, 5, 1, 5]],
+    ['zero width on an empty line', [3, 0, 3, 0], [4, 1, 4, 1]],
+    ['end at the start of the next line', [1, 4, 2, 0], [2, 5, 2, 9]],
+    ['whole line', [2, 0, 3, 0], [3, 1, 3, 6]],
+    ['newline only', [0, 8, 1, 0], [1, 9, 1, 9]],
+    ['end past the end of the line', [0, 4, 0, 20], [1, 5, 1, 8]],
+    ['multibyte end past the end of the line', [4, 1, 4, 4], [5, 3, 5, 6]],
+    ['end past the end of the buffer', [2, 0, 9, 0], [3, 1, 5, 6]]
+  ]
+  for [desc, lspRange, aleRange] in cases
+    var d = {
+      range: {
+	start: {line: lspRange[0], character: lspRange[1]},
+	end: {line: lspRange[2], character: lspRange[3]}
+      },
+      severity: 1,
+      message: desc
+    }
+    g:LspTestAleCalls = []
+    diag.DiagNotification(clangd, uri, [d], 'push')
+    assert_equal([aleRange], g:LspTestAleCalls[-1][4]->mapnew((_, v) =>
+		   [v.lnum, v.col, v.end_lnum, v.end_col]), desc)
+  endfor
+
   diag.DiagRemoveFile(bnr)
   buf.BufLspServerRemove(bnr, clangd)
   RemoveAleStub(aleStub)
@@ -2927,6 +3109,118 @@ def g:Test_ApplyTextEdits_WholeDocumentFollowsWriteRule()
   endfor
 
   :%bw!
+enddef
+
+# Returns a TextEdit that replaces the text from line "sline", character
+# "schar" to line "eline", character "echar" with "text".
+def MakeTextEdit(sline: number, schar: number, eline: number, echar: number,
+		 text: string): dict<any>
+  return {range: {start: {line: sline, character: schar},
+		  end: {line: eline, character: echar}},
+	  newText: text}
+enddef
+
+# getbufline() returns one empty line both for a buffer without lines and for
+# a buffer with one empty line.  When Vim writes a newline at the end, the
+# empty line is taken to be the one after that newline, unless an edit
+# reaches the line after it, so that edits for the empty document and for the
+# document "\n" both apply.  Otherwise the document is empty, and a newline
+# inserted at its end leaves an empty last line.
+def g:Test_ApplyTextEdits_EmptyBuffer()
+  silent! edit XApplyTextEditsEmpty.txt
+  var bnr = bufnr()
+  var withEol: list<list<any>> = [
+    [[MakeTextEdit(0, 0, 0, 0, "foo\n")], ['foo']],
+    [[MakeTextEdit(0, 0, 0, 0, 'foo')], ['foo']],
+    [[MakeTextEdit(0, 0, 1, 0, "foo\n")], ['foo']],
+    [[MakeTextEdit(0, 0, 1, 0, '')], ['']],
+    [[MakeTextEdit(1, 0, 1, 0, "foo\n")], ['', 'foo']],
+    [[MakeTextEdit(1, 0, 1, 0, 'foo')], ['', 'foo']],
+    [[MakeTextEdit(0, 0, 0, 0, "a\n"), MakeTextEdit(0, 0, 0, 0, "b\n")],
+     ['a', 'b']],
+    [[MakeTextEdit(0, 0, 0, 0, 'a'), MakeTextEdit(1, 0, 1, 0, "b\n")],
+     ['a', 'b']],
+  ]
+  var withoutEol: list<list<any>> = [
+    [[MakeTextEdit(0, 0, 0, 0, "foo\n")], ['foo', '']],
+    [[MakeTextEdit(0, 0, 0, 0, 'foo')], ['foo']],
+    [[MakeTextEdit(0, 0, 0, 0, "a\n"), MakeTextEdit(0, 0, 0, 0, "b\n")],
+     ['a', 'b', '']],
+  ]
+  var cases: list<list<any>> = [
+    ['eol fixeol nobinary', withEol],
+    ['noeol fixeol nobinary', withEol],
+    ['eol nofixeol nobinary', withEol],
+    ['eol fixeol binary', withEol],
+    ['noeol nofixeol nobinary', withoutEol],
+    ['noeol fixeol binary', withoutEol],
+  ]
+  for [opts, editCases] in cases
+    for [textEdits, expected] in editCases
+      for oneEmptyLine in [false, true]
+	:%d
+	if oneEmptyLine
+	  setline(1, '')
+	endif
+	exe $'setlocal {opts}'
+	textedit.ApplyTextEdits(bnr, textEdits)
+	assert_equal(expected, getline(1, '$'),
+		     $'{opts}, one empty line: {oneEmptyLine}, {textEdits}')
+      endfor
+    endfor
+  endfor
+
+  :%bw!
+enddef
+
+# When Vim writes a newline at the end, an edit can insert text on the empty
+# line after it.
+def g:Test_ApplyTextEdits_InsertAfterLastLine()
+  silent! edit XApplyTextEditsAfterLast.txt
+  var bnr = bufnr()
+  var cases: list<list<any>> = [
+    [['abc'], [MakeTextEdit(1, 0, 1, 0, "x\n")], ['abc', 'x']],
+    [['abc'], [MakeTextEdit(1, 0, 1, 0, "x\ny\nz\n")], ['abc', 'x', 'y', 'z']],
+    [['abc', ''], [MakeTextEdit(2, 0, 2, 0, "x\n")], ['abc', '', 'x']],
+    [['abc', ''], [MakeTextEdit(1, 0, 1, 0, "x\n"),
+		   MakeTextEdit(2, 0, 2, 0, "y\n")], ['abc', 'x', '', 'y']],
+  ]
+  for [text, textEdits, expected] in cases
+    :%d
+    setline(1, text)
+    textedit.ApplyTextEdits(bnr, textEdits)
+    assert_equal(expected, getline(1, '$'), $'{text}, {textEdits}')
+  endfor
+
+  :%bw!
+enddef
+
+# A workspace edit inserts text in an empty file that it creates first, or
+# that exists but is not loaded.  The buffer is then loaded from the file,
+# without a window.
+def g:Test_ApplyWorkspaceEdit_EditsEmptyFile()
+  var fname = 'XWorkspaceEditEmpty.txt'
+  var uri = util.LspFileToUri(fname)
+  var insert = MakeTextEdit(0, 0, 0, 0, "line1\nline2\n")
+  try
+    var createAndEdit = {documentChanges: [
+      {kind: 'create', uri: uri},
+      {textDocument: {uri: uri, version: v:null}, edits: [insert]}
+    ]}
+    textedit.ApplyWorkspaceEdit(createAndEdit)
+    assert_equal([], win_findbuf(bufnr(fname)))
+    assert_equal(['line1', 'line2'], getbufline(fname, 1, '$'))
+    exe $'bwipe! {fname}'
+
+    writefile([], fname)
+    var changes = {changes: {[uri]: [insert]}}
+    textedit.ApplyWorkspaceEdit(changes)
+    assert_equal([], win_findbuf(bufnr(fname)))
+    assert_equal(['line1', 'line2'], getbufline(fname, 1, '$'))
+  finally
+    exe $'silent! bwipe! {fname}'
+    delete(fname)
+  endtry
 enddef
 
 # A completion request supersedes the pending one, which is cancelled, so a

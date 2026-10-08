@@ -1267,6 +1267,13 @@ def g:Test_DocumentLinkCapability()
   assert_true(capabilities.GetClientCaps().textDocument.documentLink.tooltipSupport)
 enddef
 
+# Test that the client advertises retrying only the requests that it retries
+# when the content was modified
+def g:Test_StaleRequestSupportCapability()
+  assert_equal({cancel: true, retryOnContentModified: ['textDocument/diagnostic']},
+	       capabilities.GetClientCaps().general.staleRequestSupport)
+enddef
+
 # Test for parsing the line and column fragment in a document link file URI
 def g:Test_DocumentLink_ParseFileUri()
   var uri = 'file:///tmp/a%20b.c'
@@ -1313,6 +1320,63 @@ def g:Test_WorkspaceIgnoredPaths_NormalRoot()
   var ignored: list<string> = [$"{$HOME}"]
   var root: string = $"{$HOME}/project"
   assert_false(util.IsIgnoredRoot(root, ignored))
+enddef
+
+# Test for util.JumpToLspLocation() with file names that have characters that
+# are special in the file name argument of an Ex command.  Each file is opened
+# with ":edit", ":belowright split" and ":{cmdmods} split".
+def g:Test_JumpToLspLocation_SpecialFileName()
+  var names: list<string> = ['Xjump%#.txt', 'Xjump [1].txt']
+  if !has('win32')
+    names->extend(['Xjump$HOME.txt', 'Xjump|echo.txt', 'Xjump\1.txt'])
+  endif
+  # "Xjump [1].txt" expanded as a wildcard matches this file
+  writefile(['decoy'], 'Xjump 1.txt')
+  for name in names
+    writefile([name], name)
+  endfor
+  var pos = {line: 0, character: 0}
+
+  try
+    for name in names
+      var loc = {uri: util.LspFileToUri(name), range: {start: pos, end: pos}}
+
+      util.JumpToLspLocation(loc, '')
+      assert_equal([name, name, 1], [expand('%:t'), getline(1), winnr('$')])
+      :%bw!
+
+      :setlocal buftype=nofile
+      util.JumpToLspLocation(loc, '')
+      assert_equal([name, name, 2, 2],
+		   [expand('%:t'), getline(1), winnr(), winnr('$')])
+      :%bw!
+
+      util.JumpToLspLocation(loc, 'topleft')
+      assert_equal([name, name, 1, 2],
+		   [expand('%:t'), getline(1), winnr(), winnr('$')])
+      :%bw!
+    endfor
+  finally
+    delete('Xjump 1.txt')
+    for name in names
+      delete(name)
+    endfor
+    :%bw!
+  endtry
+enddef
+
+# Test for util.ServerMessagesShow() with a log file name that has characters
+# that are special in the file name argument of an Ex command.
+def g:Test_ServerMessagesShow_SpecialFileName()
+  var fname: string = 'lsp-Xmsgs [1]%#.log'
+  util.ClearTraceLogs(fname)
+  util.ServerMessagesShow(fname)
+  var logfile: string = expand('%:p')
+  assert_equal([fname, 2], [logfile->fnamemodify(':t'), winnr('$')])
+  :%bw!
+  if logfile->fnamemodify(':t') == fname
+    delete(logfile)
+  endif
 enddef
 
 # vim: tabstop=8 shiftwidth=2 softtabstop=2 noexpandtab

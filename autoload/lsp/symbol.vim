@@ -119,9 +119,9 @@ def JumpToWorkspaceSymbol(lspserver: dict<any>, cmdmods: string,
 	if &modified || &buftype != ''
 	  # the current buffer is modified or is not a normal buffer, then
 	  # open the file in a new window
-	  exe $'split {symTbl[result - 1].file}'
+	  exe $'split {fname->fnameescape()}'
 	else
-	  exe $'confirm edit {symTbl[result - 1].file}'
+	  exe $'confirm edit {fname->fnameescape()}'
 	endif
       else
 	# If the target buffer is opened in the current window, then don't
@@ -138,7 +138,7 @@ def JumpToWorkspaceSymbol(lspserver: dict<any>, cmdmods: string,
 	endif
       endif
     else
-      exe $'{cmdmods} split {symTbl[result - 1].file}'
+      exe $'{cmdmods} split {fname->fnameescape()}'
     endif
     # Set the previous cursor location mark. Instead of using setpos(), m' is
     # used so that the current location is added to the jump list.

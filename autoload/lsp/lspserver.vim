@@ -411,6 +411,7 @@ def CancelRequest(lspserver: dict<any>, id: number)
 enddef
 
 const LSP_ERROR_REQUEST_CANCELLED = -32800
+const LSP_ERROR_CONTENT_MODIFIED = -32801
 
 const lsp_errmsg_map: dict<string> = {
   -32001: 'UnknownErrorCode',
@@ -431,18 +432,21 @@ def LspGetErrorMessage(errcode: number): string
   return lsp_errmsg_map->get(errcode, errcode->string())
 enddef
 
-# Returns true when "responseError" says that the request was cancelled, by
-# the client or by the server.
-def IsRequestCancelledError(responseError: dict<any>): bool
+# Returns true when "responseError" says that the request has no result
+# without having failed: it was cancelled, by the client or by the server, or
+# the content that it was about was modified (ContentModified).
+def IsStaleRequestError(responseError: dict<any>): bool
   var code = responseError->get('code', 0)
   return code == LSP_ERROR_REQUEST_CANCELLED
+	|| code == LSP_ERROR_CONTENT_MODIFIED
 	|| code == LSP_ERROR_SERVER_CANCELLED
 enddef
 
-# Process a LSP server response error and display an error message.  A
-# cancelled request is not reported.
+# Process a LSP server response error and display an error message.  The error
+# from a cancelled request, or from a request about modified content, is not
+# reported.
 def ProcessLspServerError(method: string, responseError: dict<any>)
-  if IsRequestCancelledError(responseError)
+  if IsStaleRequestError(responseError)
     return
   endif
 
@@ -472,7 +476,9 @@ enddef
 const SYNC_RPC_FIRST_ID = 1000000000
 
 # Send a sync RPC request message to the LSP server and return the received
-# reply.  In case of an error, an empty Dict is returned.
+# reply.  In case of an error, an empty Dict is returned, unless
+# "opts.handleError" is false: then the caller handles the error, which is not
+# reported, and the reply with the "error" is returned.
 #
 # ch_evalexpr() isn't used: while waiting for the reply, Vim invokes the
 # channel callback for the other messages from the server, and in the "lsp"
@@ -543,10 +549,10 @@ def Rpc(lspserver: dict<any>, method: string, params: any, opts: dict<any> = {})
     return reply
   endif
 
-  var handleError: bool = opts->get('handleError', true)
-
-  if reply->has_key('error') && handleError
-    # request failed
+  if reply->has_key('error')
+    if !opts->get('handleError', true)
+      return reply
+    endif
     ProcessLspServerError(method, reply.error)
   endif
 
@@ -564,8 +570,8 @@ def AsyncRpcCb(lspserver: dict<any>, method: string, RpcCb: func, chan: channel,
 
   if !reply->empty()
     if reply->has_key('error')
-      # A cancelled request has no result, and that is not an error
-      if !IsRequestCancelledError(reply.error)
+      # A stale request has no result, and that is not an error
+      if !IsStaleRequestError(reply.error)
 	error = reply.error
 	ProcessLspServerError(method, error)
       endif
@@ -947,13 +953,16 @@ def PullDiagnostics(lspserver: dict<any>, bnr: number)
                             {handleError: false})
 
   # If the language server cancels the pull diagnostic request and asks for a
-  # retrigger, then send the pull diagnostic request again.
+  # retrigger, or the content was modified, then send the pull diagnostic
+  # request again.
   if reply->has_key('error')
     var responseError: dict<any> = reply.error
+    var errorCode = responseError->get('code', 0)
     var errorData = responseError->get('data', {})
-    if responseError.code == LSP_ERROR_SERVER_CANCELLED
-        && errorData->type() == v:t_dict
-        && errorData->get('retriggerRequest', false)
+    if errorCode == LSP_ERROR_CONTENT_MODIFIED
+        || (errorCode == LSP_ERROR_SERVER_CANCELLED
+          && errorData->type() == v:t_dict
+          && errorData->get('retriggerRequest', false))
       lspserver.queuePullDiagnostics(bnr)
     else
       ProcessLspServerError('textDocument/diagnostic', responseError)
@@ -1216,7 +1225,7 @@ enddef
 def GotoSymbolLoc(lspserver: dict<any>, msg: string, peekSymbol: bool,
 		  cmdmods: string, count: number)
   var reply = lspserver.rpc(msg, lspserver.getTextDocPosition(true), {handleError: false})
-  if reply->empty() || reply.result->empty()
+  if !reply->has_key('result') || reply.result->empty()
     var emsg: string
     if msg == 'textDocument/declaration'
       emsg = 'symbol declaration is not found'
@@ -1368,9 +1377,9 @@ def SwitchSourceHeader(lspserver: dict<any>)
   if (&modified && !&hidden) || &buftype != ''
     # if the current buffer has unsaved changes and 'hidden' is not set,
     # or if the current buffer is a special buffer, then ask to save changes
-    exe $'confirm edit {fname}'
+    exe $'confirm edit {fname->fnameescape()}'
   else
-    exe $'edit {fname}'
+    exe $'edit {fname->fnameescape()}'
   endif
 enddef
 
@@ -2761,7 +2770,7 @@ def TagFunc(lspserver: dict<any>, pat: string, flags: string, info: dict<any>): 
     endif
 
     var wsReply = lspserver.rpc('workspace/symbol', {query: pat}, {handleError: false})
-    if wsReply->empty() || wsReply.result->empty()
+    if !wsReply->has_key('result') || wsReply.result->empty()
       return null
     endif
 
