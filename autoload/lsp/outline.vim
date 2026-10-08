@@ -290,7 +290,8 @@ def OutlineShowSymbolDetail(lnum: number)
 
   var idx = symbolTable->indexof((_, v) => v.outlineLine == lnum)
   if idx != -1
-    echo $'{symbolTable[idx].name}: {symbolTable[idx].detail}'
+    var symbol: dict<any> = symbolTable[idx]
+    echo symbol.name .. (symbol.detail->empty() ? '' : $': {symbol.detail}')
   else
     echo ''
   endif
