@@ -249,8 +249,8 @@ enddef
 # A buffer without lines (a new buffer, or one with all its lines deleted) has
 # no text, but getbufline() returns one empty line for it, like for a buffer
 # with one empty line, which is written as a newline.  Only wordcount() tells
-# them apart, and only for a buffer in a window: a buffer that is not in any
-# window is taken to have lines.
+# them apart.  An unloaded buffer is not loaded to find out: it is taken to
+# have lines.
 export def BufIsEmpty(bnr: number): bool
   if bnr->getbufline(1, 2) != ['']
     return false
@@ -261,11 +261,32 @@ export def BufIsEmpty(bnr: number): bool
   if bnr == bufnr()
     return wordcount().bytes == 0
   endif
-  var winids = bnr->win_findbuf()
-  if winids->empty()
-    return false
+  return ExecuteInBuffer(bnr, 'echo wordcount().bytes')->trim() == '0'
+enddef
+
+# Executes Ex command "cmd" with loaded buffer "bnr" as the current buffer and
+# returns its output.  The command runs in a window that shows the buffer, or
+# else in a hidden popup window that leaves no trace: opening and closing it
+# triggers no autocommands, and closing it does not unload the buffer
+# whatever its 'bufhidden' is.
+export def ExecuteInBuffer(bnr: number, cmd: string): string
+  var winids: list<number> = bnr->win_findbuf()
+  if !winids->empty()
+    return win_execute(winids[0], cmd)
   endif
-  return win_execute(winids[0], 'echo wordcount().bytes')->trim() == '0'
+
+  var bufhidden: string = bnr->getbufvar('&bufhidden')
+  noautocmd setbufvar(bnr, '&bufhidden', '')
+  var winid: number
+  noautocmd winid = popup_create(bnr, {hidden: true})
+  var output: string
+  try
+    output = win_execute(winid, cmd)
+  finally
+    noautocmd popup_close(winid)
+    noautocmd setbufvar(bnr, '&bufhidden', bufhidden)
+  endtry
+  return output
 enddef
 
 # Returns the byte number of the specified LSP position in buffer "bnr".
@@ -308,6 +329,12 @@ enddef
 # without counting the composing characters.  The LSP server counts composing
 # characters as separate characters whereas Vim string indexing ignores the
 # composing characters.
+#
+# A position past the end of the line is at the end of the line, as the LSP
+# specification requires, so the returned character index is at most the
+# number of characters in the line.  When the line is not available, because
+# it is past the end of the buffer or the buffer cannot be loaded, the
+# character index is returned unchanged.
 export def GetCharIdxWithoutCompChar(bnr: number, pos: dict<number>): number
   var col: number = pos.character
   # When on the first character, nothing to do.
@@ -318,14 +345,15 @@ export def GetCharIdxWithoutCompChar(bnr: number, pos: dict<number>): number
   # Need a loaded buffer to read the line and compute the offset
   :silent! bnr->bufload()
 
-  var ltext: string = bnr->getbufline(pos.line + 1)->get(0, '')
-  if ltext->empty()
+  var lines: list<string> = bnr->getbufline(pos.line + 1)
+  if lines->empty()
     return col
   endif
 
   # Convert the character index that includes composing characters as separate
   # characters to a byte index and then back to a character index ignoring the
   # composing characters.
+  var ltext: string = lines[0]
   var byteIdx = ltext->byteidxcomp(col)
   if byteIdx != -1
     if byteIdx == ltext->strlen()
@@ -336,16 +364,21 @@ export def GetCharIdxWithoutCompChar(bnr: number, pos: dict<number>): number
     endif
   endif
 
-  return col
+  return ltext->strcharlen()
 enddef
 
-# Get the index of the character at [pos.line, pos.character] in buffer "bnr"
-# counting the composing characters as separate characters.  The LSP server
-# counts composing characters as separate characters whereas Vim string
-# indexing ignores the composing characters.
+# Convert the character index "charIdx" in the line "ltext", which doesn't
+# count the composing characters separately, to a character index that counts
+# them as separate characters.  The LSP server counts composing characters as
+# separate characters whereas Vim string indexing ignores the composing
+# characters.
+#
+# A character index past the end of the line is at the end of the line, so
+# the returned character index is at most the number of characters in the
+# line, counting the composing characters separately.
 export def GetCharIdxWithCompChar(ltext: string, charIdx: number): number
   # When on the first character, nothing to do.
-  if charIdx <= 0 || ltext->empty()
+  if charIdx <= 0
     return charIdx
   endif
 
@@ -361,7 +394,7 @@ export def GetCharIdxWithCompChar(ltext: string, charIdx: number): number
     endif
   endif
 
-  return charIdx
+  return ltext->strchars()
 enddef
 
 # push the current location on to the tag stack

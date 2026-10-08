@@ -683,6 +683,40 @@ def g:Test_GetCompletion_DoesNotCancelAnsweredRequest()
   :%bw!
 enddef
 
+# Test that the inlay hints request covers the whole buffer: its range ends at
+# the end of the last line, in the negotiated position encoding, when the last
+# line has composing characters and ends in a character outside the BMP.
+def g:Test_InlayHintsShow_RangeEndsAtEndOfBuffer()
+  silent! edit XInlayHintsRange.txt
+  setline(1, ['int x;', "á 😊"])
+  var lspserver = MakeTestLspServer([])
+  lspserver.isInlayHintProvider = true
+  lspserver.isClangdInlayHintsProvider = false
+  var ranges: list<dict<any>> = []
+  lspserver.rpc_a = (_, params, _) => {
+    ranges->add(params.range->deepcopy())
+    return 0
+  }
+
+  for posEncoding in [8, 16, 32]
+    lspserver.posEncoding = posEncoding
+    lspserver.inlayHintsShow(bufnr())
+  endfor
+  append('$', '')
+  lspserver.inlayHintsShow(bufnr())
+
+  # The second line is 8 bytes, 5 UTF-16 code units and 4 characters long
+  var start: dict<number> = {line: 0, character: 0}
+  var expected: list<dict<any>> = [
+    {start: start, end: {line: 1, character: 8}},
+    {start: start, end: {line: 1, character: 5}},
+    {start: start, end: {line: 1, character: 4}},
+    {start: start, end: {line: 2, character: 0}}
+  ]
+  assert_equal(expected, ranges)
+  :%bw!
+enddef
+
 def g:Test_ProcessMessages_IgnoreUnknownResponseId_Error()
   var lspserver = MakeTestLspServer([])
   var unknownId = 'X-unknown-response-id-error'
@@ -1981,6 +2015,28 @@ def g:Test_ProcessApplyEditReq_SuccesssfulEdit()
   assert_equal(1, responses[0].error->empty())
 enddef
 
+# The response to a workspace/applyEdit request whose edit fails tells which
+# change failed and why.
+def g:Test_ProcessApplyEditReq_FailedEdit()
+  var responses: list<dict<any>> = []
+  var lspserver = MakeRequestTestLspServer(responses)
+  lspserver.data = {
+    jsonrpc: '2.0',
+    id: 1,
+    method: 'workspace/applyEdit',
+    params: {
+      edit: {documentChanges: [{kind: 'copy'}]}
+    }
+  }
+  lspserver.processMessage()
+
+  assert_equal(1, responses->len())
+  assert_equal({applied: false, failedChange: 0,
+		failureReason: 'Unsupported change in workspace edit [copy]'},
+	       responses[0].result)
+  assert_true(responses[0].error->empty())
+enddef
+
 def g:Test_ProcessApplyEditReq_MissingEdit()
   var lspserver = MakeTestLspServer([])
   var responses: list<dict<any>> = []
@@ -3109,6 +3165,16 @@ def g:Test_TextdocDidOpen_BufferWithoutLines()
   lspserver.textdocDidOpen(bnr, 'text')
   assert_equal("\n", notifications[-1].params.textDocument.text)
 
+  # The buffer in no window
+  setbufvar(bnr, '&bufhidden', 'hide')
+  :only
+  assert_equal([], win_findbuf(bnr))
+  lspserver.textdocDidOpen(bnr, 'text')
+  assert_equal("\n", notifications[-1].params.textDocument.text)
+  deletebufline(bnr, 1, '$')
+  lspserver.textdocDidOpen(bnr, 'text')
+  assert_equal('', notifications[-1].params.textDocument.text)
+
   :%bw!
 enddef
 
@@ -3186,32 +3252,106 @@ def MakeTextEdit(sline: number, schar: number, eline: number, echar: number,
 	  newText: text}
 enddef
 
+# Returns the text that Vim writes for the current buffer.
+def WrittenText(): string
+  var fname = 'XWrittenText.txt'
+  exe $'silent noautocmd keepalt write! {fname}'
+  var text = readfile(fname, 'b')->join("\n")
+  delete(fname)
+  return text
+enddef
+
 # getbufline() returns one empty line both for a buffer without lines and for
-# a buffer with one empty line.  When Vim writes a newline at the end, the
-# empty line is taken to be the one after that newline, unless an edit
-# reaches the line after it, so that edits for the empty document and for the
-# document "\n" both apply.  Otherwise the document is empty, and a newline
-# inserted at its end leaves an empty last line.
+# a buffer with one empty line.  The first one is the empty document.  When
+# Vim writes a newline at the end, the second one is the document "\n";
+# otherwise it is the empty document too, and a newline inserted at its end
+# leaves an empty last line.  Edits past the end of the empty document are
+# for the document "\n".
 def g:Test_ApplyTextEdits_EmptyBuffer()
   silent! edit XApplyTextEditsEmpty.txt
   var bnr = bufnr()
+  # The edits, and the lines after them in a buffer without lines and in a
+  # buffer with one empty line
   var withEol: list<list<any>> = [
-    [[MakeTextEdit(0, 0, 0, 0, "foo\n")], ['foo']],
-    [[MakeTextEdit(0, 0, 0, 0, 'foo')], ['foo']],
-    [[MakeTextEdit(0, 0, 1, 0, "foo\n")], ['foo']],
-    [[MakeTextEdit(0, 0, 1, 0, '')], ['']],
-    [[MakeTextEdit(1, 0, 1, 0, "foo\n")], ['', 'foo']],
-    [[MakeTextEdit(1, 0, 1, 0, 'foo')], ['', 'foo']],
+    [[MakeTextEdit(0, 0, 0, 0, "foo\n")], ['foo'], ['foo', '']],
+    [[MakeTextEdit(0, 0, 0, 0, 'foo')], ['foo'], ['foo']],
+    [[MakeTextEdit(0, 0, 1, 0, "foo\n")], ['foo'], ['foo']],
+    [[MakeTextEdit(0, 0, 1, 0, '')], [''], ['']],
+    [[MakeTextEdit(1, 0, 1, 0, "foo\n")], ['', 'foo'], ['', 'foo']],
+    [[MakeTextEdit(1, 0, 1, 0, 'foo')], ['', 'foo'], ['', 'foo']],
     [[MakeTextEdit(0, 0, 0, 0, "a\n"), MakeTextEdit(0, 0, 0, 0, "b\n")],
-     ['a', 'b']],
+     ['a', 'b'], ['a', 'b', '']],
     [[MakeTextEdit(0, 0, 0, 0, 'a'), MakeTextEdit(1, 0, 1, 0, "b\n")],
-     ['a', 'b']],
+     ['a', 'b'], ['a', 'b']],
   ]
   var withoutEol: list<list<any>> = [
-    [[MakeTextEdit(0, 0, 0, 0, "foo\n")], ['foo', '']],
-    [[MakeTextEdit(0, 0, 0, 0, 'foo')], ['foo']],
+    [[MakeTextEdit(0, 0, 0, 0, "foo\n")], ['foo', ''], ['foo', '']],
+    [[MakeTextEdit(0, 0, 0, 0, 'foo')], ['foo'], ['foo']],
     [[MakeTextEdit(0, 0, 0, 0, "a\n"), MakeTextEdit(0, 0, 0, 0, "b\n")],
-     ['a', 'b', '']],
+     ['a', 'b', ''], ['a', 'b', '']],
+  ]
+  var cases: list<list<any>> = [
+    ['eol fixeol nobinary', withEol],
+    ['noeol fixeol nobinary', withEol],
+    ['eol nofixeol nobinary', withEol],
+    ['eol fixeol binary', withEol],
+    ['noeol nofixeol nobinary', withoutEol],
+    ['noeol fixeol binary', withoutEol],
+  ]
+  for [opts, editCases] in cases
+    for [textEdits, expectedNoLines, expectedOneEmptyLine] in editCases
+      for oneEmptyLine in [false, true]
+	:%d
+	if oneEmptyLine
+	  setline(1, '')
+	endif
+	exe $'setlocal {opts}'
+	textedit.ApplyTextEdits(bnr, textEdits)
+	assert_equal(oneEmptyLine ? expectedOneEmptyLine : expectedNoLines,
+		     getline(1, '$'),
+		     $'{opts}, one empty line: {oneEmptyLine}, {textEdits}')
+      endfor
+    endfor
+  endfor
+
+  :%bw!
+enddef
+
+# The empty last line of a buffer with lines ['abc', ''] is a line of the
+# document, followed by the empty line after the newline that Vim writes at
+# the end, if it writes one.  Edits at it, before it and replacing it apply
+# to that document, with the text that Vim writes after them as expected.
+def g:Test_ApplyTextEdits_EmptyLastLine()
+  silent! edit XApplyTextEditsEmptyLast.txt
+  var bnr = bufnr()
+  # Document "abc\n\n"
+  var withEol: list<list<any>> = [
+    # Insert at the empty line
+    [[MakeTextEdit(1, 0, 1, 0, "x\n")], "abc\nx\n\n"],
+    [[MakeTextEdit(1, 0, 1, 0, 'x')], "abc\nx\n"],
+    # Insert before it
+    [[MakeTextEdit(0, 3, 0, 3, "\nx")], "abc\nx\n\n"],
+    [[MakeTextEdit(0, 3, 1, 0, "\nx\n")], "abc\nx\n\n"],
+    [[MakeTextEdit(0, 0, 1, 0, '')], "\n"],
+    # Replace it
+    [[MakeTextEdit(1, 0, 2, 0, "x\n")], "abc\nx\n"],
+    [[MakeTextEdit(1, 0, 2, 0, '')], "abc\n"],
+    [[MakeTextEdit(0, 3, 1, 0, '')], "abc\n"],
+    # Span into the line after the newline at the end
+    [[MakeTextEdit(0, 1, 2, 0, "x\ny\n")], "ax\ny\n"],
+    [[MakeTextEdit(1, 0, 2, 0, "x\ny\n")], "abc\nx\ny\n"],
+    [[MakeTextEdit(0, 0, 2, 0, "x\n\n")], "x\n\n"],
+    [[MakeTextEdit(0, 0, 2, 0, '')], ''],
+  ]
+  # Document "abc\n"
+  var withoutEol: list<list<any>> = [
+    [[MakeTextEdit(1, 0, 1, 0, "x\n")], "abc\nx\n"],
+    [[MakeTextEdit(1, 0, 1, 0, 'x')], "abc\nx"],
+    [[MakeTextEdit(0, 3, 0, 3, "\nx")], "abc\nx\n"],
+    [[MakeTextEdit(0, 3, 1, 0, "\nx\n")], "abc\nx\n"],
+    [[MakeTextEdit(0, 3, 1, 0, '')], 'abc'],
+    [[MakeTextEdit(0, 1, 1, 0, "x\ny\n")], "ax\ny\n"],
+    [[MakeTextEdit(0, 0, 1, 0, '')], ''],
   ]
   var cases: list<list<any>> = [
     ['eol fixeol nobinary', withEol],
@@ -3223,16 +3363,55 @@ def g:Test_ApplyTextEdits_EmptyBuffer()
   ]
   for [opts, editCases] in cases
     for [textEdits, expected] in editCases
-      for oneEmptyLine in [false, true]
-	:%d
-	if oneEmptyLine
-	  setline(1, '')
-	endif
-	exe $'setlocal {opts}'
-	textedit.ApplyTextEdits(bnr, textEdits)
-	assert_equal(expected, getline(1, '$'),
-		     $'{opts}, one empty line: {oneEmptyLine}, {textEdits}')
-      endfor
+      :%d
+      setline(1, ['abc', ''])
+      exe $'setlocal {opts}'
+      textedit.ApplyTextEdits(bnr, textEdits)
+      assert_equal(expected, WrittenText(), $'{opts}, {textEdits}')
+    endfor
+  endfor
+
+  :%bw!
+enddef
+
+# Edits past the end of the document are for the document with one more line
+# break at its end, and a position on a later line is at the start of the
+# line after that line break.  Checked for a buffer with line 'abc'.
+def g:Test_ApplyTextEdits_PastEndOfDocument()
+  silent! edit XApplyTextEditsPastEnd.txt
+  var bnr = bufnr()
+  # Document "abc\n"
+  var withEol: list<list<any>> = [
+    [[MakeTextEdit(2, 0, 2, 0, "x\n")], "abc\n\nx\n"],
+    [[MakeTextEdit(5, 2, 5, 2, "x\n")], "abc\n\nx\n"],
+    [[MakeTextEdit(0, 1, 3, 0, "x\n")], "ax\n"],
+    [[MakeTextEdit(2, 0, 2, 0, 'x'), MakeTextEdit(2, 0, 2, 0, "y\n")],
+     "abc\n\nxy\n"],
+  ]
+  # Document "abc"
+  var withoutEol: list<list<any>> = [
+    [[MakeTextEdit(1, 0, 1, 0, "x\n")], "abc\nx\n"],
+    [[MakeTextEdit(1, 0, 1, 0, 'x')], "abc\nx"],
+    [[MakeTextEdit(0, 0, 1, 0, "x\n")], "x\n"],
+    [[MakeTextEdit(0, 1, 1, 0, 'x')], 'ax'],
+    [[MakeTextEdit(1, 0, 1, 0, 'x'), MakeTextEdit(1, 0, 1, 0, 'y')],
+     "abc\nxy"],
+  ]
+  var cases: list<list<any>> = [
+    ['eol fixeol nobinary', withEol],
+    ['noeol fixeol nobinary', withEol],
+    ['eol nofixeol nobinary', withEol],
+    ['eol fixeol binary', withEol],
+    ['noeol nofixeol nobinary', withoutEol],
+    ['noeol fixeol binary', withoutEol],
+  ]
+  for [opts, editCases] in cases
+    for [textEdits, expected] in editCases
+      :%d
+      setline(1, 'abc')
+      exe $'setlocal {opts}'
+      textedit.ApplyTextEdits(bnr, textEdits)
+      assert_equal(expected, WrittenText(), $'{opts}, {textEdits}')
     endfor
   endfor
 
@@ -3286,6 +3465,524 @@ def g:Test_ApplyWorkspaceEdit_EditsEmptyFile()
   finally
     exe $'silent! bwipe! {fname}'
     delete(fname)
+  endtry
+enddef
+
+# Returns a TextDocumentEdit inserting "text" at the start of the document
+# with URI "uri".
+def MakeInsertEdit(uri: string, text: string): dict<any>
+  return {textDocument: {uri: uri, version: v:null},
+	  edits: [MakeTextEdit(0, 0, 0, 0, text)]}
+enddef
+
+# Applies a workspace edit made of the resource operation "op".
+def ApplyResourceOp(op: dict<any>)
+  textedit.ApplyWorkspaceEdit({documentChanges: [op]})
+enddef
+
+# Creating a file over an existing one that is loaded in a buffer empties the
+# buffer too, so that the text edits that follow apply to the new, empty,
+# document.  The buffer keeps its undo history.
+def g:Test_ApplyWorkspaceEdit_CreateOverwritesLoadedBuffer()
+  var fname = 'XWorkspaceEditCreate.txt'
+  var uri = util.LspFileToUri(fname)
+  var createAndEdit = {documentChanges: [
+    {kind: 'create', uri: uri, options: {overwrite: true}},
+    MakeInsertEdit(uri, "new\n")
+  ]}
+  try
+    writefile(['old1', 'old2'], fname)
+    var bnr = bufadd(fname)
+    bufload(bnr)
+    textedit.ApplyWorkspaceEdit(createAndEdit)
+    assert_equal([], readfile(fname))
+    assert_equal(['new'], getbufline(bnr, 1, '$'))
+    exe $'bwipe! {bnr}'
+
+    writefile(['old1', 'old2'], fname)
+    exe $'edit {fname}'
+    textedit.ApplyWorkspaceEdit(createAndEdit)
+    assert_equal([], readfile(fname))
+    assert_equal(['new'], getline(1, '$'))
+    silent undo 0
+    assert_equal(['old1', 'old2'], getline(1, '$'))
+  finally
+    delete(fname)
+    :%bwipe!
+  endtry
+enddef
+
+# Creating a file over one whose buffer has unsaved changes fails, and leaves
+# both unchanged.
+def g:Test_ApplyWorkspaceEdit_CreateKeepsModifiedBuffer()
+  var fname = 'XWorkspaceEditCreateModified.txt'
+  var uri = util.LspFileToUri(fname)
+  try
+    writefile(['old'], fname)
+    var bnr = bufadd(fname)
+    bufload(bnr)
+    setbufline(bnr, 1, 'unsaved')
+    ApplyResourceOp({kind: 'create', uri: uri, options: {overwrite: true}})
+    assert_equal('Error: File create failed, '
+		 .. $'{util.LspUriToFile(uri)} has unsaved changes', LastMessage())
+    assert_equal(['old'], readfile(fname))
+    assert_equal(['unsaved'], getbufline(bnr, 1, '$'))
+    assert_true(getbufvar(bnr, '&modified'))
+  finally
+    delete(fname)
+    :%bwipe!
+  endtry
+enddef
+
+# Creating a file that exists fails, unless "overwrite" or "ignoreIfExists"
+# is set.  A directory is never overwritten.
+def g:Test_ApplyWorkspaceEdit_CreateExistingFile()
+  var fname = 'XWorkspaceEditCreateExisting.txt'
+  var dname = 'XWorkspaceEditCreateDir'
+  var uri = util.LspFileToUri(fname)
+  try
+    writefile(['old'], fname)
+    ApplyResourceOp({kind: 'create', uri: uri})
+    assert_equal('Error: File create failed, '
+		 .. $'{util.LspUriToFile(uri)} already exists', LastMessage())
+    assert_equal(['old'], readfile(fname))
+
+    var messages = execute('messages')
+    ApplyResourceOp({kind: 'create', uri: uri,
+		     options: {ignoreIfExists: true}})
+    assert_equal(messages, execute('messages'))
+    assert_equal(['old'], readfile(fname))
+
+    ApplyResourceOp({kind: 'create', uri: uri,
+		     options: {overwrite: true, ignoreIfExists: true}})
+    assert_equal(messages, execute('messages'))
+    assert_equal([], readfile(fname))
+
+    mkdir(dname)
+    var duri = util.LspFileToUri(dname)
+    ApplyResourceOp({kind: 'create', uri: duri})
+    assert_equal('Error: File create failed, '
+		 .. $'{util.LspUriToFile(duri)} already exists', LastMessage())
+    ApplyResourceOp({kind: 'create', uri: duri, options: {overwrite: true}})
+    assert_equal('Error: File create failed, '
+		 .. $'{util.LspUriToFile(duri)} is a directory', LastMessage())
+    messages = execute('messages')
+    ApplyResourceOp({kind: 'create', uri: duri,
+		     options: {ignoreIfExists: true}})
+    assert_equal(messages, execute('messages'))
+    assert_true(isdirectory(dname))
+  finally
+    delete(fname)
+    delete(dname, 'd')
+    :%bwipe!
+  endtry
+enddef
+
+# Returns a RenameFile operation renaming file "from" to "to".
+def MakeRename(from: string, to: string, options: dict<bool> = {}): dict<any>
+  return {kind: 'rename', oldUri: util.LspFileToUri(from),
+	  newUri: util.LspFileToUri(to), options: options}
+enddef
+
+# Renaming a file renames its loaded buffer, which keeps its text and undo
+# history, so that the text edits that follow apply to it.  The buffer can be
+# written with ":write" without "!".
+def g:Test_ApplyWorkspaceEdit_RenameLoadedBuffer()
+  var from = 'XWorkspaceEditRenameFrom.txt'
+  var to = 'XWorkspaceEditRenameTo.txt'
+  var renameAndEdit = {documentChanges: [
+    MakeRename(from, to),
+    MakeInsertEdit(util.LspFileToUri(to), "new\n")
+  ]}
+  try
+    writefile(['one'], from)
+    exe $'edit {from}'
+    var bnr = bufnr()
+    setline(1, 'two')
+    write
+    textedit.ApplyWorkspaceEdit(renameAndEdit)
+    assert_false(filereadable(from))
+    assert_equal(['two'], readfile(to))
+    assert_equal(bnr, bufnr())
+    assert_equal(fnamemodify(to, ':p'), expand('%:p'))
+    assert_false(bufexists(fnamemodify(from, ':p')))
+    assert_equal(['new', 'two'], getline(1, '$'))
+    write
+    assert_equal(['new', 'two'], readfile(to))
+    silent undo 0
+    assert_equal(['one'], getline(1, '$'))
+    :%bwipe!
+
+    rename(to, from)
+    bnr = bufadd(from)
+    bufload(bnr)
+    ApplyResourceOp(MakeRename(from, to))
+    assert_equal(['new', 'two'], readfile(to))
+    assert_equal(fnamemodify(to, ':p'), bnr->getbufinfo()[0].name)
+    assert_true(bufloaded(bnr))
+    assert_equal([], win_findbuf(bnr))
+    assert_false(bufexists(fnamemodify(from, ':p')))
+  finally
+    delete(from)
+    delete(to)
+    :%bwipe!
+  endtry
+enddef
+
+# The buffer of a renamed file keeps its unsaved changes, without writing
+# them.
+def g:Test_ApplyWorkspaceEdit_RenameModifiedBuffer()
+  var from = 'XWorkspaceEditRenameModified.txt'
+  var to = 'XWorkspaceEditRenameModifiedTo.txt'
+  try
+    writefile(['saved'], from)
+    var bnr = bufadd(from)
+    bufload(bnr)
+    setbufline(bnr, 1, 'unsaved')
+    ApplyResourceOp(MakeRename(from, to))
+    assert_false(filereadable(from))
+    assert_equal(['saved'], readfile(to))
+    assert_equal(fnamemodify(to, ':p'), bnr->getbufinfo()[0].name)
+    assert_equal(['unsaved'], getbufline(bnr, 1, '$'))
+    assert_true(getbufvar(bnr, '&modified'))
+  finally
+    delete(from)
+    delete(to)
+    :%bwipe!
+  endtry
+enddef
+
+# Renaming a file over one whose buffer is loaded replaces that buffer, in
+# its windows too, unless the buffer has unsaved changes.
+def g:Test_ApplyWorkspaceEdit_RenameOverLoadedBuffer()
+  var from = 'XWorkspaceEditRenameOverFrom.txt'
+  var to = 'XWorkspaceEditRenameOverTo.txt'
+  var rename = MakeRename(from, to, {overwrite: true})
+  try
+    writefile(['from'], from)
+    writefile(['to'], to)
+    exe $'edit {to}'
+    var tbnr = bufnr()
+    setline(1, 'unsaved')
+    ApplyResourceOp(rename)
+    assert_equal('Error: File rename failed, '
+		 .. $'{fnamemodify(to, ":p")} has unsaved changes', LastMessage())
+    assert_equal(['from'], readfile(from))
+    assert_equal(['to'], readfile(to))
+    assert_equal(['unsaved'], getline(1, '$'))
+
+    edit!
+    ApplyResourceOp(rename)
+    assert_false(filereadable(from))
+    assert_equal(['from'], readfile(to))
+    assert_false(bufexists(tbnr))
+    assert_equal(1, winnr('$'))
+    assert_equal(fnamemodify(to, ':p'), expand('%:p'))
+    assert_equal(['from'], getline(1, '$'))
+  finally
+    delete(from)
+    delete(to)
+    :%bwipe!
+  endtry
+enddef
+
+# Renaming a file to one that exists fails, unless "overwrite" or
+# "ignoreIfExists" is set, and so does renaming a file that does not exist.
+def g:Test_ApplyWorkspaceEdit_RenameExistingFile()
+  var from = 'XWorkspaceEditRenameExistingFrom.txt'
+  var to = 'XWorkspaceEditRenameExistingTo.txt'
+  try
+    writefile(['from'], from)
+    writefile(['to'], to)
+    ApplyResourceOp(MakeRename(from, to))
+    assert_equal('Error: File rename failed, '
+		 .. $'{fnamemodify(to, ":p")} already exists', LastMessage())
+    assert_equal(['from'], readfile(from))
+    assert_equal(['to'], readfile(to))
+
+    var messages = execute('messages')
+    ApplyResourceOp(MakeRename(from, to, {ignoreIfExists: true}))
+    assert_equal(messages, execute('messages'))
+    assert_equal(['from'], readfile(from))
+    assert_equal(['to'], readfile(to))
+
+    ApplyResourceOp(MakeRename(from, to,
+			       {overwrite: true, ignoreIfExists: true}))
+    assert_equal(messages, execute('messages'))
+    assert_false(filereadable(from))
+    assert_equal(['from'], readfile(to))
+
+    ApplyResourceOp(MakeRename(from, to, {overwrite: true}))
+    assert_equal('Error: File rename failed, '
+		 .. $'{fnamemodify(from, ":p")} does not exist', LastMessage())
+  finally
+    delete(from)
+    delete(to)
+    :%bwipe!
+  endtry
+enddef
+
+# Renaming a directory renames the buffers of the files in it.  The parent
+# of the new directory is created if needed.
+def g:Test_ApplyWorkspaceEdit_RenameDirectory()
+  var from = 'XWorkspaceEditRenameDir'
+  var parent = 'XWorkspaceEditRenameParent'
+  var to = $'{parent}/Dir'
+  try
+    mkdir($'{from}/sub', 'p')
+    writefile(['a'], $'{from}/sub/a.txt')
+    writefile(['b'], $'{from}/b.txt')
+    var abnr = bufadd($'{from}/sub/a.txt')
+    bufload(abnr)
+    var bbnr = bufadd($'{from}/b.txt')
+    setbufvar(bbnr, '&buflisted', true)
+    ApplyResourceOp(MakeRename(from, to))
+    assert_false(isdirectory(from))
+    assert_equal(['a'], readfile($'{to}/sub/a.txt'))
+    assert_equal(['b'], readfile($'{to}/b.txt'))
+    assert_equal(fnamemodify($'{to}/sub/a.txt', ':p'),
+		 abnr->getbufinfo()[0].name)
+    assert_equal(['a'], getbufline(abnr, 1, '$'))
+    assert_false(bufexists(bbnr))
+    assert_true(bufadd($'{to}/b.txt')->buflisted())
+  finally
+    delete(from, 'rf')
+    delete(parent, 'rf')
+    :%bwipe!
+  endtry
+enddef
+
+# A buffer renamed with its file is detached from the language servers for
+# its old name, which are notified that the document was closed.
+def g:Test_ApplyWorkspaceEdit_RenameDetachesBuffer()
+  var from = 'XWorkspaceEditRenameDetach.txt'
+  var to = 'XWorkspaceEditRenameDetachTo.txt'
+  var notifications: list<dict<any>> = []
+  try
+    writefile(['text'], from)
+    exe $'edit {from}'
+    var bnr = bufnr()
+    var srv = MakeTestLspServer(notifications)
+    srv.running = true
+    srv.supportsDidOpenClose = true
+    buf.BufLspServerSet(bnr, srv)
+    ApplyResourceOp(MakeRename(from, to))
+    assert_equal([{method: 'textDocument/didClose',
+		   params: {textDocument: {uri: util.LspFileToUri(from)}}}],
+		 notifications)
+    assert_equal(0, buf.BufLspServersGet(bnr)->len())
+  finally
+    delete(from)
+    delete(to)
+    :%bwipe!
+  endtry
+enddef
+
+# Returns what renaming a hidden buffer in a hidden popup window could change.
+def RenameHiddenState(): dict<any>
+  return {winid: win_getid(), layout: winlayout(), alt: bufnr('#'),
+	  jumps: getjumplist(), curpos: getcurpos(), modified: &modified,
+	  popups: popup_list()}
+enddef
+
+# A hidden buffer is renamed with its file in a hidden popup window that
+# leaves no trace: only the autocommands for renaming the buffer are
+# triggered, the buffer stays loaded whatever its 'bufhidden' is, and the
+# windows, the alternate file, the jumps and the cursor stay as they are.
+def g:Test_ApplyWorkspaceEdit_RenameHiddenBufferLeavesNoTrace()
+  var from = 'XWorkspaceEditRenameHidden.txt'
+  var to = 'XWorkspaceEditRenameHiddenTo.txt'
+  silent! edit XWorkspaceEditRenameHiddenAlt.txt
+  silent! edit XWorkspaceEditRenameHiddenCur.txt
+  setline(1, ['a', 'b', 'c'])
+  :normal! G
+  g:RenameHiddenEvents = []
+  augroup XRenameHidden
+    for ev in ['BufAdd', 'BufNew', 'BufEnter', 'BufLeave', 'BufWinEnter',
+	       'BufWinLeave', 'BufHidden', 'BufUnload', 'BufDelete',
+	       'BufWipeout', 'BufReadPre', 'BufReadPost', 'BufWritePre',
+	       'BufWritePost', 'BufFilePre', 'BufFilePost', 'WinNew',
+	       'WinEnter', 'WinLeave', 'WinClosed', 'OptionSet', 'TextChanged',
+	       'CursorMoved']
+      exe $'autocmd {ev} * g:RenameHiddenEvents->add("{ev}")'
+    endfor
+  augroup END
+  # OptionSet is not triggered while Vim is starting
+  test_override('starting', 1)
+  try
+    for bufhidden in ['', 'hide', 'unload', 'delete', 'wipe']
+      writefile(['text'], from)
+      var bnr = bufadd(from)
+      bnr->bufload()
+      # Setting the option shows that the autocommands are triggered.
+      g:RenameHiddenEvents = []
+      setbufvar(bnr, '&bufhidden', bufhidden)
+      assert_equal(['OptionSet'], g:RenameHiddenEvents)
+      g:RenameHiddenEvents = []
+      var before = RenameHiddenState()
+      ApplyResourceOp(MakeRename(from, to))
+      var msg = $'bufhidden={bufhidden}'
+      assert_equal(['BufFilePre', 'BufNew', 'BufFilePost', 'BufWipeout'],
+		   g:RenameHiddenEvents, msg)
+      assert_equal(before, RenameHiddenState(), msg)
+      assert_true(bnr->bufloaded(), msg)
+      assert_equal(fnamemodify(to, ':p'), bnr->getbufinfo()[0].name, msg)
+      assert_equal(['text'], getbufline(bnr, 1, '$'), msg)
+      assert_equal(bufhidden, getbufvar(bnr, '&bufhidden'), msg)
+      exe $'bwipe! {bnr}'
+      delete(to)
+    endfor
+  finally
+    test_override('starting', 0)
+    autocmd_delete([{group: 'XRenameHidden'}])
+    unlet g:RenameHiddenEvents
+    delete(from)
+    delete(to)
+    :%bwipe!
+  endtry
+enddef
+
+# Returns a DeleteFile operation deleting file "fname".
+def MakeDelete(fname: string, options: dict<bool> = {}): dict<any>
+  return {kind: 'delete', uri: util.LspFileToUri(fname), options: options}
+enddef
+
+# Deleting a file wipes out its buffer, in a window or hidden.
+def g:Test_ApplyWorkspaceEdit_DeleteLoadedBuffer()
+  var fname = 'XWorkspaceEditDelete.txt'
+  try
+    writefile(['text'], fname)
+    exe $'edit {fname}'
+    var bnr = bufnr()
+    ApplyResourceOp(MakeDelete(fname))
+    assert_false(filereadable(fname))
+    assert_false(bufexists(bnr))
+
+    writefile(['text'], fname)
+    bnr = bufadd(fname)
+    bufload(bnr)
+    ApplyResourceOp(MakeDelete(fname))
+    assert_false(filereadable(fname))
+    assert_false(bufexists(bnr))
+  finally
+    delete(fname)
+    :%bwipe!
+  endtry
+enddef
+
+# Deleting a file whose buffer has unsaved changes fails, and leaves both
+# unchanged.
+def g:Test_ApplyWorkspaceEdit_DeleteKeepsModifiedBuffer()
+  var fname = 'XWorkspaceEditDeleteModified.txt'
+  try
+    writefile(['saved'], fname)
+    var bnr = bufadd(fname)
+    bufload(bnr)
+    setbufline(bnr, 1, 'unsaved')
+    ApplyResourceOp(MakeDelete(fname))
+    assert_equal('Error: File delete failed, '
+		 .. $'{fnamemodify(fname, ":p")} has unsaved changes', LastMessage())
+    assert_equal(['saved'], readfile(fname))
+    assert_equal(['unsaved'], getbufline(bnr, 1, '$'))
+    assert_true(getbufvar(bnr, '&modified'))
+  finally
+    delete(fname)
+    :%bwipe!
+  endtry
+enddef
+
+# Deleting a file that does not exist fails, unless "ignoreIfNotExists" is
+# set.
+def g:Test_ApplyWorkspaceEdit_DeleteMissingFile()
+  var fname = 'XWorkspaceEditDeleteMissing.txt'
+  ApplyResourceOp(MakeDelete(fname))
+  assert_equal('Error: File delete failed, '
+	       .. $'{fnamemodify(fname, ":p")} does not exist', LastMessage())
+  var messages = execute('messages')
+  ApplyResourceOp(MakeDelete(fname, {ignoreIfNotExists: true}))
+  assert_equal(messages, execute('messages'))
+  :%bwipe!
+enddef
+
+# Deleting a directory that is not empty fails, unless "recursive" is set.
+# The buffers of the files in a deleted directory are wiped out, and none of
+# them may have unsaved changes.
+def g:Test_ApplyWorkspaceEdit_DeleteDirectory()
+  var dname = 'XWorkspaceEditDeleteDir'
+  var path = $'{getcwd()}/{dname}'
+  try
+    mkdir($'{dname}/sub', 'p')
+    writefile(['a'], $'{dname}/sub/a.txt')
+    var bnr = bufadd($'{dname}/sub/a.txt')
+    bufload(bnr)
+    ApplyResourceOp(MakeDelete(dname))
+    assert_equal($'Error: File delete failed for {path}', LastMessage())
+    assert_true(filereadable($'{dname}/sub/a.txt'))
+    assert_true(bufloaded(bnr))
+
+    setbufline(bnr, 1, 'unsaved')
+    ApplyResourceOp(MakeDelete(dname, {recursive: true}))
+    assert_equal('Error: File delete failed, '
+		 .. $'{path}/sub/a.txt has unsaved changes', LastMessage())
+    assert_true(filereadable($'{dname}/sub/a.txt'))
+    assert_equal(['unsaved'], getbufline(bnr, 1, '$'))
+
+    setbufvar(bnr, '&modified', false)
+    ApplyResourceOp(MakeDelete(dname, {recursive: true}))
+    assert_false(isdirectory(dname))
+    assert_false(bufexists(bnr))
+
+    mkdir(dname)
+    ApplyResourceOp(MakeDelete(dname))
+    assert_false(isdirectory(dname))
+  finally
+    delete(dname, 'rf')
+    :%bwipe!
+  endtry
+enddef
+
+# The changes of a workspace edit are applied in order up to the first one
+# that fails, which is reported.  The result tells which change failed and
+# why.
+def g:Test_ApplyWorkspaceEdit_AbortsAtFailedChange()
+  var created = 'XWorkspaceEditAbortCreated.txt'
+  var existing = 'XWorkspaceEditAbortExisting.txt'
+  var createdUri = util.LspFileToUri(created)
+  var insert = MakeInsertEdit(createdUri, "text\n")
+  var edit = {documentChanges: [
+    {kind: 'create', uri: createdUri},
+    {kind: 'create', uri: util.LspFileToUri(existing)},
+    insert
+  ]}
+  try
+    writefile(['old'], existing)
+    var reason = 'File create failed, '
+      .. $'{fnamemodify(existing, ":p")} already exists'
+    assert_equal({applied: false, failureReason: reason, failedChange: 1},
+		 textedit.ApplyWorkspaceEdit(edit))
+    assert_equal($'Error: {reason}', LastMessage())
+    assert_equal([], readfile(created))
+    assert_equal(['old'], readfile(existing))
+
+    edit = {documentChanges: [insert]}
+    assert_equal({applied: true}, textedit.ApplyWorkspaceEdit(edit))
+    assert_equal(['text'], getbufline(bufadd(created), 1, '$'))
+
+    edit = {documentChanges: [{kind: 'copy'}]}
+    reason = 'Unsupported change in workspace edit [copy]'
+    assert_equal({applied: false, failureReason: reason, failedChange: 0},
+		 textedit.ApplyWorkspaceEdit(edit))
+
+    # A change that throws an error fails with the error.
+    edit = {documentChanges: [
+      {kind: 'create', uri: util.LspFileToUri($'{existing}/file.txt')}]}
+    var result = textedit.ApplyWorkspaceEdit(edit)
+    assert_equal([false, 0], [result.applied, result.failedChange])
+    assert_match('E739:', result.failureReason)
+  finally
+    delete(created)
+    delete(existing)
+    :%bwipe!
   endtry
 enddef
 
