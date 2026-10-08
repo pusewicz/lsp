@@ -864,7 +864,85 @@ def AdjustCompletionTriggerAttributes(lspserver: dict<any>, triggerKind: number,
   return [triggerKind, triggerChar]
 enddef
 
-# omni complete handler
+# First invocation of the omni complete handlers: send a completion request to
+# the LSP server and return the start column of the keyword before the cursor,
+# or -2 to cancel the completion.
+def OmniCompleteStart(lspserver: dict<any>): number
+  var [triggerKind, triggerChar] = GetTriggerAttributes(lspserver)
+  if triggerKind < 0
+    # previous character is not a keyword character or a trigger character,
+    # so cancel omni completion.
+    if !opt.lspOptions.omniCompleteAllowBare
+      return -2
+    endif
+    # Override triggerKind if we want to complete anyway.
+    triggerKind = 1
+  endif
+
+  [triggerKind, triggerChar] =
+    AdjustCompletionTriggerAttributes(lspserver, triggerKind, triggerChar)
+
+  # first send all the changes in the current buffer to the LSP server
+  listener_flush()
+
+  lspserver.omniCompletePending = true
+  lspserver.completeItems = []
+
+  # initiate a request to LSP server to get list of completions
+  lspserver.getCompletion(triggerKind, triggerChar)
+
+  # locate the start of the word
+  var line = getline('.')->strpart(0, col('.') - 1)
+  var keyword = line->matchstr('\k\+$')
+  lspserver.omniCompleteKeyword = keyword
+  return line->len() - keyword->len()
+enddef
+
+# Second invocation of the omni complete handlers: wait for the reply to the
+# request sent by OmniCompleteStart() and return the list of matches.  Returns
+# v:none when interrupted by a typed key or when the server doesn't reply in
+# time.
+def OmniCompleteMatches(lspserver: dict<any>): any
+  # Wait for the list of matches from the LSP server
+  var count: number = 0
+  while lspserver.omniCompletePending && count < 1000
+    if complete_check()
+      return v:none
+    endif
+    sleep 2m
+    count += 1
+  endwhile
+
+  if lspserver.omniCompletePending
+    lspserver.omniCompletePending = false
+    lspserver.completeItems = []
+    return v:none
+  endif
+
+  var res: list<dict<any>> = lspserver.completeItems
+  var prefix = lspserver.omniCompleteKeyword
+
+  # Don't attempt to filter on the items, when "isIncomplete" is set
+  if prefix->empty() || lspserver.completeItemsIsIncomplete
+    return res
+  endif
+
+  var lspOpts = opt.lspOptions
+  if lspOpts.completionMatcherValue == opt.COMPLETIONMATCHER_FUZZY
+    return res->matchfuzzy(prefix, { key: 'word' })
+  endif
+
+  if lspOpts.completionMatcherValue == opt.COMPLETIONMATCHER_ICASE
+    return res->filter((i, v) =>
+      v.word->tolower()->stridx(prefix->tolower()) == 0)
+  endif
+
+  return res->filter((i, v) => v.word->stridx(prefix) == 0)
+enddef
+
+# omni complete handler.  Set as 'omnifunc' and called directly by external
+# completion engines, so the second invocation returns a list of matches (or
+# v:none), never a dict.
 def g:LspOmniFunc(findstart: number, base: string): any
   var lspserver: dict<any> = buf.CurbufGetServerChecked('completion')
   if lspserver->empty()
@@ -872,72 +950,29 @@ def g:LspOmniFunc(findstart: number, base: string): any
   endif
 
   if findstart
-
-    var [triggerKind, triggerChar] = GetTriggerAttributes(lspserver)
-    if triggerKind < 0
-      # previous character is not a keyword character or a trigger character,
-      # so cancel omni completion.
-      if !opt.lspOptions.omniCompleteAllowBare
-        return -2
-      endif
-      # Override triggerKind if we want to complete anyway.
-      triggerKind = 1
-    endif
-
-    [triggerKind, triggerChar] =
-      AdjustCompletionTriggerAttributes(lspserver, triggerKind, triggerChar)
-
-    # first send all the changes in the current buffer to the LSP server
-    listener_flush()
-
-    lspserver.omniCompletePending = true
-    lspserver.completeItems = []
-
-    # initiate a request to LSP server to get list of completions
-    lspserver.getCompletion(triggerKind, triggerChar)
-
-    # locate the start of the word
-    var line = getline('.')->strpart(0, col('.') - 1)
-    var keyword = line->matchstr('\k\+$')
-    lspserver.omniCompleteKeyword = keyword
-    return line->len() - keyword->len()
-  else
-    # Wait for the list of matches from the LSP server
-    var count: number = 0
-    while lspserver.omniCompletePending && count < 1000
-      if complete_check()
-	return v:none
-      endif
-      sleep 2m
-      count += 1
-    endwhile
-
-    if lspserver.omniCompletePending
-      lspserver.omniCompletePending = false
-      lspserver.completeItems = []
-      return v:none
-    endif
-
-    var res: list<dict<any>> = lspserver.completeItems
-    var prefix = lspserver.omniCompleteKeyword
-
-    # Don't attempt to filter on the items, when "isIncomplete" is set
-    if prefix->empty() || lspserver.completeItemsIsIncomplete
-      return res
-    endif
-
-    var lspOpts = opt.lspOptions
-    if lspOpts.completionMatcherValue == opt.COMPLETIONMATCHER_FUZZY
-      return res->matchfuzzy(prefix, { key: 'word' })
-    endif
-
-    if lspOpts.completionMatcherValue == opt.COMPLETIONMATCHER_ICASE
-      return res->filter((i, v) =>
-	v.word->tolower()->stridx(prefix->tolower()) == 0)
-    endif
-
-    return res->filter((i, v) => v.word->stridx(prefix) == 0)
+    return OmniCompleteStart(lspserver)
   endif
+  return OmniCompleteMatches(lspserver)
+enddef
+
+# Source for the 'complete' option ("F" flag), e.g. for Vim's 'autocomplete'.
+# Like g:LspOmniFunc(), but when the LSP server returned an incomplete list,
+# asks Vim to call it again whenever the typed text changes, so that the
+# server can supply the matches it left out.
+def g:LspCompleteSource(findstart: number, base: string): any
+  var lspserver: dict<any> = buf.CurbufGetServerChecked('completion')
+  if lspserver->empty()
+    return -2
+  endif
+
+  if findstart
+    return OmniCompleteStart(lspserver)
+  endif
+  var matches = OmniCompleteMatches(lspserver)
+  if matches->type() == v:t_list && lspserver.completeItemsIsIncomplete
+    return {words: matches, refresh: 'always'}
+  endif
+  return matches
 enddef
 
 # For plugins that implement async completion this function indicates if

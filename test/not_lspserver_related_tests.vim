@@ -215,6 +215,184 @@ def g:Test_Completion_TriggerKind_Initial()
   :%bw!
 enddef
 
+# Labels served by MakeTruncatingServer(), in the server's relevance order.
+const truncatingServerLabels = ['SDL_ClaimWindowForGPUDevice',
+  'SDL_CreateGPUDevice', 'SDL_CreateGPUShader', 'SDL_CreateGPUTexture',
+  'SDL_CreateWindow']
+
+def TruncatedReply(prefix: string, limit: number): dict<any>
+  var labels = truncatingServerLabels->copy()
+    ->filter((_, label) => label->stridx(prefix) == 0)
+  return {
+    isIncomplete: labels->len() > limit,
+    items: labels->slice(0, limit)->mapnew((_, label) => ({label: label})),
+  }
+enddef
+
+# Returns a fake completion server that, like clangd, filters its labels on
+# the keyword before the cursor and replies with at most "limit" items,
+# setting "isIncomplete" when it truncated the list.  delays[n] is the reply
+# delay in milliseconds for the n-th request; later requests reply at once.
+def MakeTruncatingServer(limit: number, delays: list<number> = []): dict<any>
+  var lspserver: dict<any> = {
+    id: 9003,
+    name: 'test',
+    running: true,
+    ready: true,
+    isCompletionProvider: true,
+    completionLazyDoc: false,
+    completionTriggerChars: [],
+    omniCompletePending: false,
+    completeItems: [],
+    completeItemsIsIncomplete: false,
+    features: {completion: true},
+    featureEnabled: (_) => true,
+    requests: [],
+    replies: 0,
+    timers: [],
+  }
+  lspserver.getCompletion = (_, _) => {
+    var prefix = getline('.')->strpart(0, col('.') - 1)->matchstr('\k*$')
+    lspserver.requests->add(prefix)
+    var reply = TruncatedReply(prefix, limit)
+    var Reply = (_) => {
+      lspserver.replies += 1
+      completion.CompletionReply(lspserver, reply, {})
+    }
+    var delay = delays->get(lspserver.requests->len() - 1, 0)
+    if delay > 0
+      lspserver.timers->add(timer_start(delay, Reply))
+    else
+      Reply(0)
+    endif
+  }
+  return lspserver
+enddef
+
+# Opens a buffer holding "text" with the cursor just after it and attaches a
+# MakeTruncatingServer() to it.  <F2> in insert mode stores the words in the
+# completion menu in b:matches.
+def SetupTruncatingServerBuffer(text: string, limit: number,
+				delays: list<number> = []): dict<any>
+  silent! edit XOmniCompleteTruncating.vim
+  # The trailing space lets the cursor sit just after "text" in Normal mode.
+  setline(1, [$'{text} '])
+  cursor(1, text->len() + 1)
+  inoremap <buffer> <F2> <ScriptCmd>b:matches = complete_info(['matches']).matches->mapnew((_, v) => v.word)<CR>
+  var lspserver = MakeTruncatingServer(limit, delays)
+  buf.BufLspServerSet(bufnr(), lspserver)
+  return lspserver
+enddef
+
+def TeardownTruncatingServerBuffer(lspserver: dict<any>)
+  lspserver.timers->foreach((_, timer) => timer_stop(timer))
+  buf.BufLspServerRemove(bufnr(), lspserver)
+  :%bw!
+enddef
+
+# Returns the result of a completion function call with each match reduced to
+# its word.
+def WordsOf(result: any): any
+  if result->type() == v:t_dict
+    return result->extendnew({words: result.words->mapnew((_, v) => v.word)})
+  endif
+  return result->mapnew((_, v) => v.word)
+enddef
+
+# Lets feedkeys() drive keyword completion in the current buffer with
+# g:LspCompleteSource() as the only source.  The caller must undo the
+# test_override().
+def SetupFeedkeysCompletion()
+  setlocal complete=Fg:LspCompleteSource completeopt=menuone,noselect
+  # Let the source wait for replies although keys are in the typeahead.
+  test_override('char_avail', 1)
+enddef
+
+# When the server returns an incomplete list, g:LspCompleteSource() asks Vim to
+# call it again whenever the typed text changes.
+def g:Test_CompleteSource_IncompleteList_RequestsRefresh()
+  var lspserver = SetupTruncatingServerBuffer('SDL_C', 2)
+  defer TeardownTruncatingServerBuffer(lspserver)
+
+  assert_equal(0, g:LspCompleteSource(1, ''))
+  assert_equal({
+      words: ['SDL_ClaimWindowForGPUDevice', 'SDL_CreateGPUDevice'],
+      refresh: 'always',
+    }, g:LspCompleteSource(0, 'SDL_C')->WordsOf())
+enddef
+
+def g:Test_CompleteSource_CompleteList_ReturnsList()
+  var lspserver = SetupTruncatingServerBuffer('SDL_C', 10)
+  defer TeardownTruncatingServerBuffer(lspserver)
+
+  assert_equal(0, g:LspCompleteSource(1, ''))
+  assert_equal(truncatingServerLabels,
+	       g:LspCompleteSource(0, 'SDL_C')->WordsOf())
+enddef
+
+# g:LspOmniFunc() is the 'omnifunc' and external completion engines call it
+# directly expecting a list of matches, so it never returns the refresh dict.
+def g:Test_OmniFunc_IncompleteList_ReturnsList()
+  var lspserver = SetupTruncatingServerBuffer('SDL_C', 2)
+  defer TeardownTruncatingServerBuffer(lspserver)
+
+  assert_equal(0, g:LspOmniFunc(1, ''))
+  assert_equal(['SDL_ClaimWindowForGPUDevice', 'SDL_CreateGPUDevice'],
+	       g:LspOmniFunc(0, 'SDL_C')->WordsOf())
+enddef
+
+# Typing after CTRL-N must reach a match the server left out of its first,
+# truncated reply.
+def g:Test_CompleteSource_CtrlN_IncompleteList()
+  if !exists('+autocomplete')
+    return
+  endif
+  var lspserver = SetupTruncatingServerBuffer('', 2)
+  defer TeardownTruncatingServerBuffer(lspserver)
+  SetupFeedkeysCompletion()
+  defer test_override('char_avail', 0)
+
+  feedkeys("SSDL_C\<C-N>reateGPUTe\<F2>\<Esc>", 'tx!')
+  assert_equal(['SDL_CreateGPUTexture'], b:matches)
+  assert_equal('SDL_C', lspserver.requests[0])
+  # Once a reply is complete, Vim filters it without asking again.
+  assert_equal('SDL_CreateGPUT', lspserver.requests[-1])
+enddef
+
+# Same with Vim's 'autocomplete', which calls the source from the first typed
+# character.
+def g:Test_CompleteSource_Autocomplete_IncompleteList()
+  if !exists('+autocomplete')
+    return
+  endif
+  var lspserver = SetupTruncatingServerBuffer('', 2)
+  defer TeardownTruncatingServerBuffer(lspserver)
+  SetupFeedkeysCompletion()
+  defer test_override('char_avail', 0)
+  setlocal autocomplete
+
+  feedkeys("SSDL_CreateGPUTe\<F2>\<Esc>", 'tx!')
+  assert_equal(['SDL_CreateGPUTexture'], b:matches)
+  assert_equal('S', lspserver.requests[0])
+  assert_equal('SDL_CreateGPUT', lspserver.requests[-1])
+enddef
+
+# 'autocomplete' gives a function source 300 ms.  When the first reply is slower
+# than that, Vim interrupts the source and calls it again on the next
+# keystroke, from where refreshing must carry on.
+def g:Test_CompleteSource_Autocomplete_SlowFirstReply()
+  if !exists('+autocomplete')
+    return
+  endif
+  var lspserver = SetupTruncatingServerBuffer('', 2, [600])
+  defer TeardownTruncatingServerBuffer(lspserver)
+  SetupFeedkeysCompletion()
+  defer test_override('char_avail', 0)
+  setlocal autocomplete
+
+  feedkeys("SSDL_CreateGPUTe\<F2>\<Esc>", 'tx!')
+  assert_equal(['SDL_CreateGPUTexture'], b:matches)
+enddef
 
 # Regression test for CompletionItem.preselect ordering.
 def g:Test_Completion_Preselect_ItemFirst()
