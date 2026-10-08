@@ -7,4 +7,5 @@ test/X*.cpp
 # test/Xtest.cpp
 test/results.txt
 test/results_*.txt
+test/screen_*.log
 test/node_modules
