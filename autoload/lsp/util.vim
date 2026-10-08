@@ -245,6 +245,29 @@ export def BufWritesEol(bnr: number): bool
     || (bnr->getbufvar('&fixendofline') && !bnr->getbufvar('&binary'))
 enddef
 
+# Returns true if buffer "bnr" has no text: Vim writes it as an empty file.
+# A buffer without lines (a new buffer, or one with all its lines deleted) has
+# no text, but getbufline() returns one empty line for it, like for a buffer
+# with one empty line, which is written as a newline.  Only wordcount() tells
+# them apart, and only for a buffer in a window: a buffer that is not in any
+# window is taken to have lines.
+export def BufIsEmpty(bnr: number): bool
+  if bnr->getbufline(1, 2) != ['']
+    return false
+  endif
+  if !BufWritesEol(bnr)
+    return true
+  endif
+  if bnr == bufnr()
+    return wordcount().bytes == 0
+  endif
+  var winids = bnr->win_findbuf()
+  if winids->empty()
+    return false
+  endif
+  return win_execute(winids[0], 'echo wordcount().bytes')->trim() == '0'
+enddef
+
 # Returns the byte number of the specified LSP position in buffer "bnr".
 # LSP's line and characters are 0-indexed.
 # Vim's line and columns are 1-indexed.
