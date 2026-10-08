@@ -147,14 +147,6 @@ export def BufLspServersGet(bnr: number): list<dict<any>>
   return bufnrToServers[bnr]
 enddef
 
-# Returns all buffer numbers that have "lspserver" attached.
-export def BufGetServerBufnrs(lspserver: dict<any>): list<number>
-  return bufnrToServers->keys()
-    ->map((_, k) => str2nr(k))
-    ->filter((_, bnr) => bufnrToServers[bnr]
-      ->indexof((_, srv) => srv.id == lspserver.id) >= 0)
-enddef
-
 # Returns the LSP server for the current buffer with the optionally "feature".
 # Returns an empty dict if the server is not found.
 export def CurbufGetServer(feature: string = null_string): dict<any>
