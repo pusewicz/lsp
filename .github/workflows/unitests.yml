@@ -10,68 +10,44 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 jobs:
-  linux:
-    name: linux
-    runs-on: ubuntu-24.04
+  macvim:
+    name: macvim
+    runs-on: macos-latest
     timeout-minutes: 30
-    strategy:
-      matrix:
-        vim:
-          - nightly
-          - v9.0.0000
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: 1
+      HOMEBREW_NO_INSTALL_CLEANUP: 1
     steps:
-      - name: Install packages
-        run: |
-          set -euo pipefail
-          sudo apt update
-          # install clangd language server
-          sudo apt install -y clangd-15
-          # install nodejs
-          sudo apt install -y curl ca-certificates gnupg
-          curl -fsSL https://deb.nodesource.com/setup_22.x | sudo bash -
-          sudo apt install -y nodejs
-          echo "node version: $(node -v)"
-          echo "npm version: $(npm -v)"
-          # install the golang language server
-          sudo apt install -y golang
-          sudo apt install -y gopls
-          # install the rust language server
-          sudo apt install -y cargo rust-src
-          mkdir -p ~/.local/bin
-          # Use version v0.3.2011 as the later versions fail the tests
-          curl -L https://github.com/rust-lang/rust-analyzer/releases/download/2024-06-24/rust-analyzer-x86_64-unknown-linux-gnu.gz | gunzip -c - > ~/.local/bin/rust-analyzer
-          chmod +x ~/.local/bin/rust-analyzer
-      - name: Resolve Vim revision
-        id: vim-rev
-        env:
-          REF: ${{ matrix.vim == 'nightly' && 'HEAD' || format('refs/tags/{0}', matrix.vim) }}
-        run: |
-          set -euo pipefail
-          sha=$(git ls-remote --exit-code https://github.com/vim/vim "$REF" | cut -f1)
-          echo "Vim ${{ matrix.vim }} is at $sha"
-          echo "cache-key=vim-$ImageOS-$RUNNER_ARCH-${{ matrix.vim }}-$sha" >> "$GITHUB_OUTPUT"
-      - name: Restore Vim build
-        uses: actions/cache@v6.1.0
-        id: vim-cache
-        with:
-          path: ~/vim-${{ matrix.vim }}
-          key: ${{ steps.vim-rev.outputs.cache-key }}
-      - name: Setup Vim
-        if: steps.vim-cache.outputs.cache-hit != 'true'
-        uses: rhysd/action-setup-vim@v1
-        with:
-          version: ${{ matrix.vim }}
       - name: Checkout LSP plugin Code
         uses: actions/checkout@v7.0.1
+      - name: Install MacVim and the language servers
+        run: |
+          set -euo pipefail
+          brew install --cask macvim-app
+          brew install llvm@15 gopls
+          rustup component add rust-src
+          arch=$(uname -m)
+          if [[ $arch == arm64 ]]; then
+            arch=aarch64
+          fi
+          mkdir -p ~/.local/bin
+          # Use version v0.3.2011 as the later versions fail the tests
+          curl -fsSL "https://github.com/rust-lang/rust-analyzer/releases/download/2024-06-24/rust-analyzer-$arch-apple-darwin.gz" \
+            | gunzip -c - > ~/.local/bin/rust-analyzer
+          chmod +x ~/.local/bin/rust-analyzer
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Setup Node
+        uses: actions/setup-node@v7.0.0
+        with:
+          node-version: 22
       - name: Install the TypeScript language server
         working-directory: test
         run: npm ci
       - name: Run Tests
         run: |
           set -euo pipefail
-          uname -a
-          ~/.local/bin/rust-analyzer --version
-          export VIMPRG=~/vim-${{ matrix.vim }}/bin/vim
-          $VIMPRG --version
+          sw_vers
+          rust-analyzer --version
+          /Applications/MacVim.app/Contents/MacOS/Vim --version
           cd test
           ./run_tests.sh
