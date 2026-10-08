@@ -68,6 +68,7 @@ def RegisterEvents()
     # from the buffer getting wiped out.
     autocmd BufWipeOut * RemoveFile(expand('<abuf>')->str2nr())
     autocmd BufWinEnter * BufferLoadedInWin(expand('<abuf>')->str2nr())
+    autocmd BufWinEnter * diag.BufferDisplayed(expand('<abuf>')->str2nr())
     # A buffer renamed with ":file" or ":saveas" is another document
     autocmd BufFilePre * RemoveFile(expand('<abuf>')->str2nr())
     autocmd BufFilePost * BufferRenamed(expand('<abuf>')->str2nr())
