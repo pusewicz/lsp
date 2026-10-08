@@ -33,12 +33,8 @@ enddef
 def Set_lines(lines: list<string>, A: list<number>, B: list<number>,
 					new_lines: list<string>): list<string>
   var i_0: number = A[0]
-
-  # If it extends past the end, truncate it to the end. This is because the
-  # way the LSP describes the range including the last newline is by
-  # specifying a line number after what we would call the last line.
+  var i_n: number = B[0]
   var numlines: number = lines->len()
-  var i_n = [B[0], numlines - 1]->min()
 
   if i_0 < 0 || i_0 >= numlines || i_n < 0 || i_n >= numlines
     #util.WarnMsg("set_lines: Invalid range, A = " .. A->string()
@@ -96,8 +92,25 @@ def Set_lines(lines: list<string>, A: list<number>, B: list<number>,
   return lines
 enddef
 
+# Returns the position of LSP position "pos" in buffer "bnr" as [line,
+# character index], at the start of line "lastLine" when "pos" is past it.
+def DocPos(bnr: number, pos: dict<number>, lastLine: number): list<number>
+  if pos.line > lastLine
+    return [lastLine, 0]
+  endif
+  return [pos.line, util.GetCharIdxWithoutCompChar(bnr, pos)]
+enddef
+
 # Apply set of text edits to the specified buffer
 # The text edit logic is ported from the Neovim lua implementation
+#
+# The edits are for the text that Vim writes for the buffer, which is what
+# the language server got: nothing for a buffer without text, else the lines
+# of the buffer joined with "\n", followed by "\n" when util.BufWritesEol()
+# is true.  So the lines of the document are the lines of the buffer (one
+# empty line for a buffer without text), followed by an empty line when Vim
+# writes a newline at the end of a buffer with text.  Edits past the end of
+# the document are for the document with one more line break at its end.
 export def ApplyTextEdits(bnr: number, text_edits: list<dict<any>>): void
   if text_edits->empty()
     return
@@ -107,31 +120,32 @@ export def ApplyTextEdits(bnr: number, text_edits: list<dict<any>>): void
   :silent! bnr->bufload()
   setbufvar(bnr, '&buflisted', true)
 
-  var start_line: number = 4294967295		# 2 ^ 32
-  var finish_line: number = -1
+  var hasEol: bool = util.BufWritesEol(bnr)
+  var linecount: number = bnr->getbufinfo()[0].linecount
+  var lastLine: number = linecount - 1
+  if hasEol && !util.BufIsEmpty(bnr)
+    lastLine += 1
+  endif
+  if text_edits->mapnew((_, e) => e.range.end.line)->max() > lastLine
+    lastLine += 1
+  endif
+
+  # The edited lines start no later than the first line of the document after
+  # the buffer's lines, so that only buffer lines precede them.
+  var start_line: number = linecount
+  var finish_line: number = 0
   var updated_edits: list<dict<any>> = []
-  var start_row: number
-  var start_col: number
-  var end_row: number
-  var end_col: number
 
   # create a list of buffer positions where the edits have to be applied.
   var idx = 0
   for e in text_edits
     # Adjust the start and end columns for multibyte characters
-    var r = e.range
-    var rstart: dict<any> = r.start
-    var rend: dict<any> = r.end
-    start_row = rstart.line
-    start_col = util.GetCharIdxWithoutCompChar(bnr, rstart)
-    end_row = rend.line
-    end_col = util.GetCharIdxWithoutCompChar(bnr, rend)
-    start_line = [rstart.line, start_line]->min()
-    finish_line = [rend.line, finish_line]->max()
+    var A: list<number> = DocPos(bnr, e.range.start, lastLine)
+    var B: list<number> = DocPos(bnr, e.range.end, lastLine)
+    start_line = [A[0], start_line]->min()
+    finish_line = [B[0], finish_line]->max()
 
-    updated_edits->add({A: [start_row, start_col],
-			B: [end_row, end_col],
-                        idx: idx,
+    updated_edits->add({A: A, B: B, idx: idx,
 			lines: e.newText->split("\n", true)})
     idx += 1
   endfor
@@ -140,20 +154,9 @@ export def ApplyTextEdits(bnr: number, text_edits: list<dict<any>>): void
   # that they can be applied without interfering with each other.
   updated_edits->sort('Edit_sort_func')
 
-  # When Vim writes a newline after the last line, the document has one more,
-  # empty, line.  Unless an edit reaches that line, an empty last line is
-  # taken to be it, so that edits for an empty document apply to a buffer
-  # without lines, which Vim shows as one empty line.
-  var linecount: number = bnr->getbufinfo()[0].linecount
+  # The lines of the document after the lines of the buffer are empty.
   var lines: list<string> = bnr->getbufline(start_line + 1, finish_line + 1)
-  var set_eol = util.BufWritesEol(bnr) && linecount <= finish_line + 1
-  if set_eol && start_line <= linecount
-      && (finish_line >= linecount || lines[-1] != '')
-    lines->add('')
-  endif
-
-  #echomsg $'lines(1) = {string(lines)}'
-  #echomsg updated_edits
+  lines->extend(repeat([''], finish_line + 1 - [start_line, linecount]->max()))
 
   for e in updated_edits
     var A: list<number> = [e.A[0] - start_line, e.A[1]]
@@ -161,15 +164,15 @@ export def ApplyTextEdits(bnr: number, text_edits: list<dict<any>>): void
     lines = Set_lines(lines, A, B, e.lines)
   endfor
 
-  #echomsg $'lines(2) = {string(lines)}'
-
-  # If the last line is empty and we need to set EOL, then remove it.
-  if !lines->empty() && set_eol && lines[-1]->len() == 0
+  # When Vim writes a newline at the end, it writes the newline before an
+  # empty last line of the document, which is not a buffer line.
+  if hasEol && finish_line == lastLine
+      && !lines->empty() && lines[-1]->empty()
     lines->remove(-1)
   endif
 
-  #echomsg $'ApplyTextEdits: start_line = {start_line}, finish_line = {finish_line}'
-  #echomsg $'lines = {string(lines)}'
+  # The last of the buffer lines that the edited lines replace
+  var last_line: number = [finish_line + 1, linecount]->min()
 
   # Now we apply the textedits to the actual buffer.
   # In theory we could just delete all old lines and append the new lines.
@@ -196,13 +199,13 @@ export def ApplyTextEdits(bnr: number, text_edits: list<dict<any>>): void
   # anything if an empty list is passed just like deletebufline() does not
   # delete anything, if the last line of the range is before the first line.
   # We just need to be careful with all indices.
-  appendbufline(bnr, finish_line + 1, lines[finish_line - start_line + 1 : -1])
+  appendbufline(bnr, last_line, lines[last_line - start_line : -1])
   setbufline(bnr, start_line + 1, lines)
 
   # Workaround for Vim issues #12568 & #18136
-  prop_clear(start_line + 1 + lines->len(), finish_line + 1, {'bufnr': bnr})
+  prop_clear(start_line + 1 + lines->len(), last_line, {'bufnr': bnr})
 
-  deletebufline(bnr, start_line + 1 + lines->len(), finish_line + 1)
+  deletebufline(bnr, start_line + 1 + lines->len(), last_line)
 enddef
 
 # interface TextDocumentEdit
