@@ -10,6 +10,12 @@ export const CODEACTIONDETAILS_FULLKIND = 0x4
 
 const popupOpacitySupported: bool = has('patch-9.2.0017')
 
+# Incremental text document sync needs the diff() function.  A Vim built
+# without its internal diff library, like the macOS system Vim, has diff() but
+# it returns nothing.
+export const incrementalSyncSupported: bool = exists('*diff')
+  && diff([], [], {output: 'indices'})->type() == v:t_list
+
 # LSP plugin options
 # User can override these by calling the OptionsSet() function.
 export var lspOptions: dict<any> = {
@@ -280,8 +286,7 @@ export def OptionsSet(opts: dict<any>)
   if !has('patch-9.0.1157')
     lspOptions.showDiagWithVirtualText = false
   endif
-  if !exists('*diff')
-    # incremental text document sync needs the diff() function
+  if !incrementalSyncSupported
     lspOptions.incrementalSync = false
   endif
 
