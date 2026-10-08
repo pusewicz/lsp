@@ -85,6 +85,20 @@ export def SkipOutlineRefresh(): bool
   return skipRefresh
 enddef
 
+# Number of the outline buffer
+var outlineBufnr: number = -1
+
+# Returns the number of the outline buffer, or -1 when there is none.
+export def OutlineBufnr(): number
+  return outlineBufnr->bufloaded() ? outlineBufnr : -1
+enddef
+
+# Returns the ID of the outline window in the current tab page, or -1 when
+# there is none.
+def OutlineWinid(): number
+  return outlineBufnr->bufwinid()
+enddef
+
 def AddSymbolText(bnr: number,
 			symbolTypeTable: dict<list<dict<any>>>,
 			pfx: string,
@@ -128,7 +142,7 @@ enddef
 export def UpdateOutlineWindow(fname: string,
 				symbolTypeTable: dict<list<dict<any>>>,
 				symbolLineTable: list<dict<any>>)
-  var wid: number = bufwinid('LSP-Outline')
+  var wid: number = OutlineWinid()
   if wid == -1
     return
   endif
@@ -218,7 +232,7 @@ def OutlineHighlightCurrentSymbol()
     return
   endif
 
-  var wid: number = bufwinid('LSP-Outline')
+  var wid: number = OutlineWinid()
   if wid == -1
     return
   endif
@@ -289,7 +303,7 @@ enddef
 
 # Toggle the outline window. Returns true if it opened the window, and false if it closed it.
 export def ToggleOutlineWindow(cmdmods: string, winsize: number): bool
-  var wid: number = bufwinid('LSP-Outline')
+  var wid: number = OutlineWinid()
   if wid != -1
     win_execute(wid, ':q')
     return false
@@ -300,7 +314,7 @@ enddef
 
 # open the symbol outline window
 export def OpenOutlineWindow(cmdmods: string, winsize: number)
-  var wid: number = bufwinid('LSP-Outline')
+  var wid: number = OutlineWinid()
   if wid == -1
     Open(cmdmods, winsize)
   endif
@@ -308,7 +322,7 @@ enddef
 
 # close the symbol outline window
 export def CloseOutlineWindow()
-  var wid: number = bufwinid('LSP-Outline')
+  var wid: number = OutlineWinid()
   if wid != -1
     win_execute(wid, ':q')
   endif
@@ -333,9 +347,7 @@ enddef
 
 # Set options to make the outline buffer as a scratch buffer
 def SetOutlineBufferOptions()
-  :setlocal buftype=nofile
-  :setlocal bufhidden=delete
-  :setlocal noswapfile nobuflisted
+  :setlocal nobuflisted
   :setlocal nonumber norelativenumber fdc=0 nowrap winfixheight winfixwidth
   :setlocal undolevels=-1
   :setlocal shiftwidth=2
@@ -391,7 +403,7 @@ def SetupOutlineAutocmds()
   # when the outline window is closed, do the cleanup
   acmds->add({event: 'BufUnload',
 	      group: 'LSPOutline',
-	      pattern: 'LSP-Outline',
+	      bufnr: outlineBufnr,
 	      replace: true,
 	      cmd: 'OutlineCleanup()'})
 
@@ -422,7 +434,8 @@ def Open(cmdmods: string, winsize: number)
     size = opt.lspOptions.outlineWinSize
   endif
 
-  silent execute $'{mods} :{size}new LSP-Outline'
+  var bnr: number = util.ScratchWindowOpen(outlineBufnr, 'LSP-Outline',
+					   $'{mods} :{size}')
   :setlocal modifiable
   :setlocal noreadonly
   deletebufline('', 1, '$')
@@ -433,7 +446,10 @@ def Open(cmdmods: string, winsize: number)
   setline(1, ['# File Outline'])
   :setlocal nomodifiable
 
-  SetupOutlineBufferSyntax()
+  if bnr != outlineBufnr
+    outlineBufnr = bnr
+    SetupOutlineBufferSyntax()
+  endif
 
   SetupOutlineAutocmds()
 
