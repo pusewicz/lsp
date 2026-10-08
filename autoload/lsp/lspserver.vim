@@ -1935,17 +1935,15 @@ def InlayHintsShow(lspserver: dict<any>, bnr: number)
     return
   endif
   var lastlnum = binfo[0].linecount
-  var lastline = bnr->getbufline('$')
-  var lastcol = 1
-  if !lastline->empty() && !lastline[0]->empty()
-    lastcol = lastline[0]->strchars()
-  endif
   var param = {
       textDocument: {uri: util.LspBufnrToUri(bnr)},
       range:
       {
 	start: {line: 0, character: 0},
-	end: {line: lastlnum - 1, character: lastcol - 1}
+	end: {
+	  line: lastlnum - 1,
+	  character: bnr->getbufline(lastlnum)->get(0, '')->strchars()
+	}
       }
   }
 
