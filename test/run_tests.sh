@@ -14,15 +14,14 @@ rm -f results.txt
 # --- Configuration ---
 VIM_CMD="$VIMPRG -u NONE -U NONE -i NONE --noplugin -N --not-a-term"
 
-# Vim polls its input for typeahead, e.g. during 'autocomplete', and exits when
-# that input is at end-of-file.  Unless the input is a terminal, replace it with
-# an empty pipe that stays open.
-if [[ ! -t 0 ]]; then
-  stdin_dir=$(mktemp -d)
-  mkfifo "$stdin_dir/stdin"
-  exec 0<>"$stdin_dir/stdin"
-  rm -r "$stdin_dir"
-fi
+# Vim checks its input for typed keys while a test waits (":sleep",
+# complete_check()) and exits when the input is at end of file, as when stdin
+# is /dev/null.  Give Vim an input that never has anything to read: a pipe
+# that this script keeps open for writing on file descriptor 3.
+STDIN_DIR=$(mktemp -d) || exit 1
+mkfifo "$STDIN_DIR/stdin" || exit 1
+exec 3<>"$STDIN_DIR/stdin" || exit 1
+rm -r "$STDIN_DIR"
 
 # Use arguments if provided, otherwise run the full suite
 ALL_TESTS=(
@@ -58,7 +57,7 @@ RunTestsInFile() {
 
   # Execute Vim and redirect its internal 'results.txt' logic if possible,
   # or handle the renaming here.
-  $VIM_CMD -c "let g:TestName='$testfile'" -S runner.vim
+  $VIM_CMD -c "let g:TestName='$testfile'" -S runner.vim <&3
   local vim_status=$?
 
   # Standardizing the results file name if runner.vim always outputs 'results.txt'
@@ -73,14 +72,16 @@ RunTestsInFile() {
 
   cat "$res_file"
 
+  # runner.vim always ends with ":qall!", so any other exit means that Vim
+  # stopped before running all the tests.
+  if [[ $vim_status -ne 0 ]]; then
+    echo "RESULT: Vim exited with status $vim_status while running $testfile."
+    return 2
+  fi
+
   if grep -qw "FAIL" "$res_file"; then
     echo "RESULT: Some tests in $testfile FAILED."
     return 3
-  fi
-
-  if (( vim_status != 0 )); then
-    echo "ERROR: Vim exited with status $vim_status while running $testfile."
-    return 2
   fi
 
   if grep -q "^SKIP:" "$res_file"; then

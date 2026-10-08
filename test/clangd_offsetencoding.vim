@@ -86,6 +86,30 @@ def g:Test_LspDiagShow_multibyte()
 enddef
 
 # Test for :LspFormat when using multibyte and composing characters
+def g:Test_LspDocumentLink_multibyte()
+  writefile(['int xdoclink_mb;'], 'Xdoclink😊.h')
+  :silent! edit XLspDocumentLink_mb.c
+  sleep 200m
+  setline(1, ['#include "Xdoclink😊.h" // 😊', 'int *x = &xdoclink_mb;'])
+  g:WaitForServerFileLoad(0)
+  setlocal nomodified
+  :LspDocumentLink
+  var loclist: list<dict<any>> = getloclist(0)
+  assert_equal(1, loclist->len())
+  assert_equal([1, 10, 1, 26, 'Xdoclink😊.h'],
+	       [loclist[0].lnum, loclist[0].col, loclist[0].end_lnum,
+		loclist[0].end_col, loclist[0].text])
+  :lclose
+
+  # The cursor is on the closing quote, the last character of the link
+  cursor(1, 25)
+  :LspDocumentLinkOpen
+  assert_equal('Xdoclink😊.h', expand('%:t'))
+
+  :%bw!
+  delete('Xdoclink😊.h')
+enddef
+
 def g:Test_LspFormat_multibyte()
   :silent! edit XLspFormat_mb.c
   sleep 200m
@@ -339,12 +363,38 @@ def g:Test_LspShowReferences_multibyte()
   redraw!
   cursor(4, 27)
   :LspShowReferences
-  var qfl: list<dict<any>> = getloclist(0)
-  assert_equal([2, 13], [qfl[0].lnum, qfl[0].col])
-  assert_equal([4, 27], [qfl[1].lnum, qfl[1].col])
-  assert_equal([5, 39], [qfl[2].lnum, qfl[2].col])
-  assert_equal([6, 35], [qfl[3].lnum, qfl[3].col])
-  assert_equal([7, 43], [qfl[4].lnum, qfl[4].col])
+  assert_equal([[2, 13, 2, 17], [4, 27, 4, 31], [5, 39, 5, 43], [6, 35, 6, 39],
+		[7, 43, 7, 47]],
+	       getloclist(0)->mapnew((_, v) => [v.lnum, v.col, v.end_lnum, v.end_col]))
+  :lclose
+
+  :%bw!
+enddef
+
+# Test for the range of the :LspShowReferences locations when the symbol name
+# contains multibyte and composing characters
+def g:Test_LspShowReferences_multibyte_symbol()
+  :silent! edit XLspShowReferences_mb_sym.c
+  sleep 200m
+  var lines: list<string> =<< trim END
+    void fn(void)
+    {
+        int 😊😊😊😊 = 1, áb́áb́ = 2;
+        😊😊😊😊 = áb́áb́ + 😊😊😊😊;
+    }
+  END
+  setline(1, lines)
+  g:WaitForServerFileLoad(0)
+  redraw!
+  cursor(4, 5)
+  :LspShowReferences
+  assert_equal([[3, 9, 3, 25], [4, 5, 4, 21], [4, 39, 4, 55]],
+	       getloclist(0)->mapnew((_, v) => [v.lnum, v.col, v.end_lnum, v.end_col]))
+  :lclose
+  cursor(4, 24)
+  :LspShowReferences
+  assert_equal([[3, 31, 3, 43], [4, 24, 4, 36]],
+	       getloclist(0)->mapnew((_, v) => [v.lnum, v.col, v.end_lnum, v.end_col]))
   :lclose
 
   :%bw!

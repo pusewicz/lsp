@@ -263,6 +263,20 @@ def g:Test_LspFormat()
   :%bw!
 enddef
 
+# With 'fixendofline' set, a buffer without 'endofline' is still written with
+# a trailing newline, so the formatter must see it to remove the blank line
+# that precedes it.
+def g:Test_LspFormat_NoEolTrailingBlankLine()
+  :silent! edit XLspFormatNoEol.c
+  sleep 200m
+  setlocal noeol fixeol
+  setline(1, ['int x;', ''])
+  g:WaitForServerFileLoad(0)
+  :LspFormat
+  g:WaitForAssert(() => assert_equal(['int x;'], getline(1, '$')))
+  :%bw!
+enddef
+
 # Test for formatting a file using 'formatexpr'
 def g:Test_LspFormatExpr()
   :silent! edit XLspFormat.c
@@ -543,15 +557,15 @@ def g:Test_LspShowReferences()
   var loclist: list<dict<any>> = getloclist(0)
   assert_equal(bnr, loclist[0].bufnr)
   assert_equal(3, loclist->len())
-  assert_equal([4, 6], [loclist[0].lnum, loclist[0].col])
-  assert_equal([5, 2], [loclist[1].lnum, loclist[1].col])
-  assert_equal([6, 6], [loclist[2].lnum, loclist[2].col])
+  assert_equal([[4, 6, 4, 11], [5, 2, 5, 7], [6, 6, 6, 11]],
+	       loclist->mapnew((_, v) => [v.lnum, v.col, v.end_lnum, v.end_col]))
   :lclose
   cursor(1, 5)
   :LspShowReferences
   assert_equal(1, getloclist(0)->len())
   loclist = getloclist(0)
-  assert_equal([1, 5], [loclist[0].lnum, loclist[0].col])
+  assert_equal([[1, 5, 1, 10]],
+	       loclist->mapnew((_, v) => [v.lnum, v.col, v.end_lnum, v.end_col]))
   :lclose
 
   # Test for opening in qf list
@@ -564,14 +578,14 @@ def g:Test_LspShowReferences()
   var qfl: list<dict<any>> = getqflist()
   assert_equal(3, qfl->len())
   assert_equal(bufnr(), qfl[0].bufnr)
-  assert_equal([4, 6], [qfl[0].lnum, qfl[0].col])
-  assert_equal([5, 2], [qfl[1].lnum, qfl[1].col])
-  assert_equal([6, 6], [qfl[2].lnum, qfl[2].col])
+  assert_equal([[4, 6, 4, 11], [5, 2, 5, 7], [6, 6, 6, 11]],
+	       qfl->mapnew((_, v) => [v.lnum, v.col, v.end_lnum, v.end_col]))
   cursor(1, 5)
   :LspShowReferences
   assert_equal(1, getqflist()->len())
   qfl = getqflist()
-  assert_equal([1, 5], [qfl[0].lnum, qfl[0].col])
+  assert_equal([[1, 5, 1, 10]],
+	       qfl->mapnew((_, v) => [v.lnum, v.col, v.end_lnum, v.end_col]))
   :cclose
   g:LspOptionsSet({useQuickfixForLocations: false})
 
@@ -2870,6 +2884,81 @@ def g:Test_DocumentSymbol()
   feedkeys("x\<CR>", 'xt')
   popup_clear()
   assert_equal('', v:errmsg)
+
+  :%bw!
+enddef
+
+# Test for :LspDocumentLink and :LspDocumentLinkOpen
+def g:Test_LspDocumentLink()
+  writefile(['int xdoclink_one;', 'int xdoclink_two;'], 'Xdoclink.h')
+  writefile(['#include "Xdoclink.h"', 'int xdoclink_three;'], 'Xdoclink.c')
+  :silent! edit Xdoclink.c
+  sleep 200m
+  g:WaitForServerFileLoad(0)
+  setlocal nomodified
+  var bnr: number = bufnr()
+
+  # Links are shown in a location list by default
+  :LspDocumentLink
+  assert_equal('quickfix', getwinvar(winnr('$'), '&buftype'))
+  assert_equal('Document Links', getloclist(0, {title: 0}).title)
+  var loclist: list<dict<any>> = getloclist(0)
+  assert_equal(1, loclist->len())
+  assert_equal([bnr, 1, 10, 1, 22, 'Xdoclink.h'],
+	       [loclist[0].bufnr, loclist[0].lnum, loclist[0].col,
+		loclist[0].end_lnum, loclist[0].end_col, loclist[0].text])
+  :lclose
+
+  g:LspOptionsSet({useQuickfixForLocations: true})
+  :LspDocumentLink
+  assert_equal('quickfix', getwinvar(winnr('$'), '&buftype'))
+  var qfl: list<dict<any>> = getqflist()
+  assert_equal(1, qfl->len())
+  assert_equal([bnr, 1, 10], [qfl[0].bufnr, qfl[0].lnum, qfl[0].col])
+  :cclose
+  g:LspOptionsSet({useQuickfixForLocations: false})
+
+  g:LspOptionsSet({keepFocusInReferences: false})
+  :LspDocumentLink
+  assert_equal('', &buftype)
+  :lclose
+  g:LspOptionsSet({keepFocusInReferences: true})
+
+  # No link on the cursor line
+  cursor(2, 1)
+  assert_equal('Warn: No document link found at the cursor position',
+	       execute('LspDocumentLinkOpen')->split("\n")[0])
+  assert_equal(bnr, bufnr())
+
+  # Open the link under the cursor and go back with the tag stack
+  cursor(1, 15)
+  var tagStackLen: number = gettagstack().length
+  :LspDocumentLinkOpen
+  assert_equal('Xdoclink.h', expand('%:t'))
+  assert_equal([1, 1], [line('.'), col('.')])
+  assert_equal(tagStackLen + 1, gettagstack().length)
+  exe "normal! \<C-T>"
+  assert_equal(bnr, bufnr())
+  assert_equal([1, 15], [line('.'), col('.')])
+
+  # With the cursor elsewhere on the line, open the link on the line
+  cursor(1, 1)
+  :vert LspDocumentLinkOpen
+  assert_equal(2, winnr('$'))
+  assert_equal('row', winlayout()[0])
+  assert_equal('Xdoclink.h', expand('%:t'))
+  :only
+
+  :%bw!
+  delete('Xdoclink.c')
+  delete('Xdoclink.h')
+
+  # file without an LSP server
+  edit a.raku
+  assert_equal('Error: Language server for "raku" file type supporting "documentLink" feature is not found',
+	       execute('LspDocumentLink')->split("\n")[0])
+  assert_equal('Error: Language server for "raku" file type supporting "documentLink" feature is not found',
+	       execute('LspDocumentLinkOpen')->split("\n")[0])
 
   :%bw!
 enddef

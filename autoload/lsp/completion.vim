@@ -208,19 +208,82 @@ def AdjustCompletionTextIndent(text: string): string
   return lines->join("\n")
 enddef
 
-# Apply CompletionItem.labelDetails to popup fields.
-def ApplyCompletionItemLabelDetails(item: dict<any>, d: dict<any>)
+# Return the text shown for completion item "item" in the label column of the
+# completion menu: the label followed by the first line of
+# labelDetails.detail.
+def CompletionItemLabel(item: dict<any>): string
+  var label: string = item->get('label', '')
   var labelDetails = item->get('labelDetails', {})
-  if labelDetails->type() != v:t_dict || labelDetails->empty()
-    return
+  if labelDetails->type() != v:t_dict
+    return label
   endif
 
   var detailText = labelDetails->get('detail', v:none)
   if detailText->type() == v:t_string
-    var detailLine = detailText->empty() ? '' : detailText->split("\n")[0]
-    if !detailLine->empty()
-      d.abbr ..= detailLine
+    label ..= detailText->split("\n")->get(0, '')
+  endif
+  return label
+enddef
+
+# Return true when the completion menu cuts "label" to fit the
+# "completionLabelMaxWidth" option.
+def CompletionLabelIsCut(label: string): bool
+  var maxWidth: number = opt.lspOptions.completionLabelMaxWidth
+  return maxWidth > 0 && label->strdisplaywidth() > maxWidth
+enddef
+
+# Return "label", which is wider than the "completionLabelMaxWidth" option,
+# cut to that many screen cells with an ellipsis marking the cut.
+def CutCompletionLabel(label: string): string
+  var maxWidth: number = opt.lspOptions.completionLabelMaxWidth
+  var ellipsis = &encoding == 'utf-8' ? '…' : '...'
+  if ellipsis->strdisplaywidth() >= maxWidth
+    ellipsis = ''
+  endif
+
+  var room = maxWidth - ellipsis->strdisplaywidth()
+  var width = 0
+  var nchars = 0
+  for ch in label
+    width += ch->strdisplaywidth()
+    if width > room
+      break
     endif
+    nchars += 1
+  endfor
+  return label->strcharpart(0, nchars) .. ellipsis
+enddef
+
+# Put "lines" in front of the info text of completion menu item "d".  Each
+# line is indented, so that markdown documentation shows it as code, and is
+# followed by a horizontal rule.
+def PrependCompletionInfo(d: dict<any>, lines: list<string>)
+  var sections = lines->mapnew((_, line) => $'    {line}')
+  if !d->get('info', '')->empty()
+    sections->add(d.info)
+  endif
+  d.info = sections->join("\n- - -\n")
+enddef
+
+# Cut the label of completion menu item "d" to the "completionLabelMaxWidth"
+# option.  The info popup then shows the full label: added here, or by
+# ShowCompletionDocumentation() when the documentation is resolved lazily.
+def CutCompletionMenuLabel(d: dict<any>, lazyDoc: bool)
+  if !CompletionLabelIsCut(d.abbr)
+    return
+  endif
+
+  if !lazyDoc
+    PrependCompletionInfo(d, [d.abbr])
+  endif
+  d.abbr = CutCompletionLabel(d.abbr)
+enddef
+
+# Apply CompletionItem.labelDetails.description to the menu column.
+def ApplyCompletionItemLabelDescription(item: dict<any>, d: dict<any>)
+  var labelDetails = item->get('labelDetails', {})
+  if labelDetails->type() != v:t_dict || labelDetails->empty()
+    return
   endif
 
   var descText = labelDetails->get('description', v:none)
@@ -228,7 +291,7 @@ def ApplyCompletionItemLabelDetails(item: dict<any>, d: dict<any>)
     return
   endif
 
-  var descLine = descText->empty() ? '' : descText->split("\n")[0]
+  var descLine = descText->split("\n")->get(0, '')
   if descLine->empty()
     return
   endif
@@ -525,7 +588,7 @@ def BuildCompletionMenuItem(item: dict<any>, lspserver: dict<any>,
     endif
   endif
 
-  d.abbr = item.label
+  d.abbr = CompletionItemLabel(item)
   d.dup = 1
 
   if matcher == opt.COMPLETIONMATCHER_ICASE
@@ -545,7 +608,7 @@ def BuildCompletionMenuItem(item: dict<any>, lspserver: dict<any>,
   if item->has_key('detail') && !item.detail->empty()
     # Solve a issue where if a server send a detail field with a "\n", on
     # the menu will be everything joined with a "^@" separating it.
-    d.menu = item.detail->split("\n")[0]
+    d.menu = item.detail->split("\n")->get(0, '')
   endif
 
   if lspserver.completionLazyDoc
@@ -560,7 +623,7 @@ def BuildCompletionMenuItem(item: dict<any>, lspserver: dict<any>,
     endif
   endif
 
-  ApplyCompletionItemLabelDetails(item, d)
+  ApplyCompletionItemLabelDescription(item, d)
 
   # Score is used for sorting.
   d.score = item->get('sortText')
@@ -577,18 +640,17 @@ def BuildCompletionMenuItem(item: dict<any>, lspserver: dict<any>,
   # Move all additional details to the info popup
   # Caveat: LazyDoc will override moved details!
   if lspOpts.condensedCompletionMenu
-    const SEP = (s) => empty(s) ? "" : "\n- - -\n"
-    var infoText = ''
-    if d->has_key('abbr') && len(d.abbr) > len(d.word)
-      infoText ..= SEP(infoText) .. '    ' .. d.abbr
+    var moved: list<string> = []
+    if len(d.abbr) > len(d.word)
+      moved->add(d.abbr)
       d.abbr = d.word
     endif
     if d->has_key('menu') && !empty(d.menu)
-      infoText ..= SEP(infoText) .. '    ' .. d.menu
+      moved->add(d.menu)
       d.menu = ''
     endif
-    if !lspserver.completionLazyDoc && !empty(infoText)
-      d.info = infoText .. (d->has_key('info') ? SEP(infoText) .. d.info : '')
+    if !lspserver.completionLazyDoc && !moved->empty()
+      PrependCompletionInfo(d, moved)
     endif
   endif
 
@@ -739,6 +801,9 @@ export def CompletionReply(lspserver: dict<any>, cItems: any,
       seenItemKeys[key] = true
     endif
 
+    # Cut the label only now, so that overloads that differ only in the part
+    # that is cut off are not taken for duplicates.
+    CutCompletionMenuLabel(d, lspserver.completionLazyDoc)
     completeItems->add(d)
   endfor
 
@@ -836,6 +901,13 @@ def ShowCompletionDocumentation(cItem: any)
       ClearCompletionPreviewContents()
       return
     endif
+  endif
+
+  # The completion menu shows a cut label, so show the full one here.
+  var label = CompletionItemLabel(cItem)
+  if CompletionLabelIsCut(label)
+    var rest = infoText->empty() ? [] : ['- - -'] + infoText
+    infoText = [$'    {label}'] + rest
   endif
 
   if infoText->empty()

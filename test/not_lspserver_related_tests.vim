@@ -4,6 +4,7 @@ vim9script
 import '../autoload/lsp/completion.vim' as completion
 import '../autoload/lsp/buffer.vim' as buf
 import '../autoload/lsp/capabilities.vim' as capabilities
+import '../autoload/lsp/documentlink.vim' as documentlink
 import '../autoload/lsp/util.vim' as util
 import '../autoload/lsp/options.vim' as opt
 
@@ -179,6 +180,189 @@ def g:Test_Completion_Detail_LazyDoc()
   var item = lspserver.completeItems[0]
   assert_equal('bool', item.menu)
   assert_equal('Resolving completion...', item.info)
+
+  :%bw!
+enddef
+
+# Returns a fake language server for calling completion.CompletionReply()
+# directly.
+def MakeCompletionReplyServer(lazyDoc: bool): dict<any>
+  return {
+    name: 'test',
+    omniCompletePending: true,
+    completionLazyDoc: lazyDoc,
+    completeItems: [],
+    completeItemsIsIncomplete: false,
+  }
+enddef
+
+# Returns the completion item for "word" in the reply stored in "lspserver".
+def CompletionItemFor(lspserver: dict<any>, word: string): dict<any>
+  return lspserver.completeItems->copy()->filter((_, v) => v.word == word)[0]
+enddef
+
+# A label longer than "completionLabelMaxWidth" is cut with an ellipsis and the
+# full label moves to the top of the info popup.  The kind and the detail stay.
+def g:Test_Completion_LabelMaxWidth()
+  silent! edit XCompletionLabelMaxWidth.vim
+  var lspserver = MakeCompletionReplyServer(false)
+  var cItems = [
+    {
+      label: 'SDL_UploadToGPUBuffer',
+      labelDetails: {detail: '(SDL_GPUCopyPass *copy_pass, bool cycle)'},
+      kind: 3,
+      detail: 'void',
+      documentation: {kind: 'markdown', value: 'Uploads data.'},
+    },
+    {label: 'SDL_Quit', kind: 3, detail: 'void'},
+    {label: 'SDL_GetError', kind: 3, detail: 'const char *'},
+  ]
+  g:LspOptionsSet({completionLabelMaxWidth: 12})
+  try
+    completion.CompletionReply(lspserver, cItems, {})
+  finally
+    g:LspOptionsSet({completionLabelMaxWidth: 0})
+  endtry
+
+  var ellipsis = &encoding == 'utf-8' ? '…' : '...'
+  var full = 'SDL_UploadToGPUBuffer(SDL_GPUCopyPass *copy_pass, bool cycle)'
+  var item = CompletionItemFor(lspserver, 'SDL_UploadToGPUBuffer')
+  assert_equal(full->strpart(0, 12 - ellipsis->strdisplaywidth()) .. ellipsis,
+	       item.abbr)
+  assert_equal(12, item.abbr->strdisplaywidth())
+  assert_equal('f', item.kind)
+  assert_equal('void', item.menu)
+  assert_equal($"    {full}\n- - -\nUploads data.", item.info)
+
+  item = CompletionItemFor(lspserver, 'SDL_Quit')
+  assert_equal('SDL_Quit', item.abbr)
+  assert_false(item->has_key('info'))
+
+  # A label exactly as wide as the limit is not cut.
+  item = CompletionItemFor(lspserver, 'SDL_GetError')
+  assert_equal('SDL_GetError', item.abbr)
+  assert_false(item->has_key('info'))
+
+  :%bw!
+enddef
+
+# The label is cut by screen cells: a double-width character that does not fit
+# before the ellipsis is left out.
+def g:Test_Completion_LabelMaxWidth_WideChars()
+  if &encoding != 'utf-8'
+    return
+  endif
+  silent! edit XCompletionLabelMaxWidthWide.vim
+  var lspserver = MakeCompletionReplyServer(false)
+  g:LspOptionsSet({completionLabelMaxWidth: 6})
+  try
+    completion.CompletionReply(lspserver, [{label: 'あいうえお'}], {})
+  finally
+    g:LspOptionsSet({completionLabelMaxWidth: 0})
+  endtry
+
+  assert_equal('あい…', lspserver.completeItems[0].abbr)
+  assert_equal("    あいうえお", lspserver.completeItems[0].info)
+
+  :%bw!
+enddef
+
+# Overloads whose labels differ only in the part that is cut off are not
+# filtered out as duplicates.  With lazily resolved documentation the info
+# text is left for the resolve reply.
+def g:Test_Completion_LabelMaxWidth_KeepsOverloads()
+  silent! edit XCompletionLabelMaxWidthOverloads.vim
+  var lspserver = MakeCompletionReplyServer(true)
+  var cItems = [
+    {label: 'foo', labelDetails: {detail: '(int a, int b)'}, sortText: '1'},
+    {label: 'foo', labelDetails: {detail: '(int a, char *b)'}, sortText: '1'},
+  ]
+  g:LspOptionsSet({completionLabelMaxWidth: 8,
+		   filterCompletionDuplicates: true})
+  try
+    completion.CompletionReply(lspserver, cItems, {})
+  finally
+    g:LspOptionsSet({completionLabelMaxWidth: 0,
+		     filterCompletionDuplicates: false})
+  endtry
+
+  var items = lspserver.completeItems
+  assert_equal(2, items->len())
+  assert_equal(items[0].abbr, items[1].abbr)
+  assert_equal(['Resolving completion...', 'Resolving completion...'],
+	       items->mapnew((_, v) => v.info))
+
+  :%bw!
+enddef
+
+# Item resolved by Test_Completion_LabelMaxWidth_LazyDocInfo().
+var lazyDocItem: dict<any> = {
+  label: 'foo',
+  labelDetails: {detail: '(int first, int second)'},
+  detail: 'void',
+  documentation: 'Does foo.',
+}
+
+# Shows lazyDocItem, with its label cut, as the selected item of the
+# completion menu.
+def ShowLazyDocItemMenu()
+  complete(col('.'), [{
+    word: 'foo',
+    abbr: 'foo(int f…',
+    info: 'Resolving completion...',
+    user_data: lazyDocItem,
+  }])
+enddef
+
+# Passes the resolved lazyDocItem to the completion code and stores the lines
+# of the info popup in b:info.
+def ResolveLazyDocItem()
+  completion.CompletionResolveReply({}, lazyDocItem)
+  b:info = popup_findinfo()->winbufnr()->getbufline(1, '$')
+enddef
+
+# With lazily resolved documentation the info popup still starts with the
+# full label of an item whose label the menu cuts.
+def g:Test_Completion_LabelMaxWidth_LazyDocInfo()
+  silent! edit XCompletionLabelMaxWidthLazyDoc.vim
+  setlocal completeopt=menuone,popuphidden
+  inoremap <buffer> <F2> <ScriptCmd>ShowLazyDocItemMenu()<CR>
+  inoremap <buffer> <F3> <ScriptCmd>ResolveLazyDocItem()<CR>
+  g:LspOptionsSet({completionLabelMaxWidth: 10})
+  try
+    feedkeys("i\<F2>\<F3>\<Esc>", 'tx!')
+  finally
+    g:LspOptionsSet({completionLabelMaxWidth: 0})
+  endtry
+
+  assert_equal(['    foo(int first, int second)', '- - -', 'void', '- - -',
+		'Does foo.'], b:info)
+
+  :%bw!
+enddef
+
+# condensedCompletionMenu moves the label details and the detail to the info
+# popup, in front of the documentation.
+def g:Test_Completion_CondensedMenu()
+  silent! edit XCompletionCondensedMenu.vim
+  var lspserver = MakeCompletionReplyServer(false)
+  var cItems = [{
+    label: 'foo',
+    labelDetails: {detail: '(x)'},
+    detail: 'int',
+    documentation: 'Does foo.',
+  }]
+  g:LspOptionsSet({condensedCompletionMenu: true})
+  try
+    completion.CompletionReply(lspserver, cItems, {})
+  finally
+    g:LspOptionsSet({condensedCompletionMenu: false})
+  endtry
+
+  var item = lspserver.completeItems[0]
+  assert_equal('foo', item.abbr)
+  assert_equal('', item.menu)
+  assert_equal("    foo(x)\n- - -\n    int\n- - -\nDoes foo.", item.info)
 
   :%bw!
 enddef
@@ -675,6 +859,34 @@ def g:Test_PopupConfigure_Opacity_AppliedToPopup()
     popup_clear()
     ResetPopupOpacityOptions()
   endtry
+enddef
+
+# Test for the documentLinkProvider server capability and the documentLink
+# client capability
+def g:Test_DocumentLinkCapability()
+  var lspserver: dict<any> = {caps: {}, forceOffsetEncoding: ''}
+  capabilities.ProcessServerCaps(lspserver, lspserver.caps)
+  assert_false(lspserver.isDocumentLinkProvider)
+  assert_false(lspserver.isDocumentLinkResolveProvider)
+
+  lspserver.caps = {documentLinkProvider: {resolveProvider: true}}
+  capabilities.ProcessServerCaps(lspserver, lspserver.caps)
+  assert_true(lspserver.isDocumentLinkProvider)
+  assert_true(lspserver.isDocumentLinkResolveProvider)
+
+  assert_true(capabilities.GetClientCaps().textDocument.documentLink.tooltipSupport)
+enddef
+
+# Test for parsing the line and column fragment in a document link file URI
+def g:Test_DocumentLink_ParseFileUri()
+  var uri = 'file:///tmp/a%20b.c'
+  assert_equal([uri, 1, 1], documentlink.ParseFileUri(uri))
+  assert_equal([uri, 10, 1], documentlink.ParseFileUri($'{uri}#L10'))
+  assert_equal([uri, 10, 5], documentlink.ParseFileUri($'{uri}#L10,5'))
+  assert_equal([uri, 10, 5], documentlink.ParseFileUri($'{uri}#10,5'))
+  assert_equal([uri, 3, 2], documentlink.ParseFileUri($'{uri}#L3,2-L4,1'))
+  assert_equal([uri, 1, 1], documentlink.ParseFileUri($'{uri}#L0'))
+  assert_equal([uri, 1, 1], documentlink.ParseFileUri($'{uri}#section'))
 enddef
 
 # Only here to because the test runner needs it

@@ -36,9 +36,24 @@ jobs:
           # Use version v0.3.2011 as the later versions fail the tests
           curl -L https://github.com/rust-lang/rust-analyzer/releases/download/2024-06-24/rust-analyzer-x86_64-unknown-linux-gnu.gz | gunzip -c - > ~/.local/bin/rust-analyzer
           chmod +x ~/.local/bin/rust-analyzer
+      - name: Resolve Vim revision
+        id: vim-rev
+        env:
+          REF: ${{ matrix.vim == 'nightly' && 'HEAD' || format('refs/tags/{0}', matrix.vim) }}
+        run: |
+          set -euo pipefail
+          sha=$(git ls-remote --exit-code https://github.com/vim/vim "$REF" | cut -f1)
+          echo "Vim ${{ matrix.vim }} is at $sha"
+          echo "cache-key=vim-$ImageOS-$RUNNER_ARCH-${{ matrix.vim }}-$sha" >> "$GITHUB_OUTPUT"
+      - name: Restore Vim build
+        uses: actions/cache@v6.1.0
+        id: vim-cache
+        with:
+          path: ~/vim-${{ matrix.vim }}
+          key: ${{ steps.vim-rev.outputs.cache-key }}
       - name: Setup Vim
+        if: steps.vim-cache.outputs.cache-hit != 'true'
         uses: rhysd/action-setup-vim@v1
-        id: vim
         with:
           version: ${{ matrix.vim }}
       - name: Checkout LSP plugin Code
@@ -48,7 +63,7 @@ jobs:
           set -euo pipefail
           uname -a
           ~/.local/bin/rust-analyzer --version
-          export VIMPRG=${{ steps.vim.outputs.executable }}
+          export VIMPRG=~/vim-${{ matrix.vim }}/bin/vim
           $VIMPRG --version
           cd test
           ./run_tests.sh

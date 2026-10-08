@@ -168,6 +168,7 @@ call LspOptionsSet(#{
         \   completionKinds: {},
         \   filterCompletionDuplicates: v:false,
         \   condensedCompletionMenu: v:false,
+        \   completionLabelMaxWidth: 0,
         \   documentationFormat: ['markdown', 'plaintext'],
 	\ })
 ```
@@ -206,6 +207,8 @@ Command|Description
 `:LspDiag prev`|Jump to the previous diagnostic message before the current position.
 `:LspDiag prevWrap`|Jump to the previous diagnostic message before the current position, wrapping to the last message when the first message is reached.
 `:LspDiag show`|Display the diagnostics messages from the language server for the current buffer in a new location list.
+`:LspDocumentLink`|Display the links (e.g. include files and URLs) in the current file in a new location list.
+`:LspDocumentLinkOpen`|Open the target of the link under cursor: a file in Vim, any other URI with the system handler.
 `:LspDocumentSymbol`|Display the symbols in the current file in a popup menu and jump to the selected symbol.
 `:LspFold`|Fold the current file.
 `:LspFormat`|Format a range of lines in the current file using the language server. The **shiftwidth** and **expandtab** values set for the current buffer are used when format is applied.  The default range is the entire file.

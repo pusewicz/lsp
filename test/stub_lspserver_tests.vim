@@ -8,9 +8,11 @@ import '../autoload/lsp/signature.vim' as signature
 import '../autoload/lsp/completion.vim' as completion
 import '../autoload/lsp/handlers.vim' as handlers
 import '../autoload/lsp/diag.vim' as diag
+import '../autoload/lsp/symbol.vim' as symbol
 import '../autoload/lsp/util.vim' as util
 import '../autoload/lsp/buffer.vim' as buf
 import '../autoload/lsp/ontypeformat.vim' as ontypeformat
+import '../autoload/lsp/textedit.vim' as textedit
 
 def CaptureNotification(notifications: list<dict<any>>, method: string,
 			params: any = {}): void
@@ -459,6 +461,203 @@ def g:Test_ProcessNotif_PublishDiagnostics_NotIgnoredForPullCapableServer()
   :%bw!
 enddef
 
+# Define stub ALE "other source" functions that record their calls in
+# g:LspTestAleCalls, and send the diagnostics to them.  Returns the directory
+# to pass to RemoveAleStub().
+def InstallAleStub(): string
+  var root = tempname()
+  mkdir($'{root}/autoload/ale', 'p')
+  var fname = $'{root}/autoload/ale/other_source.vim'
+  writefile([
+    'function ale#other_source#StartChecking(buffer, linter_name) abort',
+    '  call add(g:LspTestAleCalls, ["start", a:buffer, a:linter_name])',
+    'endfunction',
+    'function ale#other_source#ShowResults(buffer, linter_name, loclist) abort',
+    '  call add(g:LspTestAleCalls,',
+    '        \ ["show", a:buffer, a:linter_name, map(copy(a:loclist), "v:val.text")])',
+    'endfunction'
+  ], fname)
+  execute 'source' fnameescape(fname)
+  g:LspTestAleCalls = []
+  g:LspOptionsSet({aleSupport: true, autoHighlightDiags: false})
+  return root
+enddef
+
+# Remove the stub ALE functions defined by InstallAleStub() and restore the
+# default diagnostics options.
+def RemoveAleStub(root: string)
+  g:LspOptionsSet({aleSupport: false, autoHighlightDiags: true})
+  unlet g:LspTestAleCalls
+  delfunction ale#other_source#StartChecking
+  delfunction ale#other_source#ShowResults
+  delete(root, 'rf')
+enddef
+
+# Return a test language server named "name" that accepts diagnostics.
+def MakeDiagServer(name: string): dict<any>
+  var lspserver = MakeTestLspServer([])
+  lspserver.name = name
+  lspserver.features = {diagnostics: true}
+  lspserver.featureEnabled = (_) => true
+  return lspserver
+enddef
+
+# Return a diagnostic with "message" at the start of line "lnum" (0-based).
+def MakeLineDiag(lnum: number, message: string): dict<any>
+  return {
+    range: {
+      start: {line: lnum, character: 0},
+      end: {line: lnum, character: 1}
+    },
+    severity: 1,
+    message: message
+  }
+enddef
+
+# Return the most recent diagnostic texts sent to the stub ALE for each
+# linter name.
+def AleResultsByLinter(): dict<list<string>>
+  var results: dict<list<string>> = {}
+  for call in g:LspTestAleCalls
+    if call[0] == 'show'
+      results[call[2]] = call[3]
+    endif
+  endfor
+  return results
+enddef
+
+# Each language server's diagnostics are sent to ALE under the server name,
+# and are cleared when the buffer is detached from the servers.
+def g:Test_AleSupport_DiagsSentPerServer()
+  var aleStub = InstallAleStub()
+  silent! edit XAleSupportPerServer.c
+  setline(1, ['int a;', 'int b;'])
+  var bnr = bufnr()
+  var uri = util.LspBufnrToUri(bnr)
+  var clangd = MakeDiagServer('clangd')
+  var tidy = MakeDiagServer('tidy')
+  var quiet = MakeDiagServer('quiet')
+  buf.BufLspServerSet(bnr, clangd)
+  buf.BufLspServerSet(bnr, tidy)
+  buf.BufLspServerSet(bnr, quiet)
+
+  diag.DiagNotification(clangd, uri, [MakeLineDiag(0, 'clangd diag')], 'push')
+  diag.DiagNotification(tidy, uri, [MakeLineDiag(1, 'tidy diag')], 'push')
+  assert_equal({clangd: ['clangd diag'], tidy: ['tidy diag'], quiet: []},
+	       AleResultsByLinter())
+
+  g:LspTestAleCalls = []
+  g:ale_buffer_info = {[bnr]: {}}
+  lsp.RemoveFile(bnr)
+  assert_equal({clangd: [], tidy: [], quiet: []}, AleResultsByLinter())
+
+  unlet g:ale_buffer_info
+  RemoveAleStub(aleStub)
+  :%bw!
+enddef
+
+# The diagnostics of a buffer that ALE no longer tracks (it drops a deleted
+# buffer before the buffer is detached from the servers) are not cleared in
+# ALE, which would make ALE track the buffer again.
+def g:Test_AleSupport_DeletedBufferNotSentToAle()
+  var aleStub = InstallAleStub()
+  silent! edit XAleSupportDeleted.c
+  setline(1, ['int a;'])
+  var bnr = bufnr()
+  var clangd = MakeDiagServer('clangd')
+  buf.BufLspServerSet(bnr, clangd)
+  diag.DiagNotification(clangd, util.LspBufnrToUri(bnr),
+			[MakeLineDiag(0, 'clangd diag')], 'push')
+
+  g:LspTestAleCalls = []
+  lsp.RemoveFile(bnr)
+  assert_equal([], g:LspTestAleCalls)
+
+  RemoveAleStub(aleStub)
+  :%bw!
+enddef
+
+# When ALE asks for results, a check is started for every attached server
+# name, and the results of servers sharing a name are sent together.  A
+# buffer without a language server is not checked.
+def g:Test_AleSupport_AleHookChecksEveryServer()
+  var aleStub = InstallAleStub()
+  silent! edit XAleSupportNoServer.txt
+  var noServerBnr = bufnr()
+  silent! edit XAleSupportHook.rb
+  setline(1, ['a = 1', 'b = 2'])
+  var bnr = bufnr()
+  var uri = util.LspBufnrToUri(bnr)
+  var rubyLsp = MakeDiagServer('ruby-lsp')
+  var rubyLspTwin = MakeDiagServer('ruby-lsp')
+  var steep = MakeDiagServer('steep')
+  buf.BufLspServerSet(bnr, rubyLsp)
+  buf.BufLspServerSet(bnr, rubyLspTwin)
+  buf.BufLspServerSet(bnr, steep)
+  diag.DiagNotification(rubyLsp, uri, [MakeLineDiag(0, 'first')], 'push')
+  diag.DiagNotification(rubyLspTwin, uri, [MakeLineDiag(1, 'second')], 'push')
+
+  g:LspTestAleCalls = []
+  diag.AleHook(noServerBnr)
+  diag.AleHook(bnr)
+  assert_equal([['start', bnr, 'ruby-lsp'], ['start', bnr, 'steep']],
+	       g:LspTestAleCalls)
+  g:WaitForAssert(() => assert_equal({'ruby-lsp': ['first', 'second'],
+				      steep: []}, AleResultsByLinter()))
+  assert_equal(4, g:LspTestAleCalls->len())
+
+  diag.DiagRemoveFile(bnr)
+  buf.BufLspServerRemove(bnr, rubyLsp)
+  buf.BufLspServerRemove(bnr, rubyLspTwin)
+  buf.BufLspServerRemove(bnr, steep)
+  RemoveAleStub(aleStub)
+  :%bw!
+enddef
+
+# In insert mode, diagnostics are sent to ALE only when ALE lints while text
+# is changed in insert mode ("g:ale_lint_on_text_changed").
+def g:Test_AleSupport_InsertModeFollowsAleLintOnTextChanged()
+  var aleStub = InstallAleStub()
+  silent! edit XAleSupportInsertMode.c
+  setline(1, ['int a;'])
+  var bnr = bufnr()
+  var clangd = MakeDiagServer('clangd')
+  buf.BufLspServerSet(bnr, clangd)
+  var uri = util.LspBufnrToUri(bnr)
+  g:LspTestPublishDiags = () => {
+    diag.DiagNotification(clangd, uri, [MakeLineDiag(0, 'clangd diag')],
+			  'push')
+  }
+
+  var cases: list<list<any>> = [
+    ['never', false], ['normal', false], [0, false], ['0', false],
+    [false, false], ['insert', true], ['Insert', true], ['always', true],
+    ['ALWAYS', true], [1, true], ['1', true], [true, true]
+  ]
+  for [lintOnTextChanged, sent] in cases
+    g:ale_lint_on_text_changed = lintOnTextChanged
+    g:LspTestAleCalls = []
+    feedkeys("i\<Cmd>call g:LspTestPublishDiags()\<CR>\<Esc>", 'xt')
+    assert_equal(sent, !g:LspTestAleCalls->empty(),
+		 $'g:ale_lint_on_text_changed = {string(lintOnTextChanged)}')
+  endfor
+
+  unlet g:ale_lint_on_text_changed
+  g:LspTestAleCalls = []
+  feedkeys("i\<Cmd>call g:LspTestPublishDiags()\<CR>\<Esc>", 'xt')
+  assert_equal([], g:LspTestAleCalls)
+
+  # Outside insert mode the diagnostics are always sent.
+  g:LspTestPublishDiags()
+  assert_equal({clangd: ['clangd diag']}, AleResultsByLinter())
+
+  unlet g:LspTestPublishDiags
+  diag.DiagRemoveFile(bnr)
+  buf.BufLspServerRemove(bnr, clangd)
+  RemoveAleStub(aleStub)
+  :%bw!
+enddef
+
 def g:Test_ProcessMessages_InvalidRequest_NonStringMethod_WithId()
   var lspserver = MakeTestLspServer([])
   var outMessages: list<dict<any>> = []
@@ -834,6 +1033,37 @@ def g:Test_ProcessShowMessageRequest_ValidMessage()
   assert_equal(1, responses->len())
   assert_equal(null, responses[0].result)
   assert_equal(1, responses[0].error->empty())
+enddef
+
+# Test that the location list items built from LSP locations span the whole
+# range, for ranges with multibyte and composing characters, ranges ending on a
+# later line and locations in a file that is not loaded in a buffer.
+def g:Test_ShowLocations_SetsEndPosition()
+  var fname = 'XShowLocationsEnd.txt'
+  writefile(["a\u0301b\u0301a\u0301b\u0301 \U0001F60A\U0001F60A tail", 'next'],
+	    fname)
+  var uri = util.LspFileToUri(fname)
+  var locations = [
+	{uri: uri, range: {start: {line: 0, character: 0},
+			   end: {line: 0, character: 8}}},
+	{uri: uri, range: {start: {line: 0, character: 9},
+			   end: {line: 0, character: 11}}},
+	{targetUri: uri,
+	 targetRange: {start: {line: 0, character: 0},
+		       end: {line: 1, character: 4}},
+	 targetSelectionRange: {start: {line: 0, character: 12},
+				end: {line: 1, character: 4}}}
+  ]
+  assert_false(fname->bufloaded())
+  try
+    symbol.ShowLocations({}, locations, false, 'Locations')
+    assert_equal([[1, 1, 1, 13], [1, 14, 1, 22], [1, 23, 2, 5]],
+		 getloclist(0)->mapnew((_, v) => [v.lnum, v.col, v.end_lnum, v.end_col]))
+  finally
+    :lclose
+    setloclist(0, [], 'f')
+    delete(fname)
+  endtry
 enddef
 
 def g:Test_CodeActionMenu_ServerLabelOnlyForDuplicateTitles()
@@ -1603,7 +1833,7 @@ def g:Test_TextdocDidChange_IncrementalSync_NoEolAnchorsToLastLineEnd()
   silent! edit XIncrementalNoEol.txt
   var oldLines = ['abc', 'def', 'ghi']
   setline(1, oldLines)
-  setlocal noeol
+  setlocal noeol nofixeol
 
   var notifications: list<dict<any>> = []
   var lspserver = MakeTestLspServer(notifications)
@@ -1621,6 +1851,190 @@ def g:Test_TextdocDidChange_IncrementalSync_NoEolAnchorsToLastLineEnd()
   assert_equal('', changes[0].text)
 
   g:LspOptionsSet({incrementalSync: false})
+  :%bw!
+enddef
+
+# Without a trailing newline, a hunk whose new text is a single empty last
+# line still adds a line break, so it must not be sent as an empty change.
+def g:Test_TextdocDidChange_IncrementalSync_NoEolEmptyLastLine()
+  if !exists('*diff')
+    return
+  endif
+  g:LspOptionsSet({incrementalSync: true})
+  silent! edit XIncrementalNoEolEmptyLine.txt
+  setline(1, ['abc', 'def'])
+  setlocal noeol nofixeol
+
+  var notifications: list<dict<any>> = []
+  var lspserver = MakeTestLspServer(notifications)
+  var bnr = bufnr()
+  lspserver.cachedBufferContent[bnr] = ['abc', 'def']
+  lspserver.cachedBufferEol[bnr] = false
+
+  append('$', '')
+  lspserver.textdocDidChange(bnr)
+  assert_equal([{range: {start: {line: 1, character: 3},
+			 end: {line: 1, character: 3}},
+		 text: "\n"}],
+	       notifications[-1].params.contentChanges)
+
+  :$d
+  setline(2, '')
+  lspserver.cachedBufferContent[bnr] = ['abc', 'def']
+  lspserver.textdocDidChange(bnr)
+  assert_equal([{range: {start: {line: 0, character: 3},
+			 end: {line: 1, character: 3}},
+		 text: "\n"}],
+	       notifications[-1].params.contentChanges)
+
+  g:LspOptionsSet({incrementalSync: false})
+  :%bw!
+enddef
+
+# The document sent to the server ends with a newline exactly when Vim ends
+# the written file with one: 'endofline' is set, or 'fixendofline' is set and
+# 'binary' is not.
+def g:Test_TextdocDidOpen_TrailingNewlineFollowsWriteRule()
+  silent! edit XDidOpenTrailingNewline.txt
+  setline(1, ['abc', 'def'])
+  var bnr = bufnr()
+  var cases: list<list<any>> = [
+    ['noeol fixeol nobinary', true],
+    ['noeol nofixeol nobinary', false],
+    ['noeol fixeol binary', false],
+    ['eol nofixeol binary', true],
+  ]
+  for [opts, hasEol] in cases
+    exe $'setlocal {opts}'
+    var notifications: list<dict<any>> = []
+    var lspserver = MakeTestLspServer(notifications)
+    lspserver.supportsDidOpenClose = true
+    lspserver.textdocDidOpen(bnr, 'text')
+    assert_equal(hasEol ? "abc\ndef\n" : "abc\ndef",
+		 notifications[0].params.textDocument.text, opts)
+    assert_equal(hasEol, lspserver.cachedBufferEol[bnr], opts)
+  endfor
+
+  :%bw!
+enddef
+
+def g:Test_TextdocDidChange_FullSync_TrailingNewlineFollowsWriteRule()
+  silent! edit XFullSyncTrailingNewline.txt
+  setline(1, ['abc', 'def'])
+  setlocal noeol fixeol nobinary
+
+  var notifications: list<dict<any>> = []
+  var lspserver = MakeTestLspServer(notifications)
+  lspserver.textDocumentSync = 1
+  var bnr = bufnr()
+
+  lspserver.textdocDidChange(bnr)
+  assert_equal([{text: "abc\ndef\n"}], notifications[-1].params.contentChanges)
+
+  setlocal nofixeol
+  lspserver.textdocDidChange(bnr)
+  assert_equal([{text: "abc\ndef"}], notifications[-1].params.contentChanges)
+
+  :%bw!
+enddef
+
+# A buffer read from a file without a trailing newline is still written with
+# one when 'fixendofline' is set, so a line appended after the last one comes
+# after that newline in the server's document.
+def g:Test_TextdocDidChange_IncrementalSync_FixEolAppendLine()
+  if !exists('*diff')
+    return
+  endif
+  g:LspOptionsSet({incrementalSync: true})
+  silent! edit XIncrementalFixEol.txt
+  setline(1, ['abc', 'def'])
+  setlocal noeol fixeol nobinary
+
+  var notifications: list<dict<any>> = []
+  var lspserver = MakeTestLspServer(notifications)
+  lspserver.supportsDidOpenClose = true
+  var bnr = bufnr()
+  lspserver.textdocDidOpen(bnr, 'text')
+  assert_equal("abc\ndef\n", notifications[-1].params.textDocument.text)
+
+  append('$', '')
+  lspserver.textdocDidChange(bnr)
+  assert_equal([{range: {start: {line: 2, character: 0},
+			 end: {line: 2, character: 0}},
+		 text: "\n"}],
+	       notifications[-1].params.contentChanges)
+
+  g:LspOptionsSet({incrementalSync: false})
+  :%bw!
+enddef
+
+# Changing 'fixendofline' or 'binary' changes whether the document ends with
+# a newline without changing any line, so the next change resends the full
+# text instead of a diff against the cached document.
+def g:Test_TextdocDidChange_IncrementalSync_WriteRuleToggleSendsFullText()
+  if !exists('*diff')
+    return
+  endif
+  g:LspOptionsSet({incrementalSync: true})
+  silent! edit XIncrementalEolToggle.txt
+  setline(1, ['abc', 'def'])
+  setlocal noeol fixeol nobinary
+
+  var notifications: list<dict<any>> = []
+  var lspserver = MakeTestLspServer(notifications)
+  var bnr = bufnr()
+  lspserver.textdocDidOpen(bnr, 'text')
+  assert_true(lspserver.cachedBufferEol[bnr])
+
+  setlocal binary
+  setline(1, 'xyz')
+  lspserver.textdocDidChange(bnr)
+  assert_equal([{text: "xyz\ndef"}], notifications[-1].params.contentChanges)
+  assert_false(lspserver.cachedBufferEol[bnr])
+
+  setlocal nobinary
+  setline(2, 'ghi')
+  lspserver.textdocDidChange(bnr)
+  assert_equal([{text: "xyz\nghi\n"}], notifications[-1].params.contentChanges)
+  assert_true(lspserver.cachedBufferEol[bnr])
+
+  setlocal nofixeol
+  setline(1, 'abc')
+  lspserver.textdocDidChange(bnr)
+  assert_equal([{text: "abc\nghi"}], notifications[-1].params.contentChanges)
+  assert_false(lspserver.cachedBufferEol[bnr])
+
+  g:LspOptionsSet({incrementalSync: false})
+  :%bw!
+enddef
+
+# Text edits are relative to the server's document, which ends with a newline
+# exactly when Vim writes one, so a range ending on the line after the last
+# one covers the whole last line.
+def g:Test_ApplyTextEdits_WholeDocumentFollowsWriteRule()
+  silent! edit XApplyTextEditsEol.txt
+  var bnr = bufnr()
+  var withEol = {range: {start: {line: 0, character: 0},
+			 end: {line: 2, character: 0}},
+		 newText: "xxx\nyyy\n"}
+  var withoutEol = {range: {start: {line: 0, character: 0},
+			    end: {line: 1, character: 3}},
+		    newText: "xxx\nyyy"}
+  var cases: list<list<any>> = [
+    ['noeol fixeol nobinary', withEol],
+    ['eol nofixeol nobinary', withEol],
+    ['eol fixeol binary', withEol],
+    ['noeol nofixeol nobinary', withoutEol],
+    ['noeol fixeol binary', withoutEol],
+  ]
+  for [opts, edit] in cases
+    :%d
+    setline(1, ['aaa', 'bbb'])
+    exe $'setlocal {opts}'
+    textedit.ApplyTextEdits(bnr, [edit])
+    assert_equal(['xxx', 'yyy'], getline(1, '$'), opts)
+  endfor
+
   :%bw!
 enddef
 
@@ -1651,6 +2065,124 @@ def g:Test_GetCompletion_IgnoresSupersededReply()
   assert_false(lspserver.omniCompletePending)
   assert_equal(['latest'], lspserver.completeItems->mapnew((_, v) => v.word))
   :%bw!
+enddef
+
+# Returns a stub language server that replies to "textDocument/documentLink"
+# with "links" and to "documentLink/resolve" with "resolved".  The server is a
+# resolve provider only if "resolved" is not empty.  The requests sent to the
+# server are added to "requests".
+def MakeDocumentLinkServer(links: list<dict<any>>, resolved: dict<any>,
+			   requests: list<dict<any>>): dict<any>
+  var lspserver = MakeTestLspServer([])
+  lspserver.running = true
+  lspserver.ready = true
+  lspserver.isDocumentLinkProvider = true
+  lspserver.isDocumentLinkResolveProvider = !resolved->empty()
+  lspserver.rpc = (method: string, params: any): dict<any> => {
+    requests->add({method: method, params: params->deepcopy()})
+    var result: any = method == 'documentLink/resolve' ? resolved : links
+    return {result: result->deepcopy()}
+  }
+  return lspserver
+enddef
+
+# Test for listing document links with their targets and tooltips
+def g:Test_DocumentLink_ListsTargetsAndTooltips()
+  silent! edit XDocLinkList.txt
+  setline(1, ['first https://example.com/doc', 'second ref'])
+  var links = [
+    {range: {start: {line: 1, character: 7}, end: {line: 1, character: 10}},
+     tooltip: 'Go to ref'},
+    {range: {start: {line: 0, character: 6}, end: {line: 0, character: 29}},
+     target: 'https://example.com/doc', tooltip: 'Open docs'},
+    {range: {start: {line: 0, character: 0}, end: {line: 0, character: 5}}}
+  ]
+  var requests: list<dict<any>> = []
+  var srv = MakeDocumentLinkServer(links, {}, requests)
+  buf.BufLspServerSet(bufnr(), srv)
+
+  :LspDocumentLink
+  assert_equal([[1, 1, 6, '(unresolved)'],
+		[1, 7, 30, 'https://example.com/doc (Open docs)'],
+		[2, 8, 11, 'Go to ref']],
+	       getloclist(0)->mapnew((_, v) => [v.lnum, v.col, v.end_col, v.text]))
+  :lclose
+
+  # A link without a target is not resolved when the server is not a resolve
+  # provider
+  cursor(2, 9)
+  assert_equal('Warn: Document link target is not found',
+	       execute('LspDocumentLinkOpen')->split("\n")[0])
+  assert_equal(['textDocument/documentLink', 'textDocument/documentLink'],
+	       requests->mapnew((_, r) => r.method))
+
+  buf.BufLspServerRemove(bufnr(), srv)
+  :%bw!
+enddef
+
+# Test for resolving the target of the document link under the cursor and
+# opening the file at the position in the target fragment
+def g:Test_DocumentLinkOpen_ResolvesTarget()
+  writefile(['one', 'two', 'three'], 'XDocLinkTarget.txt')
+  silent! edit XDocLinkSource.txt
+  setline(1, ['see the target'])
+  setlocal nomodified
+  var srcBnr = bufnr()
+  var range = {start: {line: 0, character: 8}, end: {line: 0, character: 14}}
+  var target = $'{util.LspFileToUri("XDocLinkTarget.txt")}#L2,3'
+  var requests: list<dict<any>> = []
+  var srv = MakeDocumentLinkServer([{range: range, data: 42}],
+				   {range: range, target: target, data: 42},
+				   requests)
+  buf.BufLspServerSet(srcBnr, srv)
+
+  cursor(1, 14)
+  :LspDocumentLinkOpen
+  assert_equal(['textDocument/documentLink', 'documentLink/resolve'],
+	       requests->mapnew((_, r) => r.method))
+  assert_equal(42, requests[1].params.data)
+  assert_equal('XDocLinkTarget.txt', expand('%:t'))
+  assert_equal([2, 3], [line('.'), col('.')])
+
+  buf.BufLspServerRemove(srcBnr, srv)
+  :%bw!
+  delete('XDocLinkTarget.txt')
+enddef
+
+# Test for opening a document link target that is not a file with the opener
+# from the Vim runtime.  The target must reach the opener unchanged.
+def g:Test_DocumentLinkOpen_ExternalUri()
+  var vim9Lib = globpath(&runtimepath, 'autoload/dist/vim9.vim', false, true)
+  if !has('unix') || vim9Lib->empty()
+      || vim9Lib[0]->readfile()->match('^export def Open(') == -1
+    # The dist#vim9#Open() function is not available
+    return
+  endif
+
+  writefile(['#!/bin/sh', 'printf "%s" "$1" > XDocLinkOpened'],
+	    'XDocLinkOpener')
+  setfperm('XDocLinkOpener', 'rwx------')
+  g:Openprg = './XDocLinkOpener'
+  var uri = "https://example.com/doc?a=1&b='2'$(touch XDocLinkPwned)"
+  silent! edit XDocLinkExternal.txt
+  setline(1, ['docs'])
+  var range = {start: {line: 0, character: 0}, end: {line: 0, character: 4}}
+  var srv = MakeDocumentLinkServer([{range: range, target: uri}], {}, [])
+  buf.BufLspServerSet(bufnr(), srv)
+
+  try
+    :LspDocumentLinkOpen
+    g:WaitFor(() => filereadable('XDocLinkOpened')
+		      && readfile('XDocLinkOpened') == [uri])
+    assert_false(filereadable('XDocLinkPwned'))
+  finally
+    buf.BufLspServerRemove(bufnr(), srv)
+    :%bw!
+    unlet g:Openprg
+    delete('XDocLinkOpener')
+    delete('XDocLinkOpened')
+    delete('XDocLinkPwned')
+  endtry
 enddef
 
 # Only here to because the test runner needs it
