@@ -647,7 +647,8 @@ export def GetClientCaps(): dict<any>
       workspaceFolders: true,
       applyEdit: true,
       workspaceEdit: {
-	resourceOperations: ['rename', 'create', 'delete']
+	resourceOperations: ['rename', 'create', 'delete'],
+	failureHandling: 'abort'
       },
       configuration: true,
       symbol: {
