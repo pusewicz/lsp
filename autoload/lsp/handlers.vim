@@ -376,9 +376,6 @@ def ProcessShowMessageRequest(lspserver: dict<any>, req: dict<any>)
   endif
 enddef
 
-# process the client/registerCapability LSP server request
-# Request: "client/registerCapability"
-# Param: RegistrationParams
 # process the workspace/diagnostic/refresh LSP server request
 # Request: "workspace/diagnostic/refresh"
 # Param: none
