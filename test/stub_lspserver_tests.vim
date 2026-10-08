@@ -891,7 +891,6 @@ def g:Test_DiagVirtualTextMostSevere()
 		       ['below', ['└─', '└─', '└─']],
 		       ['after', ['E>', 'W>', 'I>']]]
     g:LspOptionsSet({diagVirtualTextAlign: align})
-    diag.DiagsRefresh(bnr)
     assert_equal([
 	[1, 'LspDiagVirtualTextError', $'{sym[0]} error on line 1', align],
 	[2, 'LspDiagVirtualTextWarning', $'{sym[1]} left warning on line 2',
@@ -1064,6 +1063,258 @@ def g:Test_CodeActionContext_MultiLineDiagnostic()
 		[]], sentDiags)
 
   ClearBufferDiagnostics()
+  :%bw!
+enddef
+
+# Return the [lnum, text, align, wrap] of the diagnostic virtual text placed in
+# the current buffer.
+def DiagVirtualTextLayout(): list<list<any>>
+  return prop_list(1, {end_lnum: line('$')})
+    ->filter((_, p) => p.type =~ '^LspDiagVirtualText')
+    ->mapnew((_, p) => [p.lnum, p.text, p->get('text_align', 'after'),
+			p->get('text_wrap', 'truncate')])
+enddef
+
+# Return the number of diagnostic signs placed in the current buffer.
+def DiagSignCount(): number
+  return sign_getplaced(bufnr(), {group: 'LSPDiag'})[0].signs->len()
+enddef
+
+# Changing the alignment or the wrapping of the diagnostic virtual text
+# re-places the virtual text without waiting for new diagnostics.
+def g:Test_DiagOptionsChanged_VirtualTextAlignAndWrap()
+  if !has('patch-9.0.1157')
+    # Doesn't support virtual text
+    return
+  endif
+  DiagInitOnce()
+  silent! edit XDiagOptionsVirtualText.txt
+  setline(1, ['int alpha;', 'int beta;'])
+  var bnr = bufnr()
+  g:LspOptionsSet({showDiagWithVirtualText: true})
+  var diags = [MakeDiag(0, 4, 1, 'error'), MakeDiag(1, 4, 2, 'warning')]
+  diag.DiagNotification(MakeDiagServer('srv'), util.LspBufnrToUri(bnr), diags,
+			'push')
+  assert_equal([[1, '┌─ error', 'above', 'truncate'],
+		[2, '┌─ warning', 'above', 'truncate']], DiagVirtualTextLayout())
+
+  var steps: list<list<any>> = [
+    [{diagVirtualTextAlign: 'below'}, '└─', '└─', 'below', 'truncate'],
+    [{diagVirtualTextWrap: 'wrap'}, '└─', '└─', 'below', 'wrap'],
+    [{diagVirtualTextAlign: 'after'}, 'E>', 'W>', 'after', 'wrap'],
+    [{diagVirtualTextWrap: 'truncate'}, 'E>', 'W>', 'after', 'truncate'],
+    [{diagVirtualTextWrap: 'default'}, 'E>', 'W>', 'after', 'wrap'],
+    [{diagVirtualTextAlign: 'above'}, '┌─', '┌─', 'above', 'truncate']
+  ]
+  for [opts, errSym, warnSym, align, wrap] in steps
+    g:LspOptionsSet(opts)
+    assert_equal([[1, $'{errSym} error', align, wrap],
+		  [2, $'{warnSym} warning', align, wrap]],
+		 DiagVirtualTextLayout(), string(opts))
+  endfor
+
+  g:LspOptionsSet({showDiagWithVirtualText: false})
+  assert_equal([], DiagVirtualTextLayout())
+  diag.DiagRemoveFile(bnr)
+  :%bw!
+enddef
+
+# Return the [lnum, left padding] of the diagnostic virtual text placed in
+# buffer "bnr".
+def DiagVirtualTextPadding(bnr: number): list<list<number>>
+  return prop_list(1, {bufnr: bnr, end_lnum: -1})
+    ->filter((_, p) => p.type =~ '^LspDiagVirtualText')
+    ->mapnew((_, p) => [p.lnum, p->get('text_padding_left', 0)])
+enddef
+
+# The virtual text placed above or below a line in a buffer that is not the
+# current one is indented to the diagnostic column of that buffer's line,
+# with tabs expanded with that buffer's 'tabstop' and 'vartabstop'.
+def g:Test_DiagVirtualTextPadding_NonCurrentBuffer()
+  if !has('patch-9.0.1157')
+    # Doesn't support virtual text
+    return
+  endif
+  DiagInitOnce()
+  var saveHidden = &hidden
+  :set hidden
+  silent! edit XDiagPaddingTarget.txt
+  setline(1, ["\t\tint alpha;", "\t\t\tint beta;"])
+  :setlocal tabstop=4
+  var bnr = bufnr()
+  g:LspOptionsSet({showDiagWithVirtualText: true,
+		   diagVirtualTextAlign: 'below'})
+  var diags = [MakeDiag(0, 6, 1, 'error'), MakeDiag(1, 7, 2, 'warning')]
+  diag.DiagNotification(MakeDiagServer('srv'), util.LspBufnrToUri(bnr), diags,
+			'push')
+  assert_equal([[1, 12], [2, 16]], DiagVirtualTextPadding(bnr))
+
+  silent! edit XDiagPaddingCurrent.txt
+  setline(1, ['x'])
+  :setlocal tabstop=8
+  g:LspOptionsSet({diagVirtualTextAlign: 'above'})
+  assert_equal([[1, 12], [2, 16]], DiagVirtualTextPadding(bnr))
+
+  if has('vartabs')
+    setbufvar(bnr, '&vartabstop', '2,3')
+    g:LspOptionsSet({diagVirtualTextAlign: 'below'})
+    assert_equal([[1, 9], [2, 12]], DiagVirtualTextPadding(bnr))
+  endif
+
+  g:LspOptionsSet({showDiagWithVirtualText: false,
+		   diagVirtualTextAlign: 'above'})
+  diag.DiagRemoveFile(bnr)
+  &hidden = saveHidden
+  :%bw!
+enddef
+
+# Changing the diagnostic sign texts updates the placed signs and the symbols
+# of the virtual text placed after a line.
+def g:Test_DiagOptionsChanged_SignText()
+  DiagInitOnce()
+  silent! edit XDiagOptionsSignText.txt
+  setline(1, ['int alpha;', 'int beta;', 'int gamma;', 'int delta;'])
+  var bnr = bufnr()
+  var hasVirtualText: bool = has('patch-9.0.1157') == 1
+  g:LspOptionsSet({showDiagWithVirtualText: hasVirtualText,
+		   diagVirtualTextAlign: 'after'})
+  var diags = [MakeDiag(0, 4, 1, 'error'), MakeDiag(1, 4, 2, 'warning'),
+	       MakeDiag(2, 4, 3, 'info'), MakeDiag(3, 4, 4, 'hint')]
+  diag.DiagNotification(MakeDiagServer('srv'), util.LspBufnrToUri(bnr), diags,
+			'push')
+
+  g:LspOptionsSet({diagSignErrorText: 'e!', diagSignWarningText: 'w!',
+		   diagSignInfoText: 'i!', diagSignHintText: 'h!'})
+  assert_equal(['e!', 'w!', 'i!', 'h!'],
+	       ['LspDiagError', 'LspDiagWarning', 'LspDiagInfo', 'LspDiagHint']
+		 ->mapnew((_, name) => sign_getdefined(name)[0].text))
+  assert_equal(4, DiagSignCount())
+  if hasVirtualText
+    assert_equal(['e! error', 'w! warning', 'i! info', 'h! hint'],
+		 DiagVirtualTextLayout()->mapnew((_, v) => v[1]))
+  endif
+
+  g:LspOptionsSet({diagSignErrorText: 'E>', diagSignWarningText: 'W>',
+		   diagSignInfoText: 'I>', diagSignHintText: 'H>',
+		   showDiagWithVirtualText: false,
+		   diagVirtualTextAlign: 'above'})
+  assert_equal('E>', sign_getdefined('LspDiagError')[0].text)
+  diag.DiagRemoveFile(bnr)
+  :%bw!
+enddef
+
+# Turning a diagnostics display option off removes what it placed, and turning
+# it on places it, without waiting for new diagnostics.
+def g:Test_DiagOptionsChanged_ShowAndHide()
+  DiagInitOnce()
+  silent! edit XDiagOptionsShowAndHide.txt
+  setline(1, ['int alpha;', 'int beta;'])
+  var bnr = bufnr()
+  var diags = [MakeDiag(0, 4, 1, 'error'), MakeDiag(1, 4, 2, 'warning')]
+  diag.DiagNotification(MakeDiagServer('srv'), util.LspBufnrToUri(bnr), diags,
+			'push')
+  assert_equal(2, DiagSignCount())
+  assert_equal(2, PropCount('^LspDiagInline'))
+
+  g:LspOptionsSet({showDiagWithSign: false})
+  assert_equal(0, DiagSignCount())
+  g:LspOptionsSet({showDiagWithSign: true})
+  assert_equal(2, DiagSignCount())
+
+  g:LspOptionsSet({highlightDiagInline: false})
+  assert_equal(0, PropCount('^LspDiagInline'))
+  g:LspOptionsSet({highlightDiagInline: true})
+  assert_equal(2, PropCount('^LspDiagInline'))
+
+  if has('patch-9.0.1157')
+    g:LspOptionsSet({showDiagWithVirtualText: true})
+    assert_equal(2, PropCount('^LspDiagVirtualText'))
+    g:LspOptionsSet({showDiagWithVirtualText: false})
+    assert_equal(0, PropCount('^LspDiagVirtualText'))
+  endif
+
+  g:LspOptionsSet({autoHighlightDiags: false})
+  assert_equal([0, 0], [DiagSignCount(), PropCount('^LspDiag')])
+  g:LspOptionsSet({autoHighlightDiags: true})
+  assert_equal([2, 2], [DiagSignCount(), PropCount('^LspDiag')])
+
+  # Turning off the diagnostics highlighting and a feature at once
+  g:LspOptionsSet({autoHighlightDiags: false, showDiagWithSign: false})
+  assert_equal([0, 0], [DiagSignCount(), PropCount('^LspDiag')])
+  g:LspOptionsSet({autoHighlightDiags: true})
+  assert_equal([0, 2], [DiagSignCount(), PropCount('^LspDiag')])
+  g:LspOptionsSet({showDiagWithSign: true})
+  assert_equal(2, DiagSignCount())
+
+  # A number instead of a boolean value
+  g:LspOptionsSet({showDiagWithSign: 0})
+  assert_equal(0, DiagSignCount())
+  g:LspOptionsSet({showDiagWithSign: 1})
+  assert_equal(2, DiagSignCount())
+  g:LspOptionsSet({showDiagWithSign: true})
+  assert_equal(2, DiagSignCount())
+
+  # ":LspDiag highlight disable" and "enable", followed by option changes
+  diag.DiagsHighlightDisable()
+  assert_equal([0, 0], [DiagSignCount(), PropCount('^LspDiag')])
+  g:LspOptionsSet({autoHighlightDiags: true})
+  assert_equal([2, 2], [DiagSignCount(), PropCount('^LspDiag')])
+  g:LspOptionsSet({autoHighlightDiags: false})
+  diag.DiagsHighlightEnable()
+  assert_equal([2, 2], [DiagSignCount(), PropCount('^LspDiag')])
+
+  diag.DiagRemoveFile(bnr)
+  :%bw!
+enddef
+
+# Turning the diagnostic balloon or the diagnostic message on the status line
+# on or off applies to the buffers that already have a language server.
+def g:Test_DiagOptionsChanged_BalloonAndStatusLine()
+  DiagInitOnce()
+  var saveBalloonEval = &ballooneval
+  var saveBalloonEvalTerm = &balloonevalterm
+  :set noballooneval noballoonevalterm
+  g:LspOptionsSet({showDiagInBalloon: false})
+  silent! edit XDiagOptionsBalloon.txt
+  setline(1, ['int alpha;'])
+  var bnr = bufnr()
+  var srv = MakeDiagServer('srv')
+  buf.BufLspServerSet(bnr, srv)
+  diag.BufferInit(srv, bnr)
+  diag.DiagNotification(srv, util.LspBufnrToUri(bnr),
+			[MakeDiag(0, 4, 1, 'status line diag')], 'push')
+  var statusLineAcmd = $'#LspDiagStatusLine#CursorMoved#<buffer={bnr}>'
+
+  assert_equal('', &balloonexpr)
+  g:LspOptionsSet({showDiagInBalloon: true})
+  assert_equal('g:LspDiagExpr()', &balloonexpr)
+  assert_equal(has('balloon_eval'), &ballooneval ? 1 : 0)
+  assert_equal(has('balloon_eval_term'), &balloonevalterm ? 1 : 0)
+  g:LspOptionsSet({showDiagInBalloon: false})
+  assert_equal('', &balloonexpr)
+
+  assert_false(exists(statusLineAcmd))
+  g:LspOptionsSet({showDiagOnStatusLine: true})
+  assert_true(exists(statusLineAcmd))
+  assert_match('status line diag', execute('doautocmd <nomodeline> CursorMoved'))
+  # Initializing the buffer for another language server doesn't show the
+  # message twice
+  diag.BufferInit(srv, bnr)
+  assert_equal(1, autocmd_get({group: 'LspDiagStatusLine'})->len())
+  g:LspOptionsSet({showDiagOnStatusLine: false})
+  assert_false(exists(statusLineAcmd))
+  assert_notmatch('status line diag',
+		  execute('doautocmd <nomodeline> CursorMoved'))
+
+  # Detaching the buffer from the language servers removes the message
+  g:LspOptionsSet({showDiagOnStatusLine: true})
+  assert_true(exists(statusLineAcmd))
+  lsp.RemoveFile(bnr)
+  assert_false(exists(statusLineAcmd))
+
+  g:LspOptionsSet({showDiagInBalloon: true, showDiagOnStatusLine: false})
+  &ballooneval = saveBalloonEval
+  &balloonevalterm = saveBalloonEvalTerm
   :%bw!
 enddef
 
