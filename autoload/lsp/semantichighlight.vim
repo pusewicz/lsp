@@ -223,7 +223,10 @@ def SemanticHighlightCleanup(bnr: number)
   setbufvar(bnr, 'LspSemanticResultId', '')
 enddef
 
-def SemanticHighlightBufUnload(bnr: number)
+# Stop the pending semantic highlight update for buffer "bnr" and drop its
+# cached semantic tokens.  Called when the buffer is detached from the
+# language server.
+export def BufferDeInit(bnr: number)
   StopSemanticHighlightTimer(bnr)
   SemanticHighlightCleanup(bnr)
 enddef
@@ -323,10 +326,6 @@ export def BufferInit(lspserver: dict<any>, bnr: number)
 	      event: 'TextChanged',
 	      group: 'LSPBufferAutocmds',
 	      cmd: $'LspUpdateSemanticHighlight({bnr})'})
-  acmds->add({bufnr: bnr,
-	      event: 'BufUnload',
-	      group: 'LSPBufferAutocmds',
-        cmd: $'SemanticHighlightBufUnload({bnr})'})
 
   autocmd_add(acmds)
 enddef

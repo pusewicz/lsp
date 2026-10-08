@@ -3224,6 +3224,111 @@ def g:Test_LspDetached_Autocmd()
   augroup END
 enddef
 
+# Test that unloading a buffer (":bdelete", ":edit!") detaches it from the
+# language server and loading it again attaches it afresh, so that the server
+# keeps receiving the changes made in the buffer.  Hiding a buffer must keep it
+# attached.
+def g:Test_BufUnloadReattach()
+  var fname = 'XbufUnloadReattach.c'
+  var lines: list<string> =<< trim END
+    int main(void)
+    {
+      return 0;
+    }
+  END
+  writefile(lines, fname)
+  g:attachCount = 0
+  g:detachCount = 0
+  augroup TestBufUnloadReattach
+    autocmd!
+    autocmd User LspAttached g:attachCount += 1
+    autocmd User LspDetached g:detachCount += 1
+  augroup END
+
+  try
+    exe $'silent! edit {fname}'
+    var bnr = bufnr()
+    g:WaitForServerFileLoad(0)
+    assert_equal(1, g:attachCount)
+
+    :setlocal bufhidden=hide
+    :enew
+    assert_true(bufloaded(bnr))
+    assert_equal(1, buf.BufLspServersGet(bnr)->len())
+    assert_equal(0, g:detachCount)
+
+    exe $'bdelete! {bnr}'
+    assert_equal(0, buf.BufLspServersGet(bnr)->len())
+    assert_equal(1, g:detachCount)
+
+    exe $'silent! edit {fname}'
+    assert_equal(bnr, bufnr())
+    assert_equal(2, g:attachCount)
+    setline(3, '  return undeclared;')
+    :redraw!
+    g:WaitForDiags(1)
+    setline(3, '  return 0;')
+    :redraw!
+    g:WaitForDiags(0)
+    assert_equal(1, getbufvar(bnr, 'LspListenerIds', [])->len())
+
+    :edit!
+    assert_equal(2, g:detachCount)
+    assert_equal(3, g:attachCount)
+    setline(3, '  return undeclared;')
+    :redraw!
+    g:WaitForDiags(1)
+    assert_equal(1, getbufvar(bnr, 'LspListenerIds', [])->len())
+  finally
+    :%bw!
+    delete(fname)
+    augroup TestBufUnloadReattach
+      autocmd!
+    augroup END
+    unlet! g:attachCount g:detachCount
+  endtry
+enddef
+
+# Test that unloading a buffer attached while it was not the current buffer
+# drops its deferred LspAttached autocmd, so that the autocmd fires only once
+# when the buffer is loaded again.
+def g:Test_BufUnloadDropsDeferredLspAttached()
+  var fname = 'XbufUnloadDeferredAttach.c'
+  writefile(['int main(void) { return 0; }'], fname)
+  exe $'silent! edit {fname}'
+  var bnr = bufnr()
+  g:WaitForServerFileLoad(0)
+  :setlocal bufhidden=hide
+  :enew
+
+  g:attachCount = 0
+  augroup TestBufUnloadDeferredAttach
+    autocmd!
+    autocmd User LspAttached g:attachCount += 1
+  augroup END
+
+  try
+    # Re-enabling LSP attaches the hidden buffer; LspAttached is deferred
+    # until the buffer is entered.
+    g:LspDisable()
+    g:LspEnable()
+    assert_equal(1, buf.BufLspServersGet(bnr)->len())
+    assert_equal(0, g:attachCount)
+
+    exe $'bdelete! {bnr}'
+    exe $'silent! edit {fname}'
+    assert_equal(bnr, bufnr())
+    assert_equal(1, g:attachCount)
+  finally
+    :%bw!
+    delete(fname)
+    augroup TestBufUnloadDeferredAttach
+      autocmd!
+    augroup END
+    unlet! g:attachCount
+  endtry
+enddef
+
 # TODO:
 # 1. Add a test for autocompletion with a single match while ignoring case.
 #    After the full matched name is typed, the completion popup should still
