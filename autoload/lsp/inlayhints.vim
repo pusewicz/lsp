@@ -186,6 +186,20 @@ export def BufferInit(lspserver: dict<any>, bnr: number)
   autocmd_add(acmds)
 enddef
 
+# Stop updating the inlay hints in buffer "bnr" and remove the buffer-local
+# inlay hint autocmds.  Called when the buffer is detached from the language
+# server.  The hints are refreshed once the buffer is attached again.
+export def BufferDeInit(bnr: number)
+  LspInlayHintsUpdateStop(bnr)
+  LspInlayHintsChanged(bnr)
+  if exists('#LspInlayHints')
+    autocmd_delete([{bufnr: bnr, group: 'LspInlayHints'}])
+  endif
+  if exists('#LspAttached')
+    autocmd_delete([{bufnr: bnr, group: 'LspAttached'}])
+  endif
+enddef
+
 # Track the current inlay hints enabled/disabled state.  Used when the
 # "showInlayHints" option value is changed.
 var save_showInlayHints = opt.lspOptions.showInlayHints

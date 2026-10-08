@@ -742,6 +742,19 @@ def AsyncRpcSupersede(lspserver: dict<any>, key: string, method: string,
   return id
 enddef
 
+# Cancel the pending requests about buffer "bnr" sent with AsyncRpcSupersede()
+# (their key ends with the buffer number), and ignore their replies.
+def CancelBufferRequests(lspserver: dict<any>, bnr: number)
+  for [key, req] in lspserver.supersedableRequests->items()
+    if key =~# $' {bnr}$'
+      lspserver.supersedableRequests->remove(key)
+      if req.id > 0
+	lspserver.cancelRequest(req.id)
+      endif
+    endif
+  endfor
+enddef
+
 # Returns true when the "lspserver" has "feature" enabled.
 # By default, all the features of a lsp server are enabled.
 def FeatureEnabled(lspserver: dict<any>, feature: string): bool
@@ -904,6 +917,9 @@ enddef
 def TextdocDidClose(lspserver: dict<any>, bnr: number): void
   # Notification: 'textDocument/didClose'
   # Params: DidCloseTextDocumentParams
+
+  # A reply about the closed document is of no use
+  CancelBufferRequests(lspserver, bnr)
 
   var params = {
     textDocument: {
