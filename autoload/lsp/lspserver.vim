@@ -22,6 +22,7 @@ import './hover.vim'
 import './signature.vim'
 import './codeaction.vim'
 import './codelens.vim'
+import './documentlink.vim'
 import './callhierarchy.vim' as callhier
 import './typehierarchy.vim' as typehier
 import './inlayhints.vim'
@@ -2266,6 +2267,85 @@ def ResolveCodeLens(lspserver: dict<any>, bnr: number,
   return codeLensItem
 enddef
 
+# Request: "textDocument/documentLink"
+# Param: DocumentLinkParams
+# Returns the links in buffer "bnr" with their ranges decoded.
+def GetDocumentLinks(lspserver: dict<any>, bnr: number): list<dict<any>>
+  var params = {textDocument: {uri: util.LspBufnrToUri(bnr)}}
+  var reply = lspserver.rpc('textDocument/documentLink', params)
+
+  # Result: DocumentLink[] | null
+  if reply->empty() || reply.result->empty()
+    return []
+  endif
+
+  var links: list<dict<any>> = reply.result
+  if lspserver.needOffsetEncoding
+    links->map((_, link) => {
+      lspserver.decodeRange(bnr, link.range)
+      return link
+    })
+  endif
+
+  return links
+enddef
+
+# Display the links in buffer "bnr" in a location or quickfix list.
+def ShowDocumentLinks(lspserver: dict<any>, bnr: number)
+  if !lspserver.isDocumentLinkProvider
+    util.ErrMsg('LSP server does not support document links')
+    return
+  endif
+
+  var links = GetDocumentLinks(lspserver, bnr)
+  if links->empty()
+    util.WarnMsg('No document links found')
+    return
+  endif
+
+  documentlink.ShowLinks(bnr, links)
+enddef
+
+# Open the target of the link under the cursor in the current buffer.  The
+# user specified window command modifiers (e.g. topleft) are in "cmdmods".
+def OpenDocumentLink(lspserver: dict<any>, cmdmods: string)
+  if !lspserver.isDocumentLinkProvider
+    util.ErrMsg('LSP server does not support document links')
+    return
+  endif
+
+  documentlink.OpenLinkAtCursor(lspserver,
+				GetDocumentLinks(lspserver, bufnr()), cmdmods)
+enddef
+
+# Request: "documentLink/resolve"
+# Param: DocumentLink
+# Returns the resolved copy of "link" in buffer "bnr", or an empty dict if the
+# link cannot be resolved.
+def ResolveDocumentLink(lspserver: dict<any>, bnr: number,
+			link: dict<any>): dict<any>
+  if !lspserver.isDocumentLinkResolveProvider
+    return {}
+  endif
+
+  var params: dict<any> = link->deepcopy()
+  if lspserver.needOffsetEncoding
+    lspserver.encodeRange(bnr, params.range)
+  endif
+
+  var reply = lspserver.rpc('documentLink/resolve', params)
+  if reply->empty() || reply.result->empty()
+    return {}
+  endif
+
+  var resolved: dict<any> = reply.result
+  if lspserver.needOffsetEncoding
+    lspserver.decodeRange(bnr, resolved.range)
+  endif
+
+  return resolved
+enddef
+
 # List project-wide symbols matching query string
 # Request: "workspace/symbol"
 # Param: WorkspaceSymbolParams
@@ -2773,6 +2853,9 @@ export def NewLspServer(serverParams: dict<any>): dict<any>
     codeLens: function(CodeLens, [lspserver]),
     resolveCodeAction: function(ResolveCodeAction, [lspserver]),
     resolveCodeLens: function(ResolveCodeLens, [lspserver]),
+    showDocumentLinks: function(ShowDocumentLinks, [lspserver]),
+    openDocumentLink: function(OpenDocumentLink, [lspserver]),
+    resolveDocumentLink: function(ResolveDocumentLink, [lspserver]),
     workspaceQuery: function(WorkspaceQuerySymbols, [lspserver]),
     addWorkspaceFolder: function(AddWorkspaceFolder, [lspserver]),
     removeWorkspaceFolder: function(RemoveWorkspaceFolder, [lspserver]),

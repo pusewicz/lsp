@@ -2887,6 +2887,81 @@ def g:Test_DocumentSymbol()
   :%bw!
 enddef
 
+# Test for :LspDocumentLink and :LspDocumentLinkOpen
+def g:Test_LspDocumentLink()
+  writefile(['int xdoclink_one;', 'int xdoclink_two;'], 'Xdoclink.h')
+  writefile(['#include "Xdoclink.h"', 'int xdoclink_three;'], 'Xdoclink.c')
+  :silent! edit Xdoclink.c
+  sleep 200m
+  g:WaitForServerFileLoad(0)
+  setlocal nomodified
+  var bnr: number = bufnr()
+
+  # Links are shown in a location list by default
+  :LspDocumentLink
+  assert_equal('quickfix', getwinvar(winnr('$'), '&buftype'))
+  assert_equal('Document Links', getloclist(0, {title: 0}).title)
+  var loclist: list<dict<any>> = getloclist(0)
+  assert_equal(1, loclist->len())
+  assert_equal([bnr, 1, 10, 1, 22, 'Xdoclink.h'],
+	       [loclist[0].bufnr, loclist[0].lnum, loclist[0].col,
+		loclist[0].end_lnum, loclist[0].end_col, loclist[0].text])
+  :lclose
+
+  g:LspOptionsSet({useQuickfixForLocations: true})
+  :LspDocumentLink
+  assert_equal('quickfix', getwinvar(winnr('$'), '&buftype'))
+  var qfl: list<dict<any>> = getqflist()
+  assert_equal(1, qfl->len())
+  assert_equal([bnr, 1, 10], [qfl[0].bufnr, qfl[0].lnum, qfl[0].col])
+  :cclose
+  g:LspOptionsSet({useQuickfixForLocations: false})
+
+  g:LspOptionsSet({keepFocusInReferences: false})
+  :LspDocumentLink
+  assert_equal('', &buftype)
+  :lclose
+  g:LspOptionsSet({keepFocusInReferences: true})
+
+  # No link on the cursor line
+  cursor(2, 1)
+  assert_equal('Warn: No document link found at the cursor position',
+	       execute('LspDocumentLinkOpen')->split("\n")[0])
+  assert_equal(bnr, bufnr())
+
+  # Open the link under the cursor and go back with the tag stack
+  cursor(1, 15)
+  var tagStackLen: number = gettagstack().length
+  :LspDocumentLinkOpen
+  assert_equal('Xdoclink.h', expand('%:t'))
+  assert_equal([1, 1], [line('.'), col('.')])
+  assert_equal(tagStackLen + 1, gettagstack().length)
+  exe "normal! \<C-T>"
+  assert_equal(bnr, bufnr())
+  assert_equal([1, 15], [line('.'), col('.')])
+
+  # With the cursor elsewhere on the line, open the link on the line
+  cursor(1, 1)
+  :vert LspDocumentLinkOpen
+  assert_equal(2, winnr('$'))
+  assert_equal('row', winlayout()[0])
+  assert_equal('Xdoclink.h', expand('%:t'))
+  :only
+
+  :%bw!
+  delete('Xdoclink.c')
+  delete('Xdoclink.h')
+
+  # file without an LSP server
+  edit a.raku
+  assert_equal('Error: Language server for "raku" file type supporting "documentLink" feature is not found',
+	       execute('LspDocumentLink')->split("\n")[0])
+  assert_equal('Error: Language server for "raku" file type supporting "documentLink" feature is not found',
+	       execute('LspDocumentLinkOpen')->split("\n")[0])
+
+  :%bw!
+enddef
+
 # Test that a synchronous request gets its reply when the reply arrives while
 # the channel callback handles other messages from the server.
 def g:Test_RpcReplyDuringNotifications()
