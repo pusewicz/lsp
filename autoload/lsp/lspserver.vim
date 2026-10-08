@@ -1318,9 +1318,9 @@ def SwitchSourceHeader(lspserver: dict<any>)
   if (&modified && !&hidden) || &buftype != ''
     # if the current buffer has unsaved changes and 'hidden' is not set,
     # or if the current buffer is a special buffer, then ask to save changes
-    exe $'confirm edit {fname}'
+    exe $'confirm edit {fname->fnameescape()}'
   else
-    exe $'edit {fname}'
+    exe $'edit {fname->fnameescape()}'
   endif
 enddef
 

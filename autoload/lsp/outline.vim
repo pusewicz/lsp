@@ -26,7 +26,7 @@ def OpenFileInWindow(fname: string)
       win_execute(symWinid, $'vertical resize {winsz}')
     endif
 
-    exe $'edit {fname}'
+    exe $'edit {fname->fnameescape()}'
   else
     # Window already exists, just switch focus
     wid->win_gotoid()
