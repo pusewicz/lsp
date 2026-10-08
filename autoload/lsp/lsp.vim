@@ -683,11 +683,12 @@ export def BufferInit(lspserverId: number, bnr: number): void
   endif
 
   # Delay feature-specific initialization until all attached servers are ready,
-  # so feature-provider selection uses finalized capabilities.
+  # so feature-provider selection uses finalized capabilities, and have the
+  # document open, so the features are initialized once, after that.
   var allServersReady = true
   var lspservers: list<dict<any>> = buf.BufLspServersGet(bnr)
   for lspsrv in lspservers
-    if !lspsrv.ready
+    if !lspsrv.ready || !lspsrv.docVersions->has_key(bnr)
       allServersReady = false
       break
     endif
@@ -716,7 +717,7 @@ export def BufferInit(lspserverId: number, bnr: number): void
 
       var semanticServer = buf.BufLspServerGet(bnr, 'semanticTokens')
       if !semanticServer->empty() && serverId == semanticServer.id
-	semantichighlight.BufferInit(lspserver, bnr)
+	semantichighlight.BufferInit(lspsrv, bnr)
       endif
 
       var onTypeFormatServer = buf.BufLspServerGet(bnr, 'documentOnTypeFormatting')

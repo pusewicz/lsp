@@ -150,6 +150,8 @@ export def BufferInit(lspserver: dict<any>, bnr: number)
     return
   endif
 
+  # Each autocmd replaces the one added when the buffer was attached to the
+  # language servers before.
   var acmds: list<dict<any>> = []
 
   # Update the inlay hints (if needed) when the cursor is not moved for some
@@ -157,22 +159,26 @@ export def BufferInit(lspserver: dict<any>, bnr: number)
   acmds->add({bufnr: bnr,
 		event: ['CursorHold'],
 		group: 'LspInlayHints',
+		replace: true,
 		cmd: $'LspInlayHintsUpdate({bnr})'})
   # After the text in the current buffer is modified, the inlay hints need to
   # be updated.
   acmds->add({bufnr: bnr,
 		event: ['TextChanged'],
 		group: 'LspInlayHints',
+		replace: true,
 		cmd: $'LspInlayHintsChanged({bnr})'})
   # Editing a file should trigger an inlay hint update.
   acmds->add({bufnr: bnr,
 		event: ['BufReadPost'],
 		group: 'LspInlayHints',
+		replace: true,
 		cmd: $'LspInlayHintsUpdateNow({bnr})'})
   # Inlay hints need not be updated if a buffer is no longer active.
   acmds->add({bufnr: bnr,
 		event: ['BufLeave'],
 		group: 'LspInlayHints',
+		replace: true,
 		cmd: $'LspInlayHintsUpdateStop({bnr})'})
 
   # Inlay hints maybe a bit delayed if it was a sync init lsp server.
@@ -180,6 +186,7 @@ export def BufferInit(lspserver: dict<any>, bnr: number)
     acmds->add({bufnr: bnr,
 		  event: ['User'],
 		  group: 'LspAttached',
+		  replace: true,
 		  cmd: $'LspInlayHintsUpdateNow({bnr})'})
   endif
 
