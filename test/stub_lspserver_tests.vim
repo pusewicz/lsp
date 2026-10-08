@@ -3823,10 +3823,10 @@ def g:Test_ApplyWorkspaceEdit_FileNameIsNotAPattern()
   endfor
 enddef
 
-# Returns a TextDocumentEdit inserting "text" at the start of the document
-# with URI "uri".
-def MakeInsertEdit(uri: string, text: string): dict<any>
-  return {textDocument: {uri: uri, version: v:null},
+# Returns a TextDocumentEdit inserting "text" at the start of version
+# "version" of the document with URI "uri".
+def MakeInsertEdit(uri: string, text: string, version: any = v:null): dict<any>
+  return {textDocument: {uri: uri, version: version},
 	  edits: [MakeTextEdit(0, 0, 0, 0, text)]}
 enddef
 
@@ -4339,6 +4339,90 @@ def g:Test_ApplyWorkspaceEdit_AbortsAtFailedChange()
     delete(existing)
     :%bwipe!
   endtry
+enddef
+
+# A text document edit for a version of a document that is open at the
+# language server is applied only when that is the version of the current
+# text, once the pending changes are sent.  Otherwise none of the changes of
+# the workspace edit is applied.  The versions are those of the documents
+# before the workspace edit.
+def g:Test_ApplyWorkspaceEdit_ChecksDocumentVersion()
+  var fname = 'XWorkspaceEdit+Version.txt'
+  var created = 'XWorkspaceEditVersionCreated.txt'
+  var other = 'XWorkspaceEditVersionOther.txt'
+  var uri = util.LspFileToUri(fname)
+  var notifications: list<dict<any>> = []
+  var lspserver = MakeTestLspServer(notifications)
+  silent! exe $'edit {fname}'
+  setline(1, ['one'])
+  var bnr = bufnr()
+  lspserver.textdocDidOpen(bnr, 'text')
+  var listenerId = listener_add((changedBnr, _, _, _, _) => {
+    lspserver.textdocDidChange(changedBnr)
+  }, bnr)
+  try
+    var version = lspserver.docVersions[bnr]
+    var edit = {documentChanges: [MakeInsertEdit(uri, 'a', version),
+				  MakeInsertEdit(uri, 'b', version)]}
+    assert_equal({applied: true}, textedit.ApplyWorkspaceEdit(edit, lspserver))
+    assert_equal(['baone'], getline(1, '$'))
+
+    edit = {documentChanges: [{kind: 'create', uri: util.LspFileToUri(created)},
+			      MakeInsertEdit(uri, 'c', version)]}
+    var result = textedit.ApplyWorkspaceEdit(edit, lspserver)
+    var current = lspserver.docVersions[bnr]
+    assert_true(current > version)
+    var reason = 'Text document edit failed, the edit is for version '
+      .. $'{version} of {fnamemodify(fname, ":p")}, which is at version {current}'
+    assert_equal({applied: false, failureReason: reason, failedChange: 1},
+		 result)
+    assert_equal($'Error: {reason}', LastMessage())
+    assert_false(filereadable(created))
+    assert_equal(['baone'], getline(1, '$'))
+
+    # A change that was not sent yet makes the version of the server stale.
+    # The document is found also by a URI that escapes fewer characters.
+    setline(1, 'two')
+    var unescapedUri = $'file://{fnamemodify(fname, ":p")}'
+    assert_notequal(uri, unescapedUri)
+    edit = {documentChanges: [MakeInsertEdit(unescapedUri, 'd', current)]}
+    assert_false(textedit.ApplyWorkspaceEdit(edit, lspserver).applied)
+    assert_equal(['two'], getline(1, '$'))
+    assert_equal('textDocument/didChange', notifications[-1].method)
+    assert_equal([{text: "two\n"}], notifications[-1].params.contentChanges)
+
+    # The version is not checked for an edit without one, for a document that
+    # is not open at the server or without a server.
+    edit = {documentChanges: [
+      MakeInsertEdit(uri, 'e'),
+      MakeInsertEdit(util.LspFileToUri(other), 'f', 1)
+    ]}
+    assert_equal({applied: true}, textedit.ApplyWorkspaceEdit(edit, lspserver))
+    assert_equal(['etwo'], getline(1, '$'))
+    assert_equal(['f'], getbufline(other, 1, '$'))
+    edit = {documentChanges: [MakeInsertEdit(uri, 'g', version)]}
+    assert_equal({applied: true}, textedit.ApplyWorkspaceEdit(edit))
+    assert_equal(['getwo'], getline(1, '$'))
+  finally
+    listener_remove(listenerId)
+    delete(created)
+    :%bwipe!
+  endtry
+enddef
+
+# The command of a code action is not run when the workspace edit of the code
+# action fails.
+def g:Test_CodeAction_SkipsCommandWhenEditFails()
+  var execCmds: list<string> = []
+  var lspserver = MakeCodeActionServer('test', [], execCmds)
+  var action = {title: 'Fix', edit: {documentChanges: [{kind: 'copy'}]},
+		command: {title: 'Fix', command: 'test.fix'}}
+  codeaction.HandleCodeAction(lspserver, action)
+  assert_equal([], execCmds)
+
+  action.edit = {documentChanges: []}
+  codeaction.HandleCodeAction(lspserver, action)
+  assert_equal(['test.fix'], execCmds)
 enddef
 
 # Returns a test language server that uses UTF-16 positions.

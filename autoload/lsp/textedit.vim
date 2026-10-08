@@ -486,25 +486,75 @@ def ApplyDocumentChange(lspserver: dict<any>, change: dict<any>): string
   return $'Unsupported change in workspace edit [{kind}]'
 enddef
 
+# Returns why "change", one of the "documentChanges" of a workspace edit from
+# language server "lspserver", is a text document edit for another text than
+# the current text of its document, or an empty string when it is not.  A
+# text document edit with a version is for that version of its document.
+# That can be checked only for a document that is open at the language
+# server: the version of its current text is then the version of the last
+# change sent to the server, once the pending changes are sent.
+def StaleTextDocumentEdit(lspserver: dict<any>, change: dict<any>): string
+  if lspserver->empty() || change->has_key('kind')
+    return ''
+  endif
+  var version: any = change.textDocument->get('version', null)
+  if version->type() != v:t_number
+    return ''
+  endif
+  # A server may escape a URI differently (gopls doesn't escape "+"), so the
+  # URI is also looked up as this plugin escapes it.
+  var uri: string = change.textDocument.uri
+  var fname: string = util.LspUriToFile(uri)
+  var docBufnrs: dict<number> = lspserver.docBufnrs
+  var bnr: number = docBufnrs->get(uri,
+				   docBufnrs->get(util.LspFileToUri(fname), -1))
+  if !bnr->bufloaded() || !lspserver.docVersions->has_key(bnr)
+    return ''
+  endif
+  bnr->listener_flush()
+  var current: number = lspserver.docVersions[bnr]
+  if version == current
+    return ''
+  endif
+  return $'Text document edit failed, the edit is for version {version} of '
+    .. $'{fname}, which is at version {current}'
+enddef
+
+# Reports that change "idx" of a workspace edit failed because of
+# "failureReason".  Returns the ApplyWorkspaceEditResult.
+def ChangeFailed(failureReason: string, idx: number): dict<any>
+  util.ErrMsg(failureReason)
+  return {applied: false, failureReason: failureReason, failedChange: idx}
+enddef
+
 # interface WorkspaceEdit
 # Apply the changes of workspace edit "workspaceEdit" from language server
 # "lspserver" in order, up to the first one that fails, which is reported (the
-# "abort" failure handling).  The positions of each text edit are decoded from
-# the position encoding of the language server right before it is applied,
-# for the text that the changes before it made.  Without a language server
-# the positions are taken to be character indexes.  Returns the
+# "abort" failure handling).  No change is applied when a text document edit
+# is for another version of its document than the current one.  The positions
+# of each text edit are decoded from the position encoding of the language
+# server right before it is applied, for the text that the changes before it
+# made.  Without a language server the versions are not checked and the
+# positions are taken to be character indexes.  Returns the
 # ApplyWorkspaceEditResult.
 export def ApplyWorkspaceEdit(workspaceEdit: dict<any>,
 			      lspserver: dict<any> = {}): dict<any>
   if workspaceEdit->has_key('documentChanges')
     var documentChanges: list<dict<any>> = workspaceEdit.documentChanges
+    # The version of a text document edit is that of its document before the
+    # workspace edit, which the changes before it can change.
+    for idx in documentChanges->len()->range()
+      var failureReason: string = StaleTextDocumentEdit(lspserver,
+							 documentChanges[idx])
+      if !failureReason->empty()
+	return ChangeFailed(failureReason, idx)
+      endif
+    endfor
     for idx in documentChanges->len()->range()
       var failureReason: string = ApplyDocumentChange(lspserver,
 						      documentChanges[idx])
       if !failureReason->empty()
-	util.ErrMsg(failureReason)
-	return {applied: false, failureReason: failureReason,
-		failedChange: idx}
+	return ChangeFailed(failureReason, idx)
       endif
     endfor
     return {applied: true}
