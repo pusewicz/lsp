@@ -2528,6 +2528,12 @@ trigger characters the language server designates (for example, clangd
 reindents the current line when you press <Enter>).  This option is disabled
 by default, since it edits the buffer while you are typing.
 
+Only a trigger character that you type in Insert mode reformats the code, not
+one that is already before the cursor (for example, after "cw") and not a
+newline started with "o".  Detecting a typed newline (<Enter> or CTRL-J)
+needs the |KeyInputPre| autocmd event, which was added in Vim 9.1.0563.  In
+older versions of Vim, the newline trigger character is ignored.
+
 ==============================================================================
 							*lsp-call-hierarchy*
 11. Call Hierarchy~
