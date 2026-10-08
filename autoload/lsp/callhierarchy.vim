@@ -118,29 +118,33 @@ def CallHierarchyTreeRefresh()
   :setlocal nomodifiable
 enddef
 
+# Number of the call hierarchy buffer
+var callHierBufnr: number = -1
+
 def CallHierarchyTreeShow(incoming: bool, prepareItem: dict<any>,
 			  items: list<dict<any>>)
   var save_bufnr = bufnr()
-  var wid = bufwinid('LSP-CallHierarchy')
+  var wid = callHierBufnr->bufwinid()
   if wid != -1
     wid->win_gotoid()
   else
-    :new LSP-CallHierarchy
-    :setlocal buftype=nofile
-    :setlocal bufhidden=wipe
-    :setlocal noswapfile
+    var bnr: number = util.ScratchWindowOpen(callHierBufnr,
+					     'LSP-CallHierarchy')
     :setlocal nonumber nornu
     :setlocal fdc=0 signcolumn=no
 
-    :nnoremap <buffer> <CR> <ScriptCmd>CallHierarchyItemJump()<CR>
-    :nnoremap <buffer> - <ScriptCmd>CallHierarchyTreeItemOpen()<CR>
-    :nnoremap <buffer> + <ScriptCmd>CallHierarchyTreeItemClose()<CR>
-    :command -buffer LspCallHierarchyRefresh CallHierarchyTreeRefreshCmd()
-    :command -buffer LspCallHierarchyIncoming CallHierarchyTreeIncomingCmd()
-    :command -buffer LspCallHierarchyOutgoing CallHierarchyTreeOutgoingCmd()
+    if bnr != callHierBufnr
+      callHierBufnr = bnr
+      :nnoremap <buffer> <CR> <ScriptCmd>CallHierarchyItemJump()<CR>
+      :nnoremap <buffer> - <ScriptCmd>CallHierarchyTreeItemOpen()<CR>
+      :nnoremap <buffer> + <ScriptCmd>CallHierarchyTreeItemClose()<CR>
+      :command -buffer LspCallHierarchyRefresh CallHierarchyTreeRefreshCmd()
+      :command -buffer LspCallHierarchyIncoming CallHierarchyTreeIncomingCmd()
+      :command -buffer LspCallHierarchyOutgoing CallHierarchyTreeOutgoingCmd()
 
-    :syntax match Comment '^#.*$'
-    :syntax match Directory '(.*)$'
+      :syntax match Comment '^#.*$'
+      :syntax match Directory '(.*)$'
+    endif
   endif
 
   w:LspBufnr = save_bufnr

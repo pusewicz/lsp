@@ -134,14 +134,21 @@ def HoverShowEmpty(isSilent: bool)
   endif
 enddef
 
-# Open (or reuse) the named preview window, clear its previous content, write
-# the new hover text, set the filetype for syntax highlighting, then return
-# focus to the originating window.
+# Number of the "LspHover" buffer shown in the preview window
+var hoverPreviewBufnr: number = -1
+
+# Open (or reuse) the "LspHover" preview window, clear its previous content,
+# write the new hover text, set the filetype for syntax highlighting, then
+# return focus to the originating window.
 def HoverShowInPreview(hoverText: list<any>, hoverKind: string, cmdmods: string)
-  execute $':silent! {cmdmods} pedit LspHover'
+  var bnr: number = hoverPreviewBufnr->bufloaded() ? hoverPreviewBufnr
+                                                   : bufadd('')
+  execute $':silent {cmdmods} pbuffer {bnr}'
   :wincmd P
-  :setlocal buftype=nofile
-  :setlocal bufhidden=delete
+  if bnr != hoverPreviewBufnr
+    hoverPreviewBufnr = bnr
+    util.ScratchBufferInit('LspHover')
+  endif
   bufnr()->deletebufline(1, '$')
   hoverText->append(0)
   [1, 1]->cursor()

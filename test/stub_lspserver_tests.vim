@@ -4457,6 +4457,283 @@ def g:Test_DocumentLinkOpen_ExternalUri()
   endtry
 enddef
 
+# Returns a running language server with the document symbols and the call
+# hierarchy of the function in "XScratchSrc.c".
+def MakeScratchServer(): dict<any>
+  var lspserver = MakeTestLspServer([])
+  lspserver.running = true
+  lspserver.ready = true
+  lspserver.isDocumentSymbolProvider = true
+  lspserver.isCallHierarchyProvider = true
+  var range = {start: {line: 0, character: 5}, end: {line: 0, character: 17}}
+  var item = {name: 'xScratchFunc', kind: 12, range: range,
+	      selectionRange: range, uri: util.LspFileToUri('XScratchSrc.c')}
+  lspserver.rpc_a = (method: string, params: any, Cbfunc: func): number => {
+    Cbfunc(lspserver, [item->deepcopy()], {})
+    return 1
+  }
+  lspserver.rpc = (method: string, params: any): dict<any> => {
+    if method == 'textDocument/prepareCallHierarchy'
+      return {result: [item->deepcopy()]}
+    endif
+    return {result: [{from: item->deepcopy(), fromRanges: []}]}
+  }
+  return lspserver
+enddef
+
+# Edits "XScratchSrc.c" in the current window, with the language server
+# "lspserver" for it.  Returns the buffer number.
+def ScratchSrcEdit(lspserver: dict<any>): number
+  :silent edit XScratchSrc.c
+  setline(1, 'void xScratchFunc(void) {}')
+  :setlocal filetype=text
+  buf.BufLspServerSet(bufnr(), lspserver)
+  cursor(1, 6)
+  return bufnr()
+enddef
+
+# Shows the hover text from "lspserver" in the preview window.
+def ScratchHoverShow(lspserver: dict<any>)
+  g:LspOptionsSet({hoverInPreview: true})
+  try
+    var hoverResult = {contents: {kind: 'plaintext', value: 'xScratchFunc doc'}}
+    hover.HoverReply(lspserver, hoverResult, {})
+  finally
+    g:LspOptionsSet({hoverInPreview: false})
+  endtry
+enddef
+
+# Returns each kind of scratch buffer of the plugin: its name, a line of its
+# text, and a function that shows it when the cursor is in the window of
+# "XScratchSrc.c" with the language server "lspserver".
+def ScratchKinds(lspserver: dict<any>): list<dict<any>>
+  return [
+    {name: 'LSP-Outline', line: 'Function@',
+     Open: () => execute('LspOutline')},
+    {name: 'LSP-CallHierarchy', line: '# Incoming calls to "xScratchFunc"',
+     Open: () => execute('LspIncomingCalls')},
+    {name: 'Language-Servers', line: 'Filetype Information',
+     Open: () => execute('LspShowAllServers')},
+    {name: 'LangServer-Capabilities',
+     line: "'test' Language Server Capabilities",
+     Open: () => execute('LspServer show capabilities')},
+    {name: 'LspHover', line: 'xScratchFunc doc',
+     Open: function(ScratchHoverShow, [lspserver])}
+  ]
+enddef
+
+# Returns the numbers of the buffers with 'buftype' "nofile" in the windows of
+# the current tab page.
+def ScratchBufsInTab(): list<number>
+  return tabpagebuflist()
+    ->filter((_, bnr) => getbufvar(bnr, '&buftype') == 'nofile')
+    ->sort()
+    ->uniq()
+enddef
+
+# Test that the scratch windows of the plugin show buffers of their own, not
+# a buffer of the user with a name like the name of the scratch buffer or the
+# same name, whether a window shows the buffer of the user or not.
+def g:Test_ScratchWindow_KeepsUserBuffer()
+  var lspserver = MakeScratchServer()
+  for kind in ScratchKinds(lspserver)
+    for decoy in [$'my-{kind.name}.txt', kind.name]
+      for shown in [true, false]
+	var ctx = $'{kind.name}, user buffer "{decoy}" shown: {shown}'
+	var srcBnr = -1
+	try
+	  srcBnr = ScratchSrcEdit(lspserver)
+	  var srcWinid = win_getid()
+	  exe $'silent split {decoy->fnameescape()}'
+	  setline(1, ['user text'])
+	  var decoyBnr = bufnr()
+	  if !shown
+	    :hide
+	  endif
+	  srcWinid->win_gotoid()
+
+	  kind.Open()
+
+	  assert_equal([decoy, ['user text'], 1, ''],
+	    [decoyBnr->bufname(), decoyBnr->getbufline(1, '$'),
+	     getbufinfo(decoyBnr)[0].changed, getbufvar(decoyBnr, '&buftype')],
+	    ctx)
+	  var scratch = ScratchBufsInTab()
+	  assert_equal(1, scratch->len(), ctx)
+	  if !scratch->empty()
+	    assert_notequal(-1, scratch[0]->getbufline(1, '$')->index(kind.line),
+			    ctx)
+	    if decoy != kind.name
+	      assert_equal(kind.name, scratch[0]->bufname(), ctx)
+	    endif
+	  endif
+	finally
+	  buf.BufLspServerRemove(srcBnr, lspserver)
+	  :%bw!
+	endtry
+      endfor
+    endfor
+  endfor
+enddef
+
+# Test that the scratch windows of the plugin are reused, and opened again,
+# after a change of the current directory.
+def g:Test_ScratchWindow_AfterCd()
+  var lspserver = MakeScratchServer()
+  var cwd = getcwd()
+  mkdir('XScratchDir')
+  try
+    for kind in ScratchKinds(lspserver)
+      var srcBnr = -1
+      try
+	srcBnr = ScratchSrcEdit(lspserver)
+	var srcWinid = win_getid()
+	kind.Open()
+	var scratch = ScratchBufsInTab()
+	var winCount = winnr('$')
+
+	chdir('XScratchDir')
+	srcWinid->win_gotoid()
+	kind.Open()
+	assert_equal([scratch, winCount], [ScratchBufsInTab(), winnr('$')],
+		     kind.name)
+	assert_notequal(-1, scratch[0]->getbufline(1, '$')->index(kind.line),
+			kind.name)
+
+	win_execute(scratch[0]->bufwinid(), 'close')
+	srcWinid->win_gotoid()
+	kind.Open()
+	var newScratch = ScratchBufsInTab()
+	assert_equal(1, newScratch->len(), kind.name)
+	assert_notequal(scratch, newScratch, kind.name)
+	assert_equal(kind.name, newScratch[0]->bufname(), kind.name)
+	assert_notequal(-1, newScratch[0]->getbufline(1, '$')->index(kind.line),
+			kind.name)
+      finally
+	chdir(cwd)
+	buf.BufLspServerRemove(srcBnr, lspserver)
+	:%bw!
+      endtry
+    endfor
+  finally
+    delete('XScratchDir', 'd')
+  endtry
+enddef
+
+# Test that the scratch windows of the plugin open again after the user wipes
+# out their buffers.
+def g:Test_ScratchWindow_AfterWipeOut()
+  var lspserver = MakeScratchServer()
+  for kind in ScratchKinds(lspserver)
+    var srcBnr = -1
+    try
+      srcBnr = ScratchSrcEdit(lspserver)
+      var srcWinid = win_getid()
+      kind.Open()
+      var scratch = ScratchBufsInTab()
+      exe $'bwipeout! {scratch[0]}'
+
+      srcWinid->win_gotoid()
+      kind.Open()
+      var newScratch = ScratchBufsInTab()
+      assert_equal(1, newScratch->len(), kind.name)
+      assert_notequal(scratch, newScratch, kind.name)
+      assert_equal(kind.name, newScratch[0]->bufname(), kind.name)
+      assert_notequal(-1, newScratch[0]->getbufline(1, '$')->index(kind.line),
+		      kind.name)
+    finally
+      buf.BufLspServerRemove(srcBnr, lspserver)
+      :%bw!
+    endtry
+  endfor
+enddef
+
+# Test that a scratch window of the plugin opens in a second tab page and
+# shows the same buffer there.
+def g:Test_ScratchWindow_InTwoTabPages()
+  var lspserver = MakeScratchServer()
+  for kind in ScratchKinds(lspserver)
+    var srcBnr = -1
+    try
+      srcBnr = ScratchSrcEdit(lspserver)
+      var srcWinid = win_getid()
+      kind.Open()
+      var scratch = ScratchBufsInTab()
+
+      srcWinid->win_gotoid()
+      :tab split
+      kind.Open()
+      assert_equal([2, scratch], [tabpagenr(), ScratchBufsInTab()], kind.name)
+      assert_notequal(-1, scratch[0]->getbufline(1, '$')->index(kind.line),
+		      kind.name)
+    finally
+      buf.BufLspServerRemove(srcBnr, lspserver)
+      :%bw!
+    endtry
+  endfor
+enddef
+
+# Test that ":LspOutline close" and ":LspOutline toggle" close the outline
+# window, not the window of a buffer with a name like "LSP-Outline", and that
+# unloading such a buffer keeps the outline autocmds.
+def g:Test_LspOutline_KeepsBufferWithSimilarName()
+  var lspserver = MakeScratchServer()
+  var srcBnr = -1
+  try
+    srcBnr = ScratchSrcEdit(lspserver)
+    var srcWinid = win_getid()
+    :silent split my-LSP-Outline.txt
+    var decoyWinid = win_getid()
+    srcWinid->win_gotoid()
+    :LspOutline
+    assert_equal(1, ScratchBufsInTab()->len())
+
+    :silent split XScratchDir/LSP-Outline
+    :bwipeout
+    assert_true(exists('#LSPOutline#BufEnter'))
+
+    srcWinid->win_gotoid()
+    :LspOutline close
+    assert_equal([], ScratchBufsInTab())
+    :LspOutline toggle
+    assert_equal(1, ScratchBufsInTab()->len())
+    :LspOutline toggle
+    assert_equal([], ScratchBufsInTab())
+    assert_notequal(0, decoyWinid->win_id2win())
+  finally
+    buf.BufLspServerRemove(srcBnr, lspserver)
+    :%bw!
+  endtry
+enddef
+
+# Test that the hover text doesn't replace the text of a modified buffer of the
+# user in the preview window, which the preview window can't leave.
+def g:Test_HoverInPreview_KeepsModifiedPreviewBuffer()
+  var lspserver = MakeScratchServer()
+  var srcBnr = -1
+  try
+    srcBnr = ScratchSrcEdit(lspserver)
+    :silent pedit XScratchNotes.txt
+    :wincmd P
+    setline(1, ['user text'])
+    var notesBnr = bufnr()
+    :wincmd p
+
+    var exception = ''
+    try
+      ScratchHoverShow(lspserver)
+    catch
+      exception = v:exception
+    endtry
+    assert_match('E37:', exception)
+    assert_equal([['user text'], ''],
+		 [notesBnr->getbufline(1, '$'), getbufvar(notesBnr, '&buftype')])
+  finally
+    buf.BufLspServerRemove(srcBnr, lspserver)
+    :%bw!
+  endtry
+enddef
+
 # Only here to because the test runner needs it
 def g:StartLangServer(): bool
   return true
