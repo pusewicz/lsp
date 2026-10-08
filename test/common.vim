@@ -27,6 +27,13 @@ def g:LoadLspPlugin()
   g:LspEnable()
 enddef
 
+# Return true when the language servers started by the tests should log their
+# messages, as with ":LspServer debug on": when $LSP_DEBUG is set to a
+# non-empty value.
+def g:LspServerDebug(): bool
+  return !empty($LSP_DEBUG)
+enddef
+
 # Return the path of the clangd of Homebrew's llvm.
 def g:ClangdPath(): string
   return $'{trim(system('brew --prefix llvm'))}/bin/clangd'

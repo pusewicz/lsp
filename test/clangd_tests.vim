@@ -51,6 +51,7 @@ var lspServers = [{
       filetype: ['c', 'cpp'],
       path: clangdPath,
       args: ['--background-index', '--clang-tidy'],
+      debug: g:LspServerDebug(),
       initializationOptions: { clangdFileStatus: true },
       customNotificationHandlers: {
         'textDocument/clangd.fileStatus': (lspserver: dict<any>, reply: dict<any>) => {
