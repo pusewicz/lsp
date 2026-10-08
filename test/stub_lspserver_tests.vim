@@ -1594,7 +1594,6 @@ enddef
 # earlier request must not be taken as the reply to the latest one.
 def g:Test_GetCompletion_IgnoresSupersededReply()
   silent! edit XGetCompletionSuperseded.txt
-  defer execute(':%bw!')
   var lspserver = MakeTestLspServer([])
   lspserver.isCompletionProvider = true
   lspserver.completionLazyDoc = false
@@ -1617,6 +1616,7 @@ def g:Test_GetCompletion_IgnoresSupersededReply()
   replyCbs[1](lspserver, [{label: 'latest'}], {})
   assert_false(lspserver.omniCompletePending)
   assert_equal(['latest'], lspserver.completeItems->mapnew((_, v) => v.word))
+  :%bw!
 enddef
 
 # Only here to because the test runner needs it
