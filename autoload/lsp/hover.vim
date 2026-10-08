@@ -115,22 +115,24 @@ enddef
 
 # When no hover text is available, emit a warning.  When 'hoverFallback' is
 # enabled and 'keywordprg' points to something other than ':LspHover', the
-# built-in 'K' command is invoked as a fallback instead.
+# built-in 'K' command is invoked as a fallback instead.  A silent request,
+# such as the automatic hover on CursorHold, does neither: the fallback runs
+# 'keywordprg', which can run a shell command or open a window.
 def HoverShowEmpty(isSilent: bool)
+  if isSilent
+    return
+  endif
+
   if &keywordprg !=# ':LspHover' && !empty(&l:keywordprg) &&
                                                   opt.lspOptions.hoverFallback
-    if !isSilent
-      util.WarnMsg($'No documentation found for current keyword; falling back to built-in.')
-    endif
+    util.WarnMsg($'No documentation found for current keyword; falling back to built-in.')
     try
       execute 'normal! K'
     catch /.*/
       # Ignore any errors from built-in fallback
     endtry
   else
-    if !isSilent
-      util.WarnMsg($'No documentation found for current keyword')
-    endif
+    util.WarnMsg($'No documentation found for current keyword')
   endif
 enddef
 

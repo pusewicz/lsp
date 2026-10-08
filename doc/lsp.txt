@@ -1038,7 +1038,7 @@ the symbol under the cursor.
 
 			This command supports |:command-modifiers|.  Use
 			|:silent| to suppress "No documentation found" warning
-			messages.
+			messages and the |lsp-opt-hoverFallback| fallback.
 
 			With |lsp-opt-hoverOnCursorHold| enabled, hover
 			documentation is requested automatically when the
@@ -1810,7 +1810,8 @@ hoverInPreview		|Boolean| option. Show |:LspHover| in a preview window
 						*lsp-opt-hoverOnCursorHold*
 hoverOnCursorHold	|Boolean| option. Automatically request hover
 			documentation when the cursor is idle
-			(|CursorHold|).
+			(|CursorHold|).  Automatic requests never fall back
+			to 'keywordprg' (see |lsp-opt-hoverFallback|).
 			By default this is set to false.
 
 						*lsp-opt-hoverDelay*
@@ -1842,7 +1843,9 @@ hoverFallback		|Boolean| option. Fall back to file type 'keywordprg'
 			in case no hover information is available.  If enabled,
 			and local 'keywordprg' is not empty and is not set to
 			|:LspHover|, then |:LspHover| executes the built-in |K|
-			behavior as a fallback.
+			behavior as a fallback.  `:silent LspHover` and
+			automatic hover requests (|lsp-opt-hoverOnCursorHold|)
+			do not fall back.
 
 			Do not set 'keywordprg' to |:LspHover| when using this
 			option, because that would disable fallback and can
