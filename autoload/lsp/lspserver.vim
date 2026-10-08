@@ -1658,7 +1658,11 @@ def TextDocFormat(lspserver: dict<any>, fname: string, rangeFormat: bool,
   if rangeFormat
     var r: dict<dict<number>> = {
 	start: {line: start_lnum - 1, character: 0},
-	end: {line: end_lnum - 1, character: charcol([end_lnum, '$']) - 1}}
+	end: {
+	  line: end_lnum - 1,
+	  character: util.GetCharIdxWithCompChar(getline(end_lnum),
+						 charcol([end_lnum, '$']) - 1)
+	}}
     lspserver.encodeRange(bnr, r)
     param.range = r
   endif
