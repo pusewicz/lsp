@@ -564,6 +564,32 @@ def g:Test_LspShowReferences_multibyte_symbol()
   :%bw!
 enddef
 
+# Test for highlighting the active parameter in the signature help when the
+# signature label has multibyte and composing characters before it.  clangd
+# sends the offsets of the parameters in the label in the negotiated encoding.
+def g:Test_LspShowSignature_multibyte()
+  g:LspOptionsSet({echoSignature: false, showSignatureDocs: false})
+  :silent! edit XLspShowSignature_mb.c
+  setline(1, ["int MbFunc(int é, int 😊😊, int áb́, int c);",
+	      'void f(void)', '{', '  MbFunc(1, 2, 3, 4);', '}'])
+  g:WaitForServerFileLoad(0)
+
+  var label = "MbFunc(int é, int 😊😊, int áb́, int c) -> int"
+  var params = ['int é', 'int 😊😊', "int áb́", 'int c']
+  for i in range(params->len())
+    cursor(4, 10 + 3 * i)
+    :LspShowSignature
+    g:WaitForAssert(() => assert_equal(1, popup_list()->len()))
+    var bnr = popup_list()[0]->winbufnr()
+    assert_equal([label], getbufline(bnr, 1, '$'))
+    assert_equal([params[i]], prop_list(1, {bufnr: bnr})
+		 ->mapnew((_, p) => label->strpart(p.col - 1, p.length)))
+    popup_clear()
+  endfor
+
+  :%bw!
+enddef
+
 # Test for :LspSymbolSearch when using multibyte and composing characters
 def g:Test_LspSymbolSearch_multibyte()
   silent! edit XLspSymbolSearch_mb.c
