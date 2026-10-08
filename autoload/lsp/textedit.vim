@@ -215,31 +215,62 @@ def ApplyTextDocumentEdit(textDocEdit: dict<any>)
   ApplyTextEdits(bnr, textDocEdit.edits)
 enddef
 
+# Returns the number of the buffer for file "fname", or 0 if there is none.
+def FileBufnr(fname: string): number
+  return fname->bufexists() ? fname->bufadd() : 0
+enddef
+
+# Reloads buffer "bnr", which is loaded and has no unsaved changes, from its
+# file after the file was changed.  Unlike ":edit!" this works for a hidden
+# buffer too, and like it, it keeps the undo history (see 'undoreload').
+def ReloadBuffer(bnr: number)
+  autocmd_add([{group: 'LspReloadBuffer', event: 'FileChangedShell',
+		bufnr: bnr, cmd: 'v:fcs_choice = "reload"'}])
+  try
+    exe $'checktime {bnr}'
+  finally
+    autocmd_delete([{group: 'LspReloadBuffer'}])
+  endtry
+enddef
+
 # interface CreateFile
-# Create the "createFile.uri" file
+# Create the "createFile.uri" file.  An existing file is emptied only when
+# "overwrite" is set, and then its loaded buffer too, unless it has unsaved
+# changes.
 def FileCreate(createFile: dict<any>)
   var fname: string = util.LspUriToFile(createFile.uri)
   var opts: dict<bool> = createFile->get('options', {})
-  var ignoreIfExists: bool = opts->get('ignoreIfExists', true)
+  var ignoreIfExists: bool = opts->get('ignoreIfExists', false)
   var overwrite: bool = opts->get('overwrite', false)
 
-  # A file cannot be created at a path that is already a directory.
-  if fname->isdirectory()
-    if ignoreIfExists && !overwrite
+  # LSP Spec: Overwrite wins over `ignoreIfExists`
+  if !fname->getftype()->empty()
+    if !overwrite
+      if !ignoreIfExists
+	util.ErrMsg($'File create failed, {fname} already exists')
+      endif
       return
     endif
-    util.ErrMsg($'File create failed, {fname} is a directory')
-    return
+    # A file cannot be created at a path that is already a directory.
+    if fname->isdirectory()
+      util.ErrMsg($'File create failed, {fname} is a directory')
+      return
+    endif
   endif
 
-  # LSP Spec: Overwrite wins over `ignoreIfExists`
-  if fname->filereadable() && ignoreIfExists && !overwrite
+  var bnr: number = FileBufnr(fname)
+  if bnr > 0 && bnr->getbufvar('&modified')
+    util.ErrMsg($'File create failed, {fname} has unsaved changes')
     return
   endif
 
   fname->fnamemodify(':p:h')->mkdir('p')
   []->writefile(fname)
-  fname->bufadd()
+  if bnr > 0 && bnr->bufloaded()
+    ReloadBuffer(bnr)
+  else
+    fname->bufadd()
+  endif
 enddef
 
 # interface DeleteFile
