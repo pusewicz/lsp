@@ -54,9 +54,11 @@ export def HandleCodeAction(lspserver: dict<any>, selAction: dict<any>)
   if codeAction->has_key('edit')
      || (codeAction->has_key('command') && codeAction.command->type() == v:t_dict)
     # codeAction is a CodeAction instance, apply edit and command
+    # Apply the edit first.  The command is for the text that the edit makes,
+    # so it is not run when the edit fails.
     if codeAction->has_key('edit')
-      # apply edit first
-      textedit.ApplyWorkspaceEdit(codeAction.edit, lspserver)
+	&& !textedit.ApplyWorkspaceEdit(codeAction.edit, lspserver).applied
+      return
     endif
     if codeAction->has_key('command')
       DoCommand(lspserver, codeAction.command)

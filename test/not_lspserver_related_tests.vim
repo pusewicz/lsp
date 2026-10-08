@@ -1351,6 +1351,17 @@ def g:Test_StaleRequestSupportCapability()
 	       capabilities.GetClientCaps().general.staleRequestSupport)
 enddef
 
+# Test that the client advertises the workspace edits that it applies: text
+# document edits for a version of a document and the file operations, up to
+# the first change that fails, but not the change annotations, which it
+# doesn't support.
+def g:Test_WorkspaceEditCapability()
+  assert_equal({documentChanges: true,
+		resourceOperations: ['rename', 'create', 'delete'],
+		failureHandling: 'abort'},
+	       capabilities.GetClientCaps().workspace.workspaceEdit)
+enddef
+
 # Test for parsing the line and column fragment in a document link file URI
 def g:Test_DocumentLink_ParseFileUri()
   var uri = 'file:///tmp/a%20b.c'
