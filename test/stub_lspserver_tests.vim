@@ -208,6 +208,22 @@ def g:Test_ProcessMessages_IgnoreUnknownResponseId_Result()
     }, unknownId)
 enddef
 
+# Test that a reply to a waiting synchronous request is passed back to it
+# instead of being ignored.
+def g:Test_ProcessMessages_PassesBackSyncRpcReply()
+  var lspserver = MakeTestLspServer([])
+  var traceMsgs: list<string> = []
+  lspserver.traceLog = (msg) => traceMsgs->add(msg)
+  lspserver.syncRpcReplies[1000000005] = {}
+
+  var reply = {jsonrpc: '2.0', id: 1000000005, result: {name: 'f1'}}
+  lspserver.data = reply
+  lspserver.processMessage()
+
+  assert_equal({1000000005: reply}, lspserver.syncRpcReplies)
+  assert_equal([], traceMsgs)
+enddef
+
 def g:Test_ProcessMessages_IgnoreUnknownResponseId_Error()
   var lspserver = MakeTestLspServer([])
   var unknownId = 'X-unknown-response-id-error'

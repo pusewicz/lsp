@@ -6,6 +6,7 @@ import '../autoload/lsp/buffer.vim' as buf
 import '../autoload/lsp/signature.vim' as signature
 import '../autoload/lsp/codeaction.vim' as codeaction
 import '../autoload/lsp/lsp.vim' as lsp
+import '../autoload/lsp/util.vim' as util
 
 source common.vim
 
@@ -32,6 +33,7 @@ def g:StopLangServer(): void
 enddef
 
 g:LSPTest_modifyDiags = false
+g:LSPTest_fileStatusDelay = 0
 
 var clangdPath: string
 if has('mac') && executable('brew')
@@ -63,6 +65,11 @@ var lspServers = [{
       customNotificationHandlers: {
         'textDocument/clangd.fileStatus': (lspserver: dict<any>, reply: dict<any>) => {
           g:LSPTest_customNotificationHandlerReplied = true
+          if g:LSPTest_fileStatusDelay > 0
+            # Handle the notification slowly.  Vim reads the messages that
+            # arrive meanwhile and invokes the channel callbacks for them.
+            exe $'sleep {g:LSPTest_fileStatusDelay}m'
+          endif
         }
       },
       processDiagHandler: (diags: list<dict<any>>) => {
@@ -2864,6 +2871,33 @@ def g:Test_DocumentSymbol()
   assert_equal('', v:errmsg)
 
   :%bw!
+enddef
+
+# Test that a synchronous request gets its reply when the reply arrives while
+# the channel callback handles other messages from the server.
+def g:Test_RpcReplyDuringNotifications()
+  :silent! edit XRpcReplyDuringNotifications.c
+  sleep 200m
+  setline(1, ['int f1(int a) {', '  return a;', '}'])
+  g:WaitForServerFileLoad(0)
+  var lspserver = buf.CurbufGetServerChecked()
+  var params = {textDocument: {uri: util.LspBufnrToUri(bufnr())}}
+
+  g:LSPTest_fileStatusDelay = 50
+  try
+    for i in range(5)
+      # The change makes clangd send file status notifications.
+      setline(2, $'  return a + {i};')
+      listener_flush()
+      var start = reltime()
+      var reply = lspserver.rpc('textDocument/documentSymbol', params)
+      assert_equal('f1', reply->get('result', [{}])[0]->get('name', ''))
+      assert_true(start->reltime()->reltimefloat() < 1.0)
+    endfor
+  finally
+    g:LSPTest_fileStatusDelay = 0
+    :%bw!
+  endtry
 enddef
 
 # Test for LspAttached autocmd
