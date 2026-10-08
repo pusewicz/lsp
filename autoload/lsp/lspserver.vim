@@ -704,16 +704,26 @@ def AsyncRpc(lspserver: dict<any>, method: string, params: any, Cbfunc: func): n
   return reply.id
 enddef
 
+# Cancel the pending request sent with AsyncRpcSupersede() with "key", if any,
+# and ignore its reply.
+def CancelSupersedableRequest(lspserver: dict<any>, key: string)
+  var req: dict<number> = lspserver.supersedableRequests->get(key, {})
+  if req->empty()
+    return
+  endif
+  lspserver.supersedableRequests->remove(key)
+  if req.id > 0
+    lspserver.cancelRequest(req.id)
+  endif
+enddef
+
 # Send an async RPC request message to the LSP server with a callback
 # function, like AsyncRpc().  The request supersedes the previous request sent
 # with the same "key": when that one is still pending, it is cancelled and its
 # reply is ignored.  Returns the LSP message id, or -1 on error.
 def AsyncRpcSupersede(lspserver: dict<any>, key: string, method: string,
 		      params: any, Cbfunc: func): number
-  var prevReq: dict<number> = lspserver.supersedableRequests->get(key, {})
-  if prevReq->get('id', -1) > 0
-    lspserver.cancelRequest(prevReq.id)
-  endif
+  CancelSupersedableRequest(lspserver, key)
 
   # The callback identifies its request by this Dict and not by the message
   # id, because in tests the callback is invoked before AsyncRpc() returns.
@@ -1233,6 +1243,12 @@ def GetCompletion(lspserver: dict<any>, triggerKind_arg: number, triggerChar: st
   AsyncRpcSupersede(lspserver, 'textDocument/completion',
 		    'textDocument/completion', params,
 		    (_: dict<any>, reply, error) => completion.CompletionReply(lspserver, reply, error))
+enddef
+
+# Cancel the pending completion request, if any, and ignore its reply.
+# Notification: $/cancelRequest
+def CancelCompletion(lspserver: dict<any>)
+  CancelSupersedableRequest(lspserver, 'textDocument/completion')
 enddef
 
 # Get lazy properties for a completion item.
@@ -2991,6 +3007,7 @@ export def NewLspServer(serverParams: dict<any>): dict<any>
     sendWorkspaceConfig: function(SendWorkspaceConfig, [lspserver]),
     getCompletion: function(GetCompletion, [lspserver]),
     resolveCompletion: function(ResolveCompletion, [lspserver]),
+    cancelCompletion: function(CancelCompletion, [lspserver]),
     gotoDefinition: function(GotoDefinition, [lspserver]),
     gotoDeclaration: function(GotoDeclaration, [lspserver]),
     gotoTypeDef: function(GotoTypeDef, [lspserver]),

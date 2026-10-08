@@ -492,6 +492,7 @@ enddef
 # the keyword before the cursor and replies with at most "limit" items,
 # setting "isIncomplete" when it truncated the list.  delays[n] is the reply
 # delay in milliseconds for the n-th request; later requests reply at once.
+# A cancelled request gets no reply.
 def MakeTruncatingServer(limit: number, delays: list<number> = []): dict<any>
   var lspserver: dict<any> = {
     id: 9003,
@@ -524,6 +525,11 @@ def MakeTruncatingServer(limit: number, delays: list<number> = []): dict<any>
     else
       Reply(0)
     endif
+  }
+  lspserver.cancelCompletion = () => {
+    for timer in lspserver.timers
+      timer_stop(timer)
+    endfor
   }
   return lspserver
 enddef
@@ -1034,6 +1040,30 @@ def TextEditCompletionCases(): list<dict<any>>
     }],
     pick: 1,
     expected: 'foo.name|;',
+  }, {
+    name: 'InsertReplace edit with UTF-16 position offsets',
+    text: '/* 😀 */ foo.na',
+    after: 'm𠀀;',
+    posEncoding: 16,
+    items: [{
+      label: 'name?', filterText: 'name',
+      textEdit: {insert: FirstLineRange(13, 15),
+		 replace: FirstLineRange(13, 18), newText: 'name'},
+    }],
+    pick: 1,
+    expected: '/* 😀 */ foo.name|;',
+  }, {
+    name: 'InsertReplace edit with UTF-8 position offsets',
+    text: '/* 😀 */ foo.na',
+    after: 'm𠀀;',
+    posEncoding: 8,
+    items: [{
+      label: 'name?', filterText: 'name',
+      textEdit: {insert: FirstLineRange(15, 17),
+		 replace: FirstLineRange(15, 22), newText: 'name'},
+    }],
+    pick: 1,
+    expected: '/* 😀 */ foo.name|;',
   }]
 enddef
 
@@ -1118,6 +1148,85 @@ enddef
 
 def g:Test_Completion_TextEdit_AutoComplete()
   CheckTextEditCompletion(false)
+enddef
+
+# The additional text edits of a completion item, like the auto-import edits
+# of typescript-language-server, are applied at their positions in the
+# negotiated position encoding.
+def g:Test_Completion_AdditionalTextEdits_PositionEncoding()
+  var saveAutoComplete = g:LspOptionsGet().autoComplete
+  var saveCompleteopt = &g:completeopt
+  g:LspOptionsSet({autoComplete: true})
+  # The offset after "𠀀" in the import in each position encoding
+  var importEnd = {8: 20, 16: 17, 32: 16}
+  try
+    for posEncoding in [8, 16, 32]
+      silent! edit XCompletionAdditionalEdits.ts
+      setline(1, ['import { café, 𠀀 } from "./m";', 'fo'])
+      var lspserver = MakeTextEditServer({posEncoding: posEncoding, items: [{
+	label: 'foo',
+	additionalTextEdits: [{
+	  range: FirstLineRange(importEnd[posEncoding], importEnd[posEncoding]),
+	  newText: ', foo'}],
+      }]})
+      buf.BufLspServerSet(bufnr(), lspserver)
+      try
+	completion.BufferInit(lspserver, bufnr(), &filetype)
+	setlocal completeopt=menuone,noinsert,noselect
+	inoremap <buffer> <F5> <ScriptCmd>completion.LspComplete(true)<CR>
+	cursor(2, 2)
+	feedkeys("a\<F5>\<C-N>\<C-Y>\<Esc>", 'xt')
+	assert_equal(['import { café, 𠀀, foo } from "./m";', 'foo'],
+		     getline(1, '$'), $'UTF-{posEncoding}')
+      finally
+	buf.BufLspServerRemove(bufnr(), lspserver)
+	:%bw!
+      endtry
+    endfor
+  finally
+    g:LspOptionsSet({autoComplete: saveAutoComplete})
+    &g:completeopt = saveCompleteopt
+  endtry
+enddef
+
+# Returns true when auto-completion at the end of "text" shows the completion
+# menu for the single completion item "item".
+def AutoCompleteShowsMenu(text: string, item: dict<any>): bool
+  silent! edit XCompletionSingleMatch.ts
+  setline(1, text)
+  var lspserver = MakeTextEditServer({items: [item]})
+  buf.BufLspServerSet(bufnr(), lspserver)
+  var menuShown = false
+  try
+    completion.BufferInit(lspserver, bufnr(), &filetype)
+    setlocal completeopt=menuone,noinsert,noselect
+    inoremap <buffer> <F5> <ScriptCmd>completion.LspComplete(true)<CR>
+    inoremap <buffer> <F2> <ScriptCmd>b:menuShown = pumvisible()<CR>
+    b:menuShown = false
+    feedkeys("A\<F5>\<F2>\<Esc>", 'xt')
+    menuShown = b:menuShown
+  finally
+    buf.BufLspServerRemove(bufnr(), lspserver)
+    :%bw!
+  endtry
+  return menuShown
+enddef
+
+# Auto-completion leaves out the menu for a single match only when the keyword
+# before the cursor is the match already, whatever characters it has.
+def g:Test_Completion_SingleMatch_Menu()
+  var saveAutoComplete = g:LspOptionsGet().autoComplete
+  var saveCompleteopt = &g:completeopt
+  g:LspOptionsSet({autoComplete: true})
+  try
+    assert_false(AutoCompleteShowsMenu('x = foo', {label: 'foo'}))
+    assert_true(AutoCompleteShowsMenu('x = fo', {label: 'foo'}))
+    assert_true(AutoCompleteShowsMenu('foo = fo', {label: 'foo'}))
+    assert_true(AutoCompleteShowsMenu('p->', {label: '~Foo'}))
+  finally
+    g:LspOptionsSet({autoComplete: saveAutoComplete})
+    &g:completeopt = saveCompleteopt
+  endtry
 enddef
 
 # Regression test for documentOnTypeFormattingProvider trigger char capture.

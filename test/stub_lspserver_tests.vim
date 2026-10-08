@@ -4339,6 +4339,58 @@ def g:Test_GetCompletion_CancelsSupersededRequest()
   :%bw!
 enddef
 
+# When the omnifunc stops waiting for the reply to its completion request,
+# because the reply doesn't come in time or a key is typed, the request is
+# cancelled and its late reply is ignored.
+def g:Test_OmniFunc_CancelsAbandonedRequest()
+  silent! edit XOmniFuncAbandoned.vim
+  var notifications: list<dict<any>> = []
+  var lspserver = MakeTestLspServer(notifications)
+  lspserver.running = true
+  lspserver.ready = true
+  lspserver.isCompletionProvider = true
+  lspserver.completionLazyDoc = false
+  lspserver.completionTriggerChars = []
+  var replyCbs: list<func> = []
+  lspserver.rpc_a = (_, _, Cb) => {
+    replyCbs->add(Cb)
+    return replyCbs->len()
+  }
+  buf.BufLspServerSet(bufnr(), lspserver)
+  setlocal omnifunc=g:LspOmniFunc
+
+  try
+    # The reply doesn't come in time.  The trailing space lets the cursor sit
+    # just after "fo" in Normal mode.
+    setline(1, 'fo ')
+    cursor(1, 3)
+    assert_equal(0, g:LspOmniFunc(1, ''))
+    assert_true(g:LspOmniCompletePending())
+    var start = reltime()
+    assert_equal(v:none, g:LspOmniFunc(0, 'fo'))
+    assert_true(start->reltime()->reltimefloat() >= 2.0)
+    assert_equal([{method: '$/cancelRequest', params: {id: 1}}], notifications)
+    assert_false(g:LspOmniCompletePending())
+    assert_equal({}, lspserver.supersedableRequests)
+    replyCbs[0](lspserver, [{label: 'foo'}], {})
+    assert_equal([], lspserver.completeItems)
+
+    # A key is typed while waiting for the reply
+    setline(1, 'fo')
+    feedkeys("A\<C-X>\<C-O>o\<Esc>", 'xt')
+    assert_equal('foo', getline(1))
+    assert_equal([{method: '$/cancelRequest', params: {id: 1}},
+		  {method: '$/cancelRequest', params: {id: 2}}], notifications)
+    assert_false(g:LspOmniCompletePending())
+    assert_equal({}, lspserver.supersedableRequests)
+    replyCbs[1](lspserver, [{label: 'foo'}], {})
+    assert_equal([], lspserver.completeItems)
+  finally
+    buf.BufLspServerRemove(bufnr(), lspserver)
+    :%bw!
+  endtry
+enddef
+
 # Returns a stub language server that replies to "textDocument/documentLink"
 # with "links" and to "documentLink/resolve" with "resolved".  The server is a
 # resolve provider only if "resolved" is not empty.  The requests sent to the
