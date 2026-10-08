@@ -522,6 +522,15 @@ language servers registered for {filetype} are currently running.
 The following commands are provided by this plugin.  A detailed description of
 these commands is provided later in this section.
 
+							*lsp-async*
+The commands don't wait for the language server: Vim stays responsive, and
+the reply is processed when it arrives.  A reply that arrives after you moved
+on is dropped: when the buffer was changed, when you went to another window
+for a command that acts on the current window, or when the cursor moved for a
+command about the symbol under the cursor.  |:LspFormat| in an autocommand,
+e.g. for |BufWritePre|, waits for the reply, so that the file is formatted
+before it is written.
+
 :LspCodeAction		Request code actions from all eligible language
 			servers attached to the current buffer and apply
 			the selected action for the current line.
@@ -1274,6 +1283,9 @@ Commands to modify, rename, or format your code using the language server.
 			current buffer are used when format is applied.
 			With |formatFallback| enabled (disabled by default),
 			falls back to |gq|. See |lsp-opt-formatFallback|.
+			The file is formatted when the reply arrives, unless
+			it was changed in the meantime.  In an autocommand,
+			the command waits for the reply, see |lsp-format|.
 
 :{range}LspFormat	Format the specified range of lines in the current
 			file using the language server. Map <plug>(LspFormat)
@@ -2732,11 +2744,18 @@ the symbol is defined in multiple places in the code.
 The |:LspFormat| command can be used to format either the entire file or a
 selected range of lines using the language server.  The 'shiftwidth' and
 'expandtab' values set for the current buffer are used when format is applied.
+The command doesn't wait for the language server, unless it is run in an
+autocommand.  To format a file before writing it: >
 
+    autocmd BufWritePre *.c LspFormat
+<
 To format code using the 'gq' command, you can set the 'formatexpr' option: >
 
     setlocal formatexpr=lsp#lsp#FormatExpr()
 <
+Formatting with 'formatexpr' waits for the language server, as the text must
+be formatted when the 'gq' command is done.
+
 						*lsp-on-type-format*
 If the language server supports it and the |lsp-opt-onTypeFormatting| option
 is set to true, code is reformatted as you type, whenever you type one of the
@@ -3281,14 +3300,20 @@ The returned dict has the following methods:
 		can refer to other documents (e.g. for
 		"textDocument/references").
 
-	rpc_a(method: string, params: any, Cbfunc: func): number
+	rpc_a(method: string, params: any, Cbfunc: func,
+	      opts: dict<any> = {}): number
 		Send an async RPC request message to the LSP server with a
 		callback function. Returns the LSP message id.  This id can be
 		used to cancel the RPC request (if needed).  Returns -1 on
-		error.  A reply saying that the request was cancelled, or
-		that the content was modified (ContentModified), is not
-		reported as an error: the callback gets no result.  Like
-		rpc(), first sends the pending buffer changes.
+		error, and then the callback is not invoked.  The callback is
+		passed the server, the result and the error (an empty Dict
+		when there is none).  An error is reported, but a reply
+		saying that the request was cancelled, or that the content
+		was modified (ContentModified), is not an error: the callback
+		gets no result.  When "opts" has "handleError" set to
+		v:false, no error is reported and the callback gets every
+		error, also for those replies.  Like rpc(), first sends the
+		pending buffer changes.
 
 	cancelRequest(id: number)
 		Ask the LSP server to cancel the request with the LSP message

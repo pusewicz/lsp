@@ -235,16 +235,16 @@ def g:Test_LspFormat_range_multibyte()
   setline(1, ['int   x;', "int   a\u0301b\u0301   =   1;", 'int   y;'])
   g:WaitForServerFileLoad(0)
   var lspserver = buf.CurbufGetServer()
-  var SavedRpc: func = lspserver.rpc
+  var SavedRpc: func = lspserver.rpc_a
   var params: dict<any> = {}
-  lspserver.rpc = (method: string, p: dict<any>): dict<any> => {
+  lspserver.rpc_a = (method: string, p: dict<any>, Cbfunc: func, opts = {}) => {
     params = p
-    return SavedRpc(method, p)
+    return SavedRpc(method, p, Cbfunc, opts)
   }
   try
     :2LspFormat
   finally
-    lspserver.rpc = SavedRpc
+    lspserver.rpc_a = SavedRpc
   endtry
 
   # Length of the second line in the UTF-8, UTF-16 and UTF-32 encodings

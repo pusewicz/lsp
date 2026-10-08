@@ -29,28 +29,37 @@ export def DoCommand(lspserver: dict<any>, cmd: dict<any>)
   endif
 enddef
 
-# Apply the code action selected by the user.
+# Apply the code action selected by the user.  An incomplete code action is
+# resolved first, and then applied unless the buffer changed in the meantime.
 export def HandleCodeAction(lspserver: dict<any>, selAction: dict<any>)
+  # If we don't have a complete CodeAction then use the servers's CodeAction
+  # property resolution to complete the definition.
+  if !selAction->has_key('edit') && !selAction->has_key('command')
+    lspserver.traceLog("Resolving incomplete CodeAction")
+    var reqctx = util.RequestContextGet('buffer')
+    lspserver.resolveCodeAction(selAction, (resolved: dict<any>) => {
+      if !util.RequestContextMatches(reqctx)
+	return
+      endif
+      if resolved->empty()
+	util.WarnMsg("Code action could not be resolved by LSP server.")
+	return
+      endif
+      ApplyCompleteCodeAction(lspserver, resolved)
+    })
+    return
+  endif
+
+  ApplyCompleteCodeAction(lspserver, selAction)
+enddef
+
+# Apply the code action "codeAction", which has an edit or a command.
+def ApplyCompleteCodeAction(lspserver: dict<any>, codeAction: dict<any>)
   # textDocument/codeAction can return either Command[] or CodeAction[].
   # If it is a CodeAction, it can have either an edit, a command or both.
   # Edits should be executed first.
   # Both Command and CodeAction interfaces has "command" member
   # so we should check "command" type - for Command it will be "string"
-
-  var codeAction = selAction
-
-  # If we don't have a complete CodeAction then use the servers's CodeAction
-  # property resolution to complete the definition.
-  if !selAction->has_key('edit') && !selAction->has_key('command')
-    lspserver.traceLog("Resolving incomplete CodeAction")
-    var resolved = lspserver.resolveCodeAction(selAction)
-    if resolved->empty()
-      util.WarnMsg("Code action could not be resolved by LSP server.")
-      return
-    endif
-    codeAction = resolved
-  endif
-
   if codeAction->has_key('edit')
      || (codeAction->has_key('command') && codeAction.command->type() == v:t_dict)
     # codeAction is a CodeAction instance, apply edit and command

@@ -484,8 +484,8 @@ def LspWillSaveFile(bnr: number)
     if !fmtServer->empty()
 	&& lspservers->indexof((_, lspsrv) => lspsrv.id == fmtServer.id) != -1
       # In a BufWritePre autocmd, the buffer being written is the current
-      # buffer, which textDocFormat() formats.
-      fmtServer.textDocFormat(bnr->bufname(), false, 0, 0)
+      # buffer, which textDocFormat() formats, before it is written.
+      fmtServer.textDocFormat(bnr->bufname(), false, 0, 0, true)
     endif
   endif
 
@@ -1387,13 +1387,14 @@ export def ShowDocSymbols()
   lspserver.getDocSymbols(fname, false)
 enddef
 
-# Format a range of lines in a file
+# Format a range of lines in a file, before returning if "sync" is true.
 # If a language server supporting range formatting is not found and
 # 'canFallback' is true then use builtin formatting.
-def DocRangeFormat(fname: string, line1: number, line2: number, canFallback: bool)
+def DocRangeFormat(fname: string, line1: number, line2: number,
+		   canFallback: bool, sync: bool)
   var lspserver: dict<any> = buf.BufLspServerGet(bufnr(), 'documentRangeFormatting')
   if !lspserver->empty()
-    lspserver.textDocFormat(fname, true, line1, line2)
+    lspserver.textDocFormat(fname, true, line1, line2, sync)
     return
   endif
 
@@ -1407,13 +1408,13 @@ def DocRangeFormat(fname: string, line1: number, line2: number, canFallback: boo
   endif
 enddef
 
-# Format the entire file.
+# Format the entire file, before returning if "sync" is true.
 # If a language server supporting range formatting is not found and
 # 'canFallback' is true then use builtin formatting.
-def DocFormat(fname: string, canFallback: bool)
+def DocFormat(fname: string, canFallback: bool, sync: bool)
   var lspserver: dict<any> = buf.BufLspServerGet(bufnr(), 'documentFormatting')
   if !lspserver->empty()
-    lspserver.textDocFormat(fname, false, 0, 0)
+    lspserver.textDocFormat(fname, false, 0, 0, sync)
     return
   endif
 
@@ -1428,7 +1429,10 @@ def DocFormat(fname: string, canFallback: bool)
 enddef
 
 # If 'range_args' is false, then format the entire file.  Otherwise format a
-# range of lines.
+# range of lines.  In an autocommand, e.g. for BufWritePre, the file is
+# formatted before returning, as what follows needs the formatted text.
+# Otherwise the formatting is applied when the reply from the language server
+# arrives, if the file was not changed in the meantime.
 export def TextDocFormat(range_args: number, line1: number, line2: number)
   if !&modifiable
     util.ErrMsg('Current file is not a modifiable file')
@@ -1438,10 +1442,11 @@ export def TextDocFormat(range_args: number, line1: number, line2: number)
   var fname: string = @%
   const canFallback = opt.lspOptions.formatFallback &&
 					&formatexpr !=# 'lsp#lsp#FormatExpr()'
+  var sync = state() =~# 'x'
   if range_args > 0
-    DocRangeFormat(fname, line1, line2, canFallback)
+    DocRangeFormat(fname, line1, line2, canFallback, sync)
   else
-    DocFormat(fname, canFallback)
+    DocFormat(fname, canFallback, sync)
   endif
 enddef
 
@@ -1765,7 +1770,8 @@ export def FormatExpr(): number
     return 1
   endif
 
-  lspserver.textDocFormat(@%, true, v:lnum, v:lnum + v:count - 1)
+  # The text must be formatted when 'formatexpr' returns
+  lspserver.textDocFormat(@%, true, v:lnum, v:lnum + v:count - 1, true)
   return 0
 enddef
 
