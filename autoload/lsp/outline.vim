@@ -100,6 +100,10 @@ def OutlineWinid(): number
   return outlineBufnr->bufwinid()
 enddef
 
+# Adds the outline lines for the symbols in "symbolTypeTable" of the buffer
+# "bnr" to "text", grouped by kind in the order of the LSP SymbolKind numbers,
+# and the location for each line to "lnumMap".  "children" is true for the
+# children of a symbol, whose line is indented by "pfx".
 def AddSymbolText(bnr: number,
 			symbolTypeTable: dict<list<dict<any>>>,
 			pfx: string,
@@ -107,7 +111,10 @@ def AddSymbolText(bnr: number,
 			lnumMap: list<dict<any>>,
 			children: bool)
   var prefix: string = pfx .. '  '
-  for [symType, symbols] in symbolTypeTable->items()
+  var symTypes: list<string> = symbolTypeTable->keys()
+    ->sort((a, b) => symbolTypeTable[a][0].kind - symbolTypeTable[b][0].kind)
+  for symType in symTypes
+    var symbols: list<dict<any>> = symbolTypeTable[symType]
     if !children
       # Add an empty line for the top level symbol types. For types in the
       # children symbols, don't add the empty line.
