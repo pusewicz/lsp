@@ -1074,15 +1074,22 @@ def TextdocDidChange(lspserver: dict<any>, bnr: number): void
 
   var contentChanges: list<dict<any>>
   var hasEol = util.BufWritesEol(bnr)
+  var newBufLines = BufferLines(bnr)
+  var cachedBufferContent = lspserver.cachedBufferContent
+  var cachedBufferEol = lspserver.cachedBufferEol
 
   if textDocumentSync == 1 || !opt.lspOptions.incrementalSync
     # TextDocumentSyncKind: Full — send the entire buffer on every change.
-    contentChanges = [{text: LinesText(BufferLines(bnr), hasEol)}]
+    # A change that leaves the text as it was, which Vim also passes to the
+    # listeners, is not sent: the version of the document then stays that
+    # of its text.
+    if !cachedBufferContent->has_key(bnr)
+	|| cachedBufferContent[bnr] != newBufLines
+	|| cachedBufferEol->get(bnr, !hasEol) != hasEol
+      contentChanges = [{text: LinesText(newBufLines, hasEol)}]
+    endif
   elseif exists_compiled('*diff')
     # TextDocumentSyncKind: Incremental — send only the changed lines.
-    var newBufLines = BufferLines(bnr)
-    var cachedBufferContent = lspserver.cachedBufferContent
-    var cachedBufferEol = lspserver.cachedBufferEol
     if cachedBufferContent->has_key(bnr)
 	&& cachedBufferEol[bnr] == hasEol
 	&& cachedBufferContent[bnr]->empty() == newBufLines->empty()
@@ -1132,9 +1139,9 @@ def TextdocDidChange(lspserver: dict<any>, bnr: number): void
       # full-text change.
       contentChanges = [{text: LinesText(newBufLines, hasEol)}]
     endif
-    cachedBufferContent[bnr] = newBufLines
   endif
-  lspserver.cachedBufferEol[bnr] = hasEol
+  cachedBufferContent[bnr] = newBufLines
+  cachedBufferEol[bnr] = hasEol
 
   if contentChanges->empty()
     return

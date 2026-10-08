@@ -3176,6 +3176,43 @@ def g:Test_TextdocDidChange_FullSync_TrailingNewlineFollowsWriteRule()
   :%bw!
 enddef
 
+# With full sync, a change that leaves the text as it was is not sent, so the
+# version of the document stays that of its text, for which the language
+# server can make edits.  The text that is sent is the one that incremental
+# sync diffs against when it is turned on.
+def g:Test_TextdocDidChange_FullSync_SkipsUnchangedText()
+  silent! edit XFullSyncUnchanged.txt
+  setline(1, ['abc'])
+  var notifications: list<dict<any>> = []
+  var lspserver = MakeTestLspServer(notifications)
+  var bnr = bufnr()
+  lspserver.textdocDidOpen(bnr, 'text')
+  var version = lspserver.docVersions[bnr]
+
+  setline(1, 'xyz')
+  setline(1, 'abc')
+  lspserver.textdocDidChange(bnr)
+  assert_equal([], notifications)
+  assert_equal(version, lspserver.docVersions[bnr])
+
+  setline(1, 'ABC')
+  lspserver.textdocDidChange(bnr)
+  assert_equal([{text: "ABC\n"}], notifications[-1].params.contentChanges)
+  assert_true(notifications[-1].params.textDocument.version > version)
+
+  if opt.incrementalSyncSupported
+    g:LspOptionsSet({incrementalSync: true})
+    append('$', 'def')
+    lspserver.textdocDidChange(bnr)
+    assert_equal([{range: {start: {line: 1, character: 0},
+			   end: {line: 1, character: 0}},
+		   text: "def\n"}],
+		 notifications[-1].params.contentChanges)
+    g:LspOptionsSet({incrementalSync: false})
+  endif
+  :%bw!
+enddef
+
 # A buffer read from a file without a trailing newline is still written with
 # one when 'fixendofline' is set, so a line appended after the last one comes
 # after that newline in the server's document.
