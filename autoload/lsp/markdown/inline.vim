@@ -146,7 +146,7 @@ enddef
 
 def UnescapeMarkdownPunctuation(text: string): string
   # Unescape only markdown punctuation characters (preserve \u sequences)
-  var punct = '!"#$%&' .. "'" .. '()*+,-./:;<=>?@[\]^_`{|}~'
+  var punct = '!"#$%&' .. "'" .. '()*+,-./:;<=>?@[\\\]^_`{|}~'
   return text->substitute('\\\([' .. punct .. ']\)', '\1', 'g')
 enddef
 
