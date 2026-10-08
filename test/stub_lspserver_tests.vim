@@ -2507,6 +2507,76 @@ def g:Test_TextdocDidChange_IncrementalSync_WriteRuleToggleSendsFullText()
   :%bw!
 enddef
 
+# Setting 'endofline', 'fixendofline' or 'binary' can add or remove the
+# newline at the end of the document without changing a line or
+# 'changedtick', which the listener doesn't see, so the change is sent when
+# the option is set, with a greater version.
+def g:Test_EolOptionSet_SendsChange()
+  for incrementalSync in (exists('*diff') ? [false, true] : [false])
+    g:LspOptionsSet({incrementalSync: incrementalSync})
+    silent! edit XEolOptionSet.txt
+    setline(1, ['abc', 'def'])
+    setlocal eol fixeol nobinary
+    var bnr = bufnr()
+    var notifications: list<dict<any>> = []
+    var lspserver = MakeTestLspServer(notifications)
+    lspserver.running = true
+    lspserver.ready = true
+    buf.BufLspServerSet(bnr, lspserver)
+    lspserver.textdocDidOpen(bnr, 'text')
+    var listenerId = listener_add((changedBnr, _, _, _, _) => {
+      lspserver.textdocDidChange(changedBnr)
+    }, bnr)
+    var msg = $'incrementalSync: {incrementalSync}'
+    # OptionSet is not triggered while Vim is starting
+    test_override('starting', 1)
+    try
+      # 'fixendofline' still adds the newline
+      setlocal noeol
+      setglobal nofixeol
+      assert_equal([], notifications, msg)
+
+      setlocal nofixeol
+      assert_equal(1, notifications->len(), msg)
+      assert_equal([{text: "abc\ndef"}],
+		   notifications[-1].params.contentChanges, msg)
+      var version = notifications[-1].params.textDocument.version
+      assert_equal(b:changedtick + 1, version, msg)
+
+      # No newline without 'binary' either
+      setlocal binary
+      assert_equal(1, notifications->len(), msg)
+
+      # A pending change is sent first, with the newline
+      setline(1, 'xyz')
+      setlocal eol
+      listener_flush(bnr)
+      assert_equal(2, notifications->len(), msg)
+      assert_equal("xyz\ndef\n",
+		   notifications[-1].params.contentChanges[-1].text, msg)
+      assert_true(notifications[-1].params.textDocument.version > version,
+		  msg)
+      version = notifications[-1].params.textDocument.version
+
+      # Set for the buffer in another window
+      new
+      setbufvar(bnr, '&endofline', false)
+      assert_equal(3, notifications->len(), msg)
+      assert_equal([{text: "xyz\ndef"}],
+		   notifications[-1].params.contentChanges, msg)
+      assert_equal(version + 1,
+		   notifications[-1].params.textDocument.version, msg)
+    finally
+      test_override('starting', 0)
+      setglobal fixeol
+      listener_remove(listenerId)
+      buf.BufLspServerRemove(bnr, lspserver)
+      :%bw!
+    endtry
+  endfor
+  g:LspOptionsSet({incrementalSync: false})
+enddef
+
 # Text edits are relative to the server's document, which ends with a newline
 # exactly when Vim writes one, so a range ending on the line after the last
 # one covers the whole last line.
