@@ -115,21 +115,15 @@ func g:WaitFor(expr, ...)
   return slept
 endfunc
 
-# Wait for diagnostic messages from the LSP server.
-# Waits for a maximum of (150 * 200) / 1000 = 30 seconds
-def g:WaitForDiags(errCount: number)
-  var retries = 0
-  while retries < 200
-    var d = lsp#lsp#ErrorCount()
-    if d.Error == errCount
-      break
-    endif
-    retries += 1
-    :sleep 150m
-  endwhile
+# Wait for up to 30 seconds for the current buffer to have "diagCount"
+# diagnostics of "severity" (a key of lsp#lsp#ErrorCount()), and report the
+# diagnostics when it doesn't.
+def g:WaitForDiags(diagCount: number, severity: string = 'Error')
+  g:WaitForCommon(() => lsp#lsp#ErrorCount()[severity] == diagCount, v:null,
+		  30000)
 
-  assert_equal(errCount, lsp#lsp#ErrorCount().Error)
-  if lsp#lsp#ErrorCount().Error != errCount
+  assert_equal(diagCount, lsp#lsp#ErrorCount()[severity])
+  if lsp#lsp#ErrorCount()[severity] != diagCount
     :LspDiag show
     assert_report(getloclist(0)->string())
     :lclose

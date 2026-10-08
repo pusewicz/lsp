@@ -29,7 +29,6 @@ call LspAddServer(lspServers)
 # characters
 def g:Test_LspCodeAction_multibyte()
   silent! edit XLspCodeAction_mb.c
-  sleep 200m
   var lines =<< trim END
     #include <stdio.h>
     void fn(int aVar)
@@ -62,7 +61,6 @@ enddef
 # Test for ":LspDiag show" when using multibyte and composing characters
 def g:Test_LspDiagShow_multibyte()
   :silent! edit XLspDiagShow_mb.c
-  sleep 200m
   var lines =<< trim END
     #include <stdio.h>
     void fn(int aVar)
@@ -91,7 +89,6 @@ enddef
 # the line.
 def g:Test_LspDiag_RangePastEol_multibyte()
   :silent! edit XLspDiagPastEol_mb.c
-  sleep 200m
   setline(1, ['int x;', '// ééé', '// 😊😊', "// a\u0301b\u0301"])
   g:WaitForServerFileLoad(0)
   var bnr = bufnr()
@@ -131,7 +128,6 @@ enddef
 def g:Test_LspDocumentLink_multibyte()
   writefile(['int xdoclink_mb;'], 'Xdoclink😊.h')
   :silent! edit XLspDocumentLink_mb.c
-  sleep 200m
   setline(1, ['#include "Xdoclink😊.h" // 😊', 'int *x = &xdoclink_mb;'])
   g:WaitForServerFileLoad(0)
   setlocal nomodified
@@ -164,7 +160,6 @@ enddef
 # :LspDocumentSymbol popup when using multibyte and composing characters
 def g:Test_LspDocumentSymbol_multibyte()
   :silent! edit XLspDocumentSymbol_mb.c
-  sleep 200m
   setline(1, ['/* ééé */ int 😊😊 = 1;', "/* 😊 */ int a\u0301b\u0301 = 2;"])
   g:WaitForServerFileLoad(0)
 
@@ -187,7 +182,6 @@ enddef
 
 def g:Test_LspFormat_multibyte()
   :silent! edit XLspFormat_mb.c
-  sleep 200m
   var lines =<< trim END
     void fn(int aVar)
     {
@@ -215,7 +209,6 @@ enddef
 # composing characters.  The range ends at the end of the last line.
 def g:Test_LspFormat_range_multibyte()
   :silent! edit XLspFormatRange_mb.c
-  sleep 200m
   setline(1, ['int   x;', "int   a\u0301b\u0301   =   1;", 'int   y;'])
   g:WaitForServerFileLoad(0)
   var lspserver = buf.CurbufGetServer()
@@ -244,7 +237,6 @@ enddef
 # Test for :LspGotoDefinition when using multibyte and composing characters
 def g:Test_LspGotoDefinition_multibyte()
   :silent! edit XLspGotoDefinition_mb.c
-  sleep 200m
   var lines: list<string> =<< trim END
     #include <stdio.h>
     void fn(int aVar)
@@ -271,7 +263,6 @@ enddef
 # Test for :LspGotoDefinition when using multibyte and composing characters
 def g:Test_LspGotoDefinition_after_multibyte()
   :silent! edit XLspGotoDef_after_mb.c
-  sleep 200m
   var lines =<< trim END
     void fn(int aVar)
     {
@@ -321,7 +312,6 @@ enddef
 # characters
 def g:Test_OmniComplete_multibyte()
   :silent! edit XOmniComplete_mb.c
-  sleep 200m
   var lines: list<string> =<< trim END
     void Func1(void)
     {
@@ -356,7 +346,6 @@ enddef
 # Test for :LspOutline with multibyte and composing characters
 def g:Test_Outline_multibyte()
   silent! edit XLspOutline_mb.c
-  sleep 200m
   var lines: list<string> =<< trim END
     typedef void 😊😊😊😊;
     typedef void áb́áb́;
@@ -418,7 +407,6 @@ enddef
 # Test for :LspRename with multibyte and composing characters
 def g:Test_LspRename_multibyte()
   silent! edit XLspRename_mb.c
-  sleep 200m
   var lines: list<string> =<< trim END
     #include <stdio.h>
     void fn(int aVar)
@@ -453,7 +441,6 @@ enddef
 # composing characters
 def g:Test_LspSelection_multibyte()
   silent! edit XLspSelection_mb.c
-  sleep 200m
   var lines: list<string> =<< trim END
     void fn(void)
     {
@@ -498,7 +485,6 @@ enddef
 # Test for :LspShowReferences when using multibyte and composing characters
 def g:Test_LspShowReferences_multibyte()
   :silent! edit XLspShowReferences_mb.c
-  sleep 200m
   var lines: list<string> =<< trim END
     #include <stdio.h>
     void fn(int aVar)
@@ -526,7 +512,6 @@ enddef
 # contains multibyte and composing characters
 def g:Test_LspShowReferences_multibyte_symbol()
   :silent! edit XLspShowReferences_mb_sym.c
-  sleep 200m
   var lines: list<string> =<< trim END
     void fn(void)
     {
@@ -554,7 +539,6 @@ enddef
 # Test for :LspSymbolSearch when using multibyte and composing characters
 def g:Test_LspSymbolSearch_multibyte()
   silent! edit XLspSymbolSearch_mb.c
-  sleep 200m
   var lines: list<string> =<< trim END
     typedef void 😊😊😊😊;
     typedef void áb́áb́;
@@ -625,7 +609,6 @@ enddef
 # multibyte and composing characters
 def g:Test_LspTypeHier_multibyte()
   silent! edit XLspTypeHier_mb.cpp
-  sleep 200m
   var lines =<< trim END
     /* αβ😊😊ááą́ą́ */ class parent {
     };
