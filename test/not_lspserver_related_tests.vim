@@ -1352,6 +1352,30 @@ def g:Test_StaleRequestSupportCapability()
 	       capabilities.GetClientCaps().general.staleRequestSupport)
 enddef
 
+# Test for the "willSave" and "willSaveWaitUntil" text document sync server
+# capabilities and the synchronization client capability
+def g:Test_WillSaveCapability()
+  var lspserver: dict<any> = {forceOffsetEncoding: ''}
+  for [sync, expected] in [
+      [{willSave: true, willSaveWaitUntil: true}, [true, true]],
+      [{willSave: true}, [true, false]],
+      [{willSaveWaitUntil: true}, [false, true]],
+      [{willSave: false, willSaveWaitUntil: v:null}, [false, false]],
+      [{openClose: true, change: 1}, [false, false]],
+      [1, [false, false]],
+      [true, [false, false]]]
+    lspserver.caps = {textDocumentSync: sync}
+    capabilities.ProcessServerCaps(lspserver, lspserver.caps)
+    assert_equal(expected,
+		 [lspserver.supportsWillSave, lspserver.supportsWillSaveWaitUntil],
+		 string(sync))
+  endfor
+
+  assert_equal({dynamicRegistration: false, didSave: true, willSave: true,
+		willSaveWaitUntil: true},
+	       capabilities.GetClientCaps().textDocument.synchronization)
+enddef
+
 # Test that the client advertises the workspace edits that it applies: text
 # document edits for a version of a document and the file operations, up to
 # the first change that fails, but not the change annotations, which it
