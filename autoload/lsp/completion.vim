@@ -765,8 +765,9 @@ def DispatchCompletionItems(lspserver: dict<any>,
     endif
 
     if completeItems->len() == 1
-	&& getline('.')->matchstr($'\C{completeItems[0].word}\>') != ''
-      # only one complete match. No need to show the completion popup
+	&& getline('.')->strpart(start_col - 1, col('.') - start_col)
+	  ==# completeItems[0].word
+      # The only match is already typed, so completing it changes nothing
       return
     endif
 
