@@ -153,49 +153,55 @@ export def UpdateOutlineWindow(fname: string,
 
   var fullFname: string = fname->fnamemodify(':p')
   var prevWinID: number = win_getid()
-  wid->win_gotoid()
+  try
+    wid->win_gotoid()
 
-  # if the file displayed in the outline buffer is same as the new file, then
-  # save and restore the cursor position in each window showing it
-  var savedCursors: list<list<any>> = []
-  if b:->get('lspSymbols', {})->get('filename', '') == fullFname
-    savedCursors = outlineBufnr->win_findbuf()
-      ->mapnew((_, winid) => [winid, getcurpos(winid)])
-  endif
+    # if the file displayed in the outline buffer is same as the new file,
+    # then save and restore the cursor position in each window showing it
+    var savedCursors: list<list<any>> = []
+    if b:->get('lspSymbols', {})->get('filename', '') == fullFname
+      savedCursors = outlineBufnr->win_findbuf()
+	->mapnew((_, winid) => [winid, getcurpos(winid)])
+    endif
 
-  :setlocal modifiable
-  deletebufline('', 1, '$')
-  setline(1, ['# LSP Outline View',
-		$'# {fname->fnamemodify(":t")} ({fname->fnamemodify(":h")})'])
+    :setlocal modifiable
+    deletebufline('', 1, '$')
+    setline(1, ['# LSP Outline View',
+		  $'# {fname->fnamemodify(":t")} ({fname->fnamemodify(":h")})'])
 
-  # First two lines in the buffer display comment information
-  var lnumMap: list<dict<any>> = [{}, {}]
-  var text: list<string> = []
-  AddSymbolText(util.BufnrExact(fname), symbolTypeTable, '', text, lnumMap,
-		false)
-  text->append('$')
-  b:lspSymbols = {
-    filename: fullFname,
-    lnumTable: lnumMap,
-    symbolsByLine: symbolLineTable
-  }
-  :setlocal nomodifiable
+    # First two lines in the buffer display comment information
+    var lnumMap: list<dict<any>> = [{}, {}]
+    var text: list<string> = []
+    AddSymbolText(util.BufnrExact(fname), symbolTypeTable, '', text, lnumMap,
+		  false)
+    text->append('$')
+    b:lspSymbols = {
+      filename: fullFname,
+      lnumTable: lnumMap,
+      symbolsByLine: symbolLineTable
+    }
+    :setlocal nomodifiable
 
-  for [winid, curpos] in savedCursors
-    win_execute(winid, $'setpos(".", {curpos})')
-  endfor
+    for [winid, curpos] in savedCursors
+      win_execute(winid, $'setpos(".", {curpos})')
+    endfor
 
-  if exists('#User#LspOutlineUpdated')
-    :doautocmd <nomodeline> User LspOutlineUpdated
-  endif
-
-  prevWinID->win_gotoid()
+    if exists('#User#LspOutlineUpdated')
+      :doautocmd <nomodeline> User LspOutlineUpdated
+    endif
+  finally
+    # Go back before re-enabling refreshing the outline window.  After an
+    # exception thrown by an autocmd, the autocmds for going back end the
+    # finally block, so re-enable it in a finally block of its own.
+    try
+      prevWinID->win_gotoid()
+    finally
+      skipRefresh = false
+    endtry
+  endtry
 
   # Highlight the current symbol
   OutlineHighlightCurrentSymbol()
-
-  # re-enable refreshing the outline window
-  skipRefresh = false
 enddef
 
 # Returns the index of the innermost symbol in "symbolTable" whose range

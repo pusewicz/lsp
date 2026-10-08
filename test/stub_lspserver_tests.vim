@@ -5769,6 +5769,67 @@ def g:Test_LspOutline_InTwoTabPages_OtherFile()
   endtry
 enddef
 
+# Requests the document symbols for the outline, and returns the exception
+# that this throws, or an empty string when it throws none.
+def OutlineRefreshException(): string
+  try
+    g:LspRequestDocSymbols()
+  catch
+    return v:exception
+  endtry
+  return ''
+enddef
+
+# Test that an error in updating the outline, in showing a symbol or in an
+# autocmd for the LspOutlineUpdated event, goes back to the window of the
+# document and doesn't keep the outline from being refreshed afterwards.
+def g:Test_LspOutline_RefreshesAfterError()
+  var lspserver = MakeOutlineServer()
+  var SymbolsRpc: func = lspserver.rpc_a
+  var srcBnr = -1
+  try
+    srcBnr = OutlineSrcEdit(lspserver, 'XOutlineError.c',
+			    ['void aOutlineFunc(void) {}'])
+    var srcWinid = win_getid()
+    :LspOutline
+    var outlineBnr: number = ScratchBufsInTab()[0]
+
+    # A symbol whose selection range has no line
+    lspserver.rpc_a = (method: string, params: any, Cbfunc: func): number => {
+      var symRange = {start: {line: 0, character: 5},
+		      end: {line: 0, character: 17}}
+      Cbfunc(lspserver, [{name: 'aOutlineFunc', kind: 12, range: symRange,
+			  selectionRange: {start: {character: 5},
+					   end: {character: 17}}}], {})
+      return 1
+    }
+    assert_match('E716:', OutlineRefreshException())
+    v:errmsg = ''
+    assert_equal(srcWinid, win_getid())
+    lspserver.rpc_a = SymbolsRpc
+    srcWinid->win_gotoid()
+    setline(1, 'void bOutlineFunc(void) {}')
+    g:LspRequestDocSymbols()
+    assert_equal(['Function@', '  bOutlineFunc'],
+		 outlineBnr->getbufline(4, '$'))
+
+    autocmd_add([{group: 'XOutlineError', event: 'User',
+		  pattern: 'LspOutlineUpdated', once: true,
+		  cmd: "throw 'XOutlineUpdatedError'"}])
+    assert_equal('XOutlineUpdatedError', OutlineRefreshException())
+    assert_equal(srcWinid, win_getid())
+    srcWinid->win_gotoid()
+    setline(1, 'void cOutlineFunc(void) {}')
+    g:LspRequestDocSymbols()
+    assert_equal(['Function@', '  cOutlineFunc'],
+		 outlineBnr->getbufline(4, '$'))
+  finally
+    :silent! autocmd_delete([{group: 'XOutlineError'}])
+    buf.BufLspServerRemove(srcBnr, lspserver)
+    :%bw!
+  endtry
+enddef
+
 # Lines of the document "XDocSymbols.c" whose symbols DocSymbolsReply()
 # returns.
 const docSymbolsSrc: list<string> = ['struct aStruct {', '  int aField;', '};',
