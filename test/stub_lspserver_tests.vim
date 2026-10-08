@@ -10,6 +10,7 @@ import '../autoload/lsp/handlers.vim' as handlers
 import '../autoload/lsp/diag.vim' as diag
 import '../autoload/lsp/util.vim' as util
 import '../autoload/lsp/buffer.vim' as buf
+import '../autoload/lsp/ontypeformat.vim' as ontypeformat
 
 def CaptureNotification(notifications: list<dict<any>>, method: string,
 			params: any = {}): void
@@ -705,6 +706,23 @@ def g:Test_LspDetached_AutocmdFiresOncePerBufferWithMultipleServers()
     autocmd!
   augroup END
   unlet g:detachEvents g:detachedFile g:detachedBufnr g:detachedServers
+  :bw!
+enddef
+
+# Test that detaching a buffer from its language servers removes the on-type
+# formatting autocmds of the buffer.
+def g:Test_LspDetached_RemovesOnTypeFormattingAutocmds()
+  silent! edit XLspDetachedOnTypeFormatting.txt
+  var bnr = bufnr()
+
+  var srv = MakeTestLspServer([])
+  srv.isDocumentOnTypeFormattingProvider = true
+  buf.BufLspServerSet(bnr, srv)
+  ontypeformat.BufferInit(srv, bnr)
+  assert_notequal([], autocmd_get({group: 'LspOnTypeFormatting', bufnr: bnr}))
+
+  lsp.RemoveFile(bnr)
+  assert_equal([], autocmd_get({group: 'LspOnTypeFormatting', bufnr: bnr}))
   :bw!
 enddef
 
