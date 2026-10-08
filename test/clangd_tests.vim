@@ -12,7 +12,8 @@ source common.vim
 
 var lspOpts = {autoComplete: false, incrementalSync: false}
 g:LspOptionsSet(lspOpts)
-g:LSPTest_passes = [false, true]
+# Incremental sync needs the diff() function, which older Vim versions lack
+g:LSPTest_passes = exists('*diff') ? [false, true] : [false]
 
 def g:LSPTest_setupPass(optVal: bool, results: list<string>): bool
   g:LspOptionsSet({incrementalSync: optVal})
