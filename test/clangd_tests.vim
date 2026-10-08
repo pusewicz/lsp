@@ -7,13 +7,13 @@ import '../autoload/lsp/signature.vim' as signature
 import '../autoload/lsp/codeaction.vim' as codeaction
 import '../autoload/lsp/lsp.vim' as lsp
 import '../autoload/lsp/util.vim' as util
+import '../autoload/lsp/options.vim' as opt
 
 source common.vim
 
 var lspOpts = {autoComplete: false, incrementalSync: false}
 g:LspOptionsSet(lspOpts)
-# Incremental sync needs the diff() function, which older Vim versions lack
-g:LSPTest_passes = exists('*diff') ? [false, true] : [false]
+g:LSPTest_passes = opt.incrementalSyncSupported ? [false, true] : [false]
 
 def g:LSPTest_setupPass(optVal: bool, results: list<string>): bool
   g:LspOptionsSet({incrementalSync: optVal})
