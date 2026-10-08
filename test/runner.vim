@@ -6,18 +6,69 @@ vim9script
 
 source common.vim
 
+# An absolute path, as a test can change the current directory.
+const resultsFile: string = $'{getcwd()}/results.txt'
+
+# Append "lines" to results.txt.  Results are written as soon as they are
+# known, so that the ones recorded before an exception or an early exit of Vim
+# are kept.
+def AddResults(lines: list<string>)
+  writefile(lines, resultsFile, 'a')
+enddef
+
+# Return a FAIL line for the exception being handled, which "hook" threw.
+# "inPass" names the test pass, if any.
+def HookException(hook: string, inPass: string): string
+  return $'FAIL: {hook} threw{inPass}: {v:exception} at {v:throwpoint}'
+enddef
+
+# Run the test function "f" and append its "pass" or "FAIL" line to
+# results.txt, after the errors it reported.
+def RunTest(f: string)
+  v:errors = []
+  v:errmsg = ''
+  try
+    # ISOLATION: Clear hidden buffers and reset options that might leak
+    # silent! %bwipeout! is good, but we also ensure no leftover windows
+    silent! :%bwipeout!
+
+    # Execute the test function
+    exe $'call {f}()'
+  catch
+    add(v:errors, $'EXCEPTION: {f} -> {v:exception} at {v:throwpoint}')
+  endtry
+
+  # Check for both v:errors (assertions) and v:errmsg (Vim core errors).
+  # Before patch 9.2.1015, compiling a :def line that starts with a
+  # "name.member(" call continued on the next line can set v:errmsg
+  # although nothing is wrong, e.g. to E697 when a List is left open at
+  # the end of the line (vim/vim#21168); build such a List in a variable
+  # first.
+  if v:errmsg != ''
+    add(v:errors, $'ERROR: {f} generated {v:errmsg}')
+  endif
+
+  if !v:errors->empty()
+    AddResults(v:errors + [$'{f}: FAIL'])
+  else
+    AddResults([$'{f}: pass'])
+  endif
+enddef
+
 # Run every global Test_ function defined by the sourced test file and append
 # one "pass" or "FAIL" line per test to results.txt.  A test file that cannot
 # run in this environment sets g:LSPTest_skip to the reason and gets a single
 # "SKIP" line instead.  Running no tests for any other reason is a failure.
+# An exception thrown by g:LSPTest_setupPass(), g:StartLangServer() or
+# g:StopLangServer() is a failure of the test pass, and the run goes on with
+# the next one.  g:StopLangServer() runs even when the language server didn't
+# start, so that a half-started one doesn't run into the next test pass.
 def LspRunTests()
   :set nomore
   :set debug=beep
-  # Use a list to accumulate all results, then write once for better I/O
-  var all_results: list<string> = []
 
   if exists('g:LSPTest_skip')
-    writefile([$'SKIP: {g:TestName}: {g:LSPTest_skip}'], 'results.txt', 'a')
+    AddResults([$'SKIP: {g:TestName}: {g:LSPTest_skip}'])
     return
   endif
 
@@ -30,64 +81,55 @@ def LspRunTests()
     ->sort()
 
   if fns->empty()
-    writefile([$'FAIL: No tests found in {g:TestName}'], 'results.txt', 'a')
+    AddResults([$'FAIL: No tests found in {g:TestName}'])
     return
   endif
 
   var passes: list<any> = exists('g:LSPTest_passes')
         ? g:LSPTest_passes : [v:null]
   for pass in passes
+    var inPass: string = pass == v:null ? '' : $' in the test pass {pass}'
     if pass != v:null && exists('*g:LSPTest_setupPass')
-      if !g:LSPTest_setupPass(pass, all_results)
-        add(all_results, $'FAIL: Could not set up the test pass {pass}')
-	continue
-      endif
-    endif
-
-    if !g:StartLangServer()
-      add(all_results, 'FAIL: Not able to start the language server')
-      continue
-    endif
-
-    for f in fns
-      v:errors = []
-      v:errmsg = ''
+      var setupResults: list<string> = []
+      var ready: bool = false
       try
-        # ISOLATION: Clear hidden buffers and reset options that might leak
-        # silent! %bwipeout! is good, but we also ensure no leftover windows
-        silent! :%bwipeout!
-
-        # Execute the test function
-        exe $'call {f}()'
+        ready = g:LSPTest_setupPass(pass, setupResults)
+        if !ready
+          setupResults->add($'FAIL: Could not set up the test pass {pass}')
+        endif
       catch
-        add(v:errors, $'EXCEPTION: {f} -> {v:exception} at {v:throwpoint}')
+        setupResults->add(HookException('g:LSPTest_setupPass()', inPass))
       endtry
-
-      # Check for both v:errors (assertions) and v:errmsg (Vim core errors).
-      # Before patch 9.2.1015, compiling a :def line that starts with a
-      # "name.member(" call continued on the next line can set v:errmsg
-      # although nothing is wrong, e.g. to E697 when a List is left open at
-      # the end of the line (vim/vim#21168); build such a List in a variable
-      # first.
-      if v:errmsg != ''
-        add(v:errors, $'ERROR: {f} generated {v:errmsg}')
+      AddResults(setupResults)
+      if !ready
+        continue
       endif
+    endif
 
-      if !v:errors->empty()
-        extend(all_results, v:errors)
-        add(all_results, $'{f}: FAIL')
-      else
-        add(all_results, $'{f}: pass')
+    var started: bool = false
+    try
+      started = g:StartLangServer()
+      if !started
+        AddResults([$'FAIL: Not able to start the language server{inPass}'])
       endif
-    endfor
+    catch
+      AddResults([HookException('g:StartLangServer()', inPass)])
+    endtry
 
-    if pass != v:null && exists('*g:StopLangServer')
-      g:StopLangServer()
+    if started
+      for f in fns
+        RunTest(f)
+      endfor
+    endif
+
+    if exists('*g:StopLangServer')
+      try
+        g:StopLangServer()
+      catch
+        AddResults([HookException('g:StopLangServer()', inPass)])
+      endtry
     endif
   endfor
-
-  # Final write-back of all test results
-  writefile(all_results, 'results.txt', 'a')
 enddef
 
 # --- Main Execution Flow ---
@@ -97,7 +139,7 @@ enddef
 
 try
   # Ensure results.txt is empty before starting
-  writefile([], 'results.txt')
+  writefile([], resultsFile)
 
   g:LoadLspPlugin()
 
@@ -105,17 +147,11 @@ try
     exe $'source {g:TestName}'
     LspRunTests()
   else
-    writefile([$'FAIL: Test file "{g:TestName}" not found'], 'results.txt', 'a')
+    AddResults([$'FAIL: Test file "{g:TestName}" not found'])
   endif
 catch
-  var msg = $'FAIL: Global exception in {g:TestName}: {v:exception} at {v:throwpoint}'
-  writefile([msg], 'results.txt', 'a')
+  AddResults([$'FAIL: Global exception in {g:TestName}: {v:exception} at {v:throwpoint}'])
 endtry
-
-# Stop the LSP server if a helper exists, then exit
-if exists('*g:StopLangServer')
-  g:StopLangServer()
-endif
 
 qall!
 
