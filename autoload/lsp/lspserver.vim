@@ -459,6 +459,18 @@ def ProcessLspServerError(method: string, responseError: dict<any>)
   util.ErrMsg($'request {method} failed ({emsg})')
 enddef
 
+# Send the changes made to the buffers attached to "lspserver" that Vim hasn't
+# passed to the listeners yet, so that a request is answered for the current
+# text.  Vim invokes the listeners only before redrawing, which a mapping, an
+# autocmd or a script making a request right after a change doesn't do.
+def SendPendingChanges(lspserver: dict<any>)
+  for bnr in buf.BufGetServerBufnrs(lspserver)
+    if bnr->bufloaded()
+      bnr->listener_flush()
+    endif
+  endfor
+enddef
+
 # The ID of the first synchronous request to a language server.  Vim numbers
 # the requests sent with ch_sendexpr() from 1, so synchronous requests, which
 # are numbered by the plugin, use a range of their own.
@@ -484,6 +496,8 @@ def Rpc(lspserver: dict<any>, method: string, params: any, opts: dict<any> = {})
     # LSP server has exited
     return {}
   endif
+
+  SendPendingChanges(lspserver)
 
   var id = lspserver.nextSyncRpcId
   lspserver.nextSyncRpcId += 1
@@ -616,6 +630,8 @@ def AsyncRpc(lspserver: dict<any>, method: string, params: any, Cbfunc: func): n
     return -1
   endif
 
+  SendPendingChanges(lspserver)
+
   # Do the asynchronous RPC call
   var Fn = function('AsyncRpcCb', [lspserver, method, Cbfunc])
 
@@ -700,9 +716,6 @@ def SemanticHighlightUpdate(lspserver: dict<any>, bnr: number)
   if !lspserver.isSemanticTokensProvider
     return
   endif
-
-  # Send the pending buffer changes to the language server
-  bnr->listener_flush()
 
   # Capture the current changedtick
   var requestTick = getbufvar(bnr, 'changedtick')
@@ -910,9 +923,6 @@ def PullDiagnostics(lspserver: dict<any>, bnr: number)
     util.ErrMsg('LSP server does not support pull diagnostics')
     return
   endif
-
-  # Send any pending changes before asking for diagnostics.
-  bnr->listener_flush()
 
   var uri = util.LspBufnrToUri(bnr)
   var params: dict<any> = {
@@ -1534,9 +1544,6 @@ def DocHighlight(lspserver: dict<any>, bnr: number, cmdmods: string): void
     return
   endif
 
-  # Send the pending buffer changes to the language server
-  bnr->listener_flush()
-
   # interface DocumentHighlightParams
   #   interface TextDocumentPositionParams
   var params = lspserver.getTextDocPosition(false)
@@ -1710,9 +1717,6 @@ def TextDocOnTypeFormat(lspserver: dict<any>, ch: string)
     return
   endif
 
-  # Send the pending buffer changes to the language server
-  bnr->listener_flush()
-
   # interface DocumentOnTypeFormattingParams
   #   interface TextDocumentIdentifier
   #   interface Position
@@ -1885,9 +1889,6 @@ def InlayHintsShow(lspserver: dict<any>, bnr: number)
     util.ErrMsg('LSP server does not support inlay hint')
     return
   endif
-
-  # Send the pending buffer changes to the language server
-  bnr->listener_flush()
 
   var binfo = bnr->getbufinfo()
   if binfo->empty()

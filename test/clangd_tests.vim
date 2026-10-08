@@ -264,6 +264,20 @@ def g:Test_LspFormat_NoEolTrailingBlankLine()
   :%bw!
 enddef
 
+# Formatting right after a change, before Vim redraws (e.g. in a mapping or a
+# BufWritePre autocmd), formats the changed text.
+def g:Test_LspFormat_RightAfterChange()
+  :silent! edit XLspFormatAfterChange.c
+  sleep 200m
+  setline(1, ['int i;'])
+  g:WaitForServerFileLoad(0)
+  setline(1, ['int f1(int i)', '{', 'int j = 10; return j;', '}'])
+  :LspFormat
+  assert_equal(['int f1(int i) {', '  int j = 10;', '  return j;', '}'],
+	       getline(1, '$'))
+  :%bw!
+enddef
+
 # Test for formatting a file using 'formatexpr'
 def g:Test_LspFormatExpr()
   :silent! edit XLspFormat.c
