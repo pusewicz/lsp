@@ -1031,8 +1031,15 @@ def GetCompletion(lspserver: dict<any>, triggerKind_arg: number, triggerChar: st
     params.context.triggerCharacter = triggerChar
   endif
 
+  # Each request supersedes the earlier ones, whose replies are then ignored.
+  lspserver.completionRequestCount += 1
+  var requestCount = lspserver.completionRequestCount
   lspserver.rpc_a('textDocument/completion', params,
-			(_, reply, error) => completion.CompletionReply(lspserver, reply, error))
+			(_, reply, error) => {
+			  if requestCount == lspserver.completionRequestCount
+			    completion.CompletionReply(lspserver, reply, error)
+			  endif
+			})
 enddef
 
 # Get lazy properties for a completion item.
@@ -2637,6 +2644,7 @@ export def NewLspServer(serverParams: dict<any>): dict<any>
     needOffsetEncoding: false,
     omniCompletePending: false,
     completeItemsIsIncomplete: false,
+    completionRequestCount: 0,
     peekSymbolFilePopup: -1,
     peekSymbolPopup: -1,
     processDiagHandler: serverParams.processDiagHandler,
