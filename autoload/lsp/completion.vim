@@ -1025,9 +1025,6 @@ def OmniCompleteStart(lspserver: dict<any>): number
   [triggerKind, triggerChar] =
     AdjustCompletionTriggerAttributes(lspserver, triggerKind, triggerChar)
 
-  # first send all the changes in the current buffer to the LSP server
-  listener_flush()
-
   lspserver.omniCompletePending = true
   lspserver.completeItems = []
 
@@ -1142,9 +1139,6 @@ export def LspComplete(force: bool = false)
 
   [triggerKind, triggerChar] =
     AdjustCompletionTriggerAttributes(lspserver, triggerKind, triggerChar)
-
-  # first send all the changes in the current buffer to the LSP server
-  listener_flush()
 
   # initiate a request to LSP server to get list of completions
   lspserver.getCompletion(triggerKind, triggerChar)

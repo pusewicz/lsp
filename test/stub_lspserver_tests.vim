@@ -320,6 +320,96 @@ def g:Test_Rpc_CancelledReplyIsNotAnError()
   endtry
 enddef
 
+# Returns a running test language server that records the notifications and
+# the requests it is sent in "messages", in the order they are sent.
+def MakeRecordingLspServer(messages: list<dict<any>>): dict<any>
+  var lspserver = MakeTestLspServer(messages)
+  lspserver.running = true
+  lspserver.ready = true
+  lspserver.debug = true
+  lspserver.traceLog = (msg: string) => {
+    var request = msg->matchstr('^Sent request \zs.*')
+    if !request->empty()
+      messages->add(request->json_decode())
+    endif
+  }
+  return lspserver
+enddef
+
+# Test that a request made right after a change, before Vim passes the change
+# to the listeners (e.g. in a mapping or an autocmd), is sent after the
+# change, so that the formatting is for the new text.
+def g:Test_Rpc_SendsPendingChangesFirst()
+  silent! edit XRpcPendingChanges.txt
+  setline(1, ['old'])
+  var bnr = bufnr()
+  var messages: list<dict<any>> = []
+  var lspserver = MakeRecordingLspServer(messages)
+  lspserver.isDocumentFormattingProvider = true
+  lspserver.job = StartStubServerJob(
+    [{jsonrpc: '2.0', id: lspserver.nextSyncRpcId, result: []}])
+  buf.BufLspServerSet(bnr, lspserver)
+  var listenerId = listener_add((changedBnr, _, _, _, _) => {
+    lspserver.textdocDidChange(changedBnr)
+  }, bnr)
+  try
+    setline(1, 'new')
+    lspserver.textDocFormat(@%, false, 0, 0)
+
+    assert_equal(['textDocument/didChange', 'textDocument/formatting'],
+		 messages->mapnew((_, msg) => msg.method))
+    assert_equal([{text: "new\n"}], messages[0].params.contentChanges)
+  finally
+    listener_remove(listenerId)
+    job_stop(lspserver.job)
+    buf.BufLspServerRemove(bnr, lspserver)
+    :%bw!
+  endtry
+enddef
+
+# Test that an asynchronous request is sent after the pending changes of all
+# the buffers attached to the language server, not only of the buffer it is
+# about: the reply can depend on them, e.g. for the references in other files.
+def g:Test_AsyncRpc_SendsPendingChangesOfAllBuffersFirst()
+  silent! edit XAsyncRpcPendingChanges1.txt
+  setline(1, ['one'])
+  var bnr1 = bufnr()
+  silent! new XAsyncRpcPendingChanges2.txt
+  var bnr2 = bufnr()
+  var messages: list<dict<any>> = []
+  var lspserver = MakeRecordingLspServer(messages)
+  lspserver.job = StartStubServerJob([])
+  var listenerIds: list<number> = []
+  for bnr in [bnr1, bnr2]
+    buf.BufLspServerSet(bnr, lspserver)
+    listenerIds->add(listener_add((changedBnr, _, _, _, _) => {
+      lspserver.textdocDidChange(changedBnr)
+    }, bnr))
+  endfor
+  # Send the request asynchronously, as outside the tests
+  g:LSPTest = false
+  try
+    setbufline(bnr1, 1, 'ONE')
+    lspserver.rpc_a('workspace/symbol', {query: ''}, (_, _, _) => {
+    })
+
+    assert_equal(['textDocument/didChange', 'workspace/symbol'],
+		 messages->mapnew((_, msg) => msg.method))
+    assert_equal(util.LspBufnrToUri(bnr1),
+		 messages[0].params.textDocument.uri)
+    assert_equal([{text: "ONE\n"}], messages[0].params.contentChanges)
+  finally
+    g:LSPTest = true
+    listenerIds->foreach((_, id) => {
+      listener_remove(id)
+    })
+    job_stop(lspserver.job)
+    buf.BufLspServerRemove(bnr1, lspserver)
+    buf.BufLspServerRemove(bnr2, lspserver)
+    :%bw!
+  endtry
+enddef
+
 # Test that a "$/cancelRequest" notification from the server is accepted
 # quietly.
 def g:Test_ProcessNotif_CancelRequestIsIgnored()
