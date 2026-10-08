@@ -123,6 +123,7 @@ call LspOptionsSet(#{
         \   diagSignInfoText: 'I>',
         \   diagSignWarningText: 'W>',
         \   echoSignature: v:false,
+        \   formatOnSave: v:false,
         \   hideDisabledCodeActions: v:false,
         \   highlightDiagInline: v:true,
         \   hoverInPreview: v:false,

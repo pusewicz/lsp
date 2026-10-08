@@ -86,6 +86,9 @@ export var lspOptions: dict<any> = {
   # fall back to built-in gq formatting when LS incapable of formatting
   formatFallback: false,
 
+  # Format a buffer with the language server before writing it to its file
+  formatOnSave: false,
+
   # fall back to built-in tjump when no definition information is available
   definitionFallback: false,
 
