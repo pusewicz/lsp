@@ -481,8 +481,8 @@ export def DiagsRefresh(bnr: number)
                            text_padding_left: padding})
       endif
     catch /E966\|E964/ # Invalid lnum | Invalid col
-      # Diagnostics arrive asynchronously and the document changed while they
-      # were in transit. Ignore this as new once will arrive shortly.
+      # DiagInBuf() clamps the range to the buffer, so only a malformed range
+      # from the server, such as a negative position, gets here.  Skip it.
     endtry
   endfor
 
