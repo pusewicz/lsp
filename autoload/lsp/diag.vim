@@ -18,8 +18,12 @@ import './util.vim'
 #     }
 #   },
 #   serverDiagnosticsByLnum: {
-#     lspServer1Id: { [lnum]: [diag, diag diag] },
-#     lspServer2Id: { [lnum]: [diag, diag diag] },
+#     lspServer1Id: { [startLnum]: [diag, diag diag] },
+#     lspServer2Id: { [startLnum]: [diag, diag diag] },
+#   },
+#   serverMultiLineDiagnostics: {
+#     lspServer1Id: [diags covering more than one line]->sort(),
+#     lspServer2Id: [diags covering more than one line]->sort(),
 #   },
 #   sortedDiagnostics: [lspServer1.diags, ...lspServer2.diags]->sort()
 # }
@@ -162,6 +166,18 @@ enddef
 # Sort diagnostics ascending based on line and character offset
 def SortDiags(diags: list<dict<any>>): list<dict<any>>
   return diags->sort(DiagsSortFunc)
+enddef
+
+# Return the last buffer line number covered by the range of "diag".  The end
+# of an LSP range is exclusive, so a range ending at the first character of a
+# later line doesn't cover that line.
+def DiagLastLnum(diag: dict<any>): number
+  var d_start: dict<number> = diag.range.start
+  var d_end: dict<number> = diag.range.end
+  if d_end.line <= d_start.line
+    return d_start.line + 1
+  endif
+  return d_end.character == 0 ? d_end.line : d_end.line + 1
 enddef
 
 # Deduplicate diagnostics, if the same diagnostic is sent in
@@ -565,6 +581,7 @@ export def DiagNotification(lspserver: dict<any>, uri: string, diags_arg: list<d
 
   # store the diagnostic for each line separately
   var diagsByLnum: dict<list<dict<any>>> = {}
+  var multiLineDiags: list<dict<any>> = []
   for diag in dedupedDiags
     var d_start = diag.range.start
     if d_start.line + 1 > lastlnum
@@ -577,12 +594,19 @@ export def DiagNotification(lspserver: dict<any>, uri: string, diags_arg: list<d
       diagsByLnum[lnum] = []
     endif
     diagsByLnum[lnum]->add(diag)
+    if DiagLastLnum(diag) > lnum
+      multiLineDiags->add(diag)
+    endif
   endfor
 
   # store the diagnostic for each line separately
   var serverDiagsByLnum: dict<dict<list<any>>> = diagsMap->has_key(bnr) ?
       diagsMap[bnr].serverDiagnosticsByLnum : {}
   serverDiagsByLnum[serverId] = diagsByLnum
+
+  var serverMultiLineDiags: dict<list<dict<any>>> = diagsMap->has_key(bnr) ?
+      diagsMap[bnr].serverMultiLineDiagnostics : {}
+  serverMultiLineDiags[serverId] = SortDiags(multiLineDiags)
 
   var joinedServerDiags: list<dict<any>> = []
   for kndDiags in serverDiags->values()
@@ -601,6 +625,7 @@ export def DiagNotification(lspserver: dict<any>, uri: string, diags_arg: list<d
   diagsMap[bnr] = {
     sortedDiagnostics: sortedDiags,
     serverDiagnosticsByLnum: serverDiagsByLnum,
+    serverMultiLineDiagnostics: serverMultiLineDiags,
     serverDiagnostics: serverDiags
   }
 
@@ -731,8 +756,8 @@ export def ShowAllDiags(): void
   endif
 enddef
 
-# Display the message of "diag" in a popup window right below the position in
-# the diagnostic message.
+# Display the message of "diag" in a popup window right below the start of the
+# diagnostic, or below the cursor if the diagnostic starts on another line.
 def ShowDiagInPopup(diag: dict<any>)
   var d_start = diag.range.start
   var dlnum = d_start.line + 1
@@ -743,18 +768,21 @@ def ShowDiagInPopup(diag: dict<any>)
     dlnum = lastline
   endif
 
-  var ltext = dlnum->getline()
-  var dlcol = ltext->byteidxcomp(d_start.character) + 1
-  if dlcol < 1
-    # The column is outside the last character in line.
-    dlcol = ltext->len() + 1
+  var d: dict<number> = {row: 0, col: 0}
+  if dlnum == line('.')
+    var ltext = dlnum->getline()
+    var dlcol = ltext->byteidxcomp(d_start.character) + 1
+    if dlcol < 1
+      # The column is outside the last character in line.
+      dlcol = ltext->len() + 1
+    endif
+    d = screenpos(0, dlnum, dlcol)
   endif
 
-  var d = screenpos(0, dlnum, dlcol)
-  if d->empty()
-    # If the diag position cannot be converted to Vim lnum/col, then use
-    # the current cursor position
-    d = {row: line('.'), col: col('.')}
+  if d.row == 0
+    # The diagnostic starts on a different line than the cursor or its start
+    # is not visible.  Display the popup below the cursor.
+    d = screenpos(0, line('.'), col('.'))
   endif
 
   # Display a popup right below the diagnostics position
@@ -824,61 +852,101 @@ def ShowCurrentDiagInStatusLine()
   endif
 enddef
 
+# Return true if the position at line "lnum" and character index "col" (both
+# 1-based, composing characters not counted separately) in buffer "bnr" is
+# inside the range of "diag".
+def DiagRangeHasPos(bnr: number, diag: dict<any>, lnum: number,
+		    col: number): bool
+  var r = diag.range
+  var startLnum = r.start.line + 1
+  var endLnum = r.end.line + 1
+  if lnum < startLnum || lnum > endLnum
+    return false
+  endif
+  if lnum == startLnum
+      && col < util.GetCharIdxWithoutCompChar(bnr, r.start) + 1
+    return false
+  endif
+  if lnum == endLnum
+      && col >= util.GetCharIdxWithoutCompChar(bnr, r.end) + 1
+    return false
+  endif
+  return true
+enddef
+
 # Get the diagnostic from the LSP server for a particular line and character
-# offset in a file
+# offset in a file.  If "atPos" is true, return the innermost diagnostic whose
+# range contains the position.  Otherwise, return the first diagnostic covering
+# the line that starts at or after the position, or the last one starting
+# before it.
 export def GetDiagByPos(bnr: number, lnum: number, col: number,
 			atPos: bool = false): dict<any>
   var diags_in_line = GetDiagsByLine(bnr, lnum)
 
-  for diag in diags_in_line
-    var r = diag.range
-    var startCharIdx = util.GetCharIdxWithoutCompChar(bnr, r.start)
-    var endCharIdx = util.GetCharIdxWithoutCompChar(bnr, r.end)
-    if atPos
-      if col >= startCharIdx + 1 && col < endCharIdx + 1
-        return diag
+  if atPos
+    var found: dict<any> = {}
+    for diag in diags_in_line
+      if DiagRangeHasPos(bnr, diag, lnum, col)
+	  && (found->empty() || DiagsSortFunc(diag, found) > 0)
+	found = diag
       endif
-    elseif col <= startCharIdx + 1
+    endfor
+    return found
+  endif
+
+  for diag in diags_in_line
+    var d_start = diag.range.start
+    if d_start.line + 1 == lnum
+	&& col <= util.GetCharIdxWithoutCompChar(bnr, d_start) + 1
       return diag
     endif
   endfor
 
   # No diagnostic to the right of the position, return the last one instead
-  if !atPos && diags_in_line->len() > 0
-    return diags_in_line[-1]
-  endif
-
-  return {}
+  return diags_in_line->empty() ? {} : diags_in_line[-1]
 enddef
 
-# Get all diagnostics from the LSP server for a particular line in a file
-export def GetDiagsByLine(bnr: number, lnum: number, lspserver: dict<any> = null_dict): list<dict<any>>
+# Get all the diagnostics from the LSP server "lspserver" (or from all the
+# servers if not specified) covering any of the lines from "startLnum" to
+# "endLnum" in buffer "bnr".  Returns a new list sorted by the start position.
+export def GetDiagsInLineRange(bnr: number, startLnum: number, endLnum: number,
+			       lspserver: dict<any> = null_dict): list<dict<any>>
   if !diagsMap->has_key(bnr)
     return []
   endif
 
+  var bufferDiags = diagsMap[bnr]
+  var serverIds: list<any> = lspserver == null_dict
+    ? bufferDiags.serverDiagnosticsByLnum->keys()
+    : [lspserver.id]
+
   var diags: list<dict<any>> = []
-
-  var serverDiagsByLnum = diagsMap[bnr].serverDiagnosticsByLnum
-
-  if lspserver == null_dict
-    for diagsByLnum in serverDiagsByLnum->values()
+  for serverId in serverIds
+    var diagsByLnum = bufferDiags.serverDiagnosticsByLnum->get(serverId, {})
+    for lnum in range(startLnum, endLnum)
       if diagsByLnum->has_key(lnum)
-        diags->extend(diagsByLnum[lnum])
+	diags->extend(diagsByLnum[lnum])
       endif
     endfor
-  else
-    if !serverDiagsByLnum->has_key(lspserver.id)
-      return []
-    endif
-    if serverDiagsByLnum[lspserver.id]->has_key(lnum)
-      diags = serverDiagsByLnum[lspserver.id][lnum]
-    endif
-  endif
 
-  return diags->sort((a, b) => {
-    return a.range.start.character - b.range.start.character
-  })
+    # Diagnostics starting before the range but extending into it
+    for diag in bufferDiags.serverMultiLineDiagnostics->get(serverId, [])
+      if diag.range.start.line + 1 >= startLnum
+	break
+      endif
+      if DiagLastLnum(diag) >= startLnum
+	diags->add(diag)
+      endif
+    endfor
+  endfor
+
+  return SortDiags(diags)
+enddef
+
+# Get all diagnostics from the LSP server for a particular line in a file,
+# including the diagnostics that start on a previous line and extend to it.
+export def GetDiagsByLine(bnr: number, lnum: number, lspserver: dict<any> = null_dict): list<dict<any>>
+  return GetDiagsInLineRange(bnr, lnum, lnum, lspserver)
 enddef
 
 # Utility function to do the actual jump
@@ -994,22 +1062,13 @@ def g:LspDiagExpr(): any
     return ''
   endif
 
-  var diagsInfo: list<dict<any>> =
-			GetDiagsByLine(v:beval_bufnr, v:beval_lnum)
-  if diagsInfo->empty()
-    # No diagnostic for the current cursor location
-    return ''
+  var ltext: string = v:beval_bufnr->getbufline(v:beval_lnum)->get(0, '')
+  var charIdx: number = ltext->charidx(v:beval_col - 1)
+  if charIdx < 0
+    charIdx = ltext->strcharlen()
   endif
-  var diagFound: dict<any> = {}
-  for diag in diagsInfo
-    var r = diag.range
-    var startcol = util.GetLineByteFromPos(v:beval_bufnr, r.start) + 1
-    var endcol = util.GetLineByteFromPos(v:beval_bufnr, r.end) + 1
-    if v:beval_col >= startcol && v:beval_col < endcol
-      diagFound = diag
-      break
-    endif
-  endfor
+  var diagFound: dict<any> =
+	GetDiagByPos(v:beval_bufnr, v:beval_lnum, charIdx + 1, true)
   if diagFound->empty()
     # mouse is outside of the diagnostics range
     return ''

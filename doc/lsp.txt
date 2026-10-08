@@ -1402,15 +1402,19 @@ reported by the language server.
 			current line.  If the option 'showDiagInPopup' is set
 			to true (default), then the message is displayed in
 			a popup window.  Otherwise the message is displayed in
-			the status message area.
+			the status message area.  A diagnostic spanning
+			multiple lines is displayed on any line it covers.
 
 			When there are multiple diagnostics on the current
 			line, this selects the first diagnostic whose start
 			position is at or to the right of the cursor; if none
-			match, the last diagnostic on the line is shown.
+			match, the diagnostic starting closest before the
+			cursor is shown.
 
 :LspDiag! current	Only display a diagnostic message if it's directly
-			under the cursor.  Otherwise works exactly like
+			under the cursor.  If the cursor is inside nested
+			diagnostics, the innermost one is displayed.
+			Otherwise works exactly like
 			":LspDiag current"
 
 			To show the current diagnostic under the cursor while
