@@ -862,11 +862,6 @@ export def BufferLoadedInWin(bnr: number)
     # No language servers for this buffer
     return
   endif
-  for lspserver in lspservers
-    if !lspserver->empty() && lspserver.ready
-      lspserver.textdocDidChange(bnr)
-    endif
-  endfor
   # Refresh the displayed diags visuals
   if opt.lspOptions.autoHighlightDiags
     diag.DiagsRefresh(bnr)
