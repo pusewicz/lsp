@@ -21,7 +21,7 @@ mkdir -p "$work"
 # tar exits with 1 when a file changes while it is copied, like the swap file
 # of a file being edited.
 status=0
-tar -C "$src" --exclude=./.git --exclude=./test/docker/logs \
+tar -C "$src" --exclude=./.git --exclude=./test/docker/logs --exclude=./test/node_modules \
   --warning=no-file-changed -cf - . | tar -C "$work" -xf - || status=$?
 if [[ $status -gt 1 ]]; then
   exit "$status"
@@ -34,6 +34,11 @@ git -C "$work" -c init.defaultBranch=main init -q
 git -C "$work" clean -dfqX
 
 cd "$work/test"
+
+# The "Install the TypeScript language server" step of the workflow.
+if [[ -f package-lock.json ]]; then
+  npm ci --prefer-offline --no-audit --no-fund
+fi
 
 if [[ ${1-} == --shell ]]; then
   exec bash

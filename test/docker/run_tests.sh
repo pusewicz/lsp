@@ -7,6 +7,9 @@ set -euo pipefail
 # The Vim versions of the workflow matrix (.github/workflows/unitests.yml).
 DEFAULT_VERSIONS=(nightly v9.0.0000)
 IMAGE=lsp-tests
+# A volume for the npm cache, to install the TypeScript language server
+# without downloading it on every run.
+NPM_CACHE=lsp-tests-npm-cache
 
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../.." && pwd)
@@ -126,7 +129,8 @@ run_tests_on() {
   local version=$1 log=$logdir/vim-$1.log start=$SECONDS status=0
   shift
   docker run --rm --init --pull never --name "$(container_name "$version")" \
-    --volume "$repo:/src:ro" "$IMAGE:vim-$version" ${1+"$@"} 2>&1 \
+    --volume "$repo:/src:ro" --volume "$NPM_CACHE:/home/runner/.npm" \
+    "$IMAGE:vim-$version" ${1+"$@"} 2>&1 \
     | tee "$log" \
     | awk -v prefix="[$version] " '/^(===>|RESULT:|SUCCESS:|ERROR:)/ { print prefix $0; fflush() }' \
     || status=$?
@@ -146,7 +150,8 @@ fi
 
 if $shell; then
   exec docker run --rm --interactive --tty --init --pull never \
-    --volume "$repo:/src:ro" "$IMAGE:vim-${versions[0]}" --shell
+    --volume "$repo:/src:ro" --volume "$NPM_CACHE:/home/runner/.npm" \
+    "$IMAGE:vim-${versions[0]}" --shell
 fi
 
 pids=()

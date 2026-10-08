@@ -54,12 +54,12 @@ RUN if [[ $VIM_VERSION == nightly ]]; then ref=HEAD; else ref=refs/tags/$VIM_VER
 
 FROM base AS servers
 
-# The "Install packages" step of the workflow.
+# The "Install packages" step of the workflow.  The TypeScript language
+# server is installed from test/package-lock.json by entrypoint.sh.
 RUN apt-get update \
  && apt-get install -y clangd-15 \
  && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
  && apt-get install -y nodejs \
- && npm install -g typescript-language-server typescript \
  && apt-get install -y golang gopls cargo rust-src \
  && rm -rf /var/lib/apt/lists/*
 
@@ -74,6 +74,10 @@ ARG RUST_TOOLCHAIN=stable
 RUN curl -fsSL https://sh.rustup.rs \
     | sh -s -- -y --no-modify-path --profile minimal --default-toolchain "$RUST_TOOLCHAIN" \
  && rustup component add rustfmt clippy
+
+# run_tests.sh keeps the npm cache in a volume.  Docker creates the
+# directory of a volume as root unless the image has it.
+RUN mkdir ~/.npm
 
 RUN mkdir -p ~/.local/bin \
  && curl -fsSL "https://github.com/rust-lang/rust-analyzer/releases/download/2024-06-24/rust-analyzer-$(uname -m)-unknown-linux-gnu.gz" \
