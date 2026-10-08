@@ -812,6 +812,9 @@ def TextdocDidOpen(lspserver: dict<any>, bnr: number, ftype: string): void
   var hasEol = util.BufWritesEol(bnr)
   lspserver.cachedBufferContent[bnr] = newBufLines
   lspserver.cachedBufferEol[bnr] = hasEol
+  # Use Vim 'changedtick' as the LSP document version number
+  var version: number = bnr->getbufvar('changedtick')
+  lspserver.docVersions[bnr] = version
 
   if !lspserver.supportsDidOpenClose
     return
@@ -821,8 +824,7 @@ def TextdocDidOpen(lspserver: dict<any>, bnr: number, ftype: string): void
     textDocument: {
       uri: util.LspBufnrToUri(bnr),
       languageId: languageId,
-      # Use Vim 'changedtick' as the LSP document version number
-      version: bnr->getbufvar('changedtick'),
+      version: version,
       text: LinesText(newBufLines, hasEol)
     }
   }
@@ -847,6 +849,9 @@ def TextdocDidClose(lspserver: dict<any>, bnr: number): void
   endif
   if lspserver.cachedBufferEol->has_key(bnr)
     lspserver.cachedBufferEol->remove(bnr)
+  endif
+  if lspserver.docVersions->has_key(bnr)
+    lspserver.docVersions->remove(bnr)
   endif
   if lspserver.diagnosticResultIds->has_key(bnr)
     lspserver.diagnosticResultIds->remove(bnr)
@@ -997,15 +1002,15 @@ def TextdocDidChange(lspserver: dict<any>, bnr: number): void
   endif
 
   var contentChanges: list<dict<any>>
+  var hasEol = util.BufWritesEol(bnr)
 
   if textDocumentSync == protocol.TextDocumentSyncKindFull
 	|| !opt.lspOptions.incrementalSync
     # TextDocumentSyncKind: Full — send the entire buffer on every change.
-    contentChanges = [{text: BufferText(bnr)}]
+    contentChanges = [{text: LinesText(bnr->getbufline(1, '$'), hasEol)}]
   elseif exists_compiled('*diff')
     # TextDocumentSyncKind: Incremental — send only the changed lines.
     var newBufLines = bnr->getbufline(1, '$')
-    var hasEol = util.BufWritesEol(bnr)
     var cachedBufferContent = lspserver.cachedBufferContent
     var cachedBufferEol = lspserver.cachedBufferEol
     if cachedBufferContent->has_key(bnr)
@@ -1056,8 +1061,8 @@ def TextdocDidChange(lspserver: dict<any>, bnr: number): void
       contentChanges = [{text: LinesText(newBufLines, hasEol)}]
     endif
     cachedBufferContent[bnr] = newBufLines
-    cachedBufferEol[bnr] = hasEol
   endif
+  lspserver.cachedBufferEol[bnr] = hasEol
 
   if contentChanges->empty()
     return
@@ -1066,12 +1071,36 @@ def TextdocDidChange(lspserver: dict<any>, bnr: number): void
   var params = {
     textDocument: {
       uri: util.LspBufnrToUri(bnr),
-      # Use Vim 'changedtick' as the LSP document version number
-      version: bnr->getbufvar('changedtick')
+      version: NextDocVersion(lspserver, bnr)
     },
     contentChanges: contentChanges
   }
   lspserver.sendNotification('textDocument/didChange', params)
+enddef
+
+# Returns the version of the next change to the document of buffer "bnr" and
+# records it.  That is Vim's 'changedtick', or one more than the previous
+# version when 'changedtick' didn't change (e.g. when setting 'endofline'
+# removed the newline at the end of the document), as the version of a
+# document must increase with every change.
+def NextDocVersion(lspserver: dict<any>, bnr: number): number
+  var version: number = [bnr->getbufvar('changedtick'),
+			 lspserver.docVersions->get(bnr, 0) + 1]->max()
+  lspserver.docVersions[bnr] = version
+  return version
+enddef
+
+# Send a change notification for buffer "bnr" when setting 'endofline',
+# 'fixendofline' or 'binary' added or removed the newline at the end of its
+# document.  That changes neither a line nor 'changedtick', so the listener
+# doesn't see it.
+def TextdocEolChanged(lspserver: dict<any>, bnr: number): void
+  var cachedBufferEol = lspserver.cachedBufferEol
+  if !cachedBufferEol->has_key(bnr)
+      || cachedBufferEol[bnr] == util.BufWritesEol(bnr)
+    return
+  endif
+  TextdocDidChange(lspserver, bnr)
 enddef
 
 # Return the current cursor position as a LSP position.
@@ -2833,6 +2862,7 @@ export def NewLspServer(serverParams: dict<any>): dict<any>
     signaturePopup: -1,
     cachedBufferContent: {},
     cachedBufferEol: {},
+    docVersions: {},
     syncInit: serverParams.syncInit,
     traceLevel: serverParams.traceLevel,
     typeHierFilePopup: -1,
@@ -2876,6 +2906,7 @@ export def NewLspServer(serverParams: dict<any>): dict<any>
     textdocDidOpen: function(TextdocDidOpen, [lspserver]),
     textdocDidClose: function(TextdocDidClose, [lspserver]),
     textdocDidChange: function(TextdocDidChange, [lspserver]),
+    textdocEolChanged: function(TextdocEolChanged, [lspserver]),
     sendInitializedNotif: function(SendInitializedNotif, [lspserver]),
     sendWorkspaceConfig: function(SendWorkspaceConfig, [lspserver]),
     getCompletion: function(GetCompletion, [lspserver]),
