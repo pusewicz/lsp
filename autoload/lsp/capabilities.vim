@@ -229,6 +229,7 @@ export def ProcessServerCaps(lspserver: dict<any>, caps: dict<any>)
       lspserver.isDocumentLinkResolveProvider = false
     endif
   else
+    lspserver.isDocumentLinkProvider = false
     lspserver.isDocumentLinkResolveProvider = false
   endif
 
@@ -529,6 +530,10 @@ export def GetClientCaps(): dict<any>
       },
       documentHighlight: {
 	dynamicRegistration: false
+      },
+      documentLink: {
+	dynamicRegistration: false,
+	tooltipSupport: true
       },
       documentSymbol: {
 	dynamicRegistration: false,

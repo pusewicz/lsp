@@ -4,6 +4,7 @@ vim9script
 import '../autoload/lsp/completion.vim' as completion
 import '../autoload/lsp/buffer.vim' as buf
 import '../autoload/lsp/capabilities.vim' as capabilities
+import '../autoload/lsp/documentlink.vim' as documentlink
 import '../autoload/lsp/util.vim' as util
 import '../autoload/lsp/options.vim' as opt
 
@@ -858,6 +859,34 @@ def g:Test_PopupConfigure_Opacity_AppliedToPopup()
     popup_clear()
     ResetPopupOpacityOptions()
   endtry
+enddef
+
+# Test for the documentLinkProvider server capability and the documentLink
+# client capability
+def g:Test_DocumentLinkCapability()
+  var lspserver: dict<any> = {caps: {}, forceOffsetEncoding: ''}
+  capabilities.ProcessServerCaps(lspserver, lspserver.caps)
+  assert_false(lspserver.isDocumentLinkProvider)
+  assert_false(lspserver.isDocumentLinkResolveProvider)
+
+  lspserver.caps = {documentLinkProvider: {resolveProvider: true}}
+  capabilities.ProcessServerCaps(lspserver, lspserver.caps)
+  assert_true(lspserver.isDocumentLinkProvider)
+  assert_true(lspserver.isDocumentLinkResolveProvider)
+
+  assert_true(capabilities.GetClientCaps().textDocument.documentLink.tooltipSupport)
+enddef
+
+# Test for parsing the line and column fragment in a document link file URI
+def g:Test_DocumentLink_ParseFileUri()
+  var uri = 'file:///tmp/a%20b.c'
+  assert_equal([uri, 1, 1], documentlink.ParseFileUri(uri))
+  assert_equal([uri, 10, 1], documentlink.ParseFileUri($'{uri}#L10'))
+  assert_equal([uri, 10, 5], documentlink.ParseFileUri($'{uri}#L10,5'))
+  assert_equal([uri, 10, 5], documentlink.ParseFileUri($'{uri}#10,5'))
+  assert_equal([uri, 3, 2], documentlink.ParseFileUri($'{uri}#L3,2-L4,1'))
+  assert_equal([uri, 1, 1], documentlink.ParseFileUri($'{uri}#L0'))
+  assert_equal([uri, 1, 1], documentlink.ParseFileUri($'{uri}#section'))
 enddef
 
 # Only here to because the test runner needs it

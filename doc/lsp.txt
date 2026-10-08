@@ -567,6 +567,9 @@ these commands is provided later in this section.
 			messages are found.
 :LspDiag show		Display the diagnostics messages from the language
 			server for the current buffer in a location list.
+:LspDocumentLink	Display the links in the current file in a location
+			list.
+:LspDocumentLinkOpen	Open the target of the link under cursor.
 :LspDocumentSymbol	Display the symbols in the current file in a popup
 			menu and jump to the location of a selected symbol.
 :LspFold		Create folds for the current buffer using
@@ -626,6 +629,48 @@ these commands is provided later in this section.
 Commands to navigate the codebase by jumping to definitions or listing all
 locations where a symbol is referenced.
 
+							*:LspDocumentLink*
+:LspDocumentLink	Creates a new location list with the links in the
+			current file and opens the location window.  A link
+			is a range of text that refers to a file or a URI,
+			for example the file name in a C "#include" directive
+			or a URL in a comment.  Each entry shows the target of
+			the link followed by the link tooltip, if any.  A link
+			whose target the language server computes only on
+			request is shown as "(unresolved)".  If you want to
+			show the links in a quickfix list instead of in a
+			location list set >
+
+			LspOptionsSet({'useQuickfixForLocations': true})
+<
+							*:LspDocumentLinkOpen*
+:LspDocumentLinkOpen	Opens the target of the link under the cursor.  If the
+			cursor is not on a link, then opens the first link in
+			the cursor line.  If the language server computes the
+			target of a link only on request, then the
+			"documentLink/resolve" request is used to get it.
+
+			A "file:" target is opened in Vim like
+			|:LspGotoDefinition| opens a file.  The current cursor
+			location is pushed onto the tag stack and the
+			|:command-modifiers| are supported.  A "#L{line}" or
+			"#L{line},{col}" fragment in the target selects the
+			line and column to jump to.  Example: >
+
+			    # Open the target in a vertically split window
+			    :vert LspDocumentLinkOpen
+<
+			Any other target, for example a "https:" URL, is
+			opened with the default handler of the system using
+			|dist#vim9#Open()|, which can be configured with the
+			|g:Openprg| variable.  When the Vim runtime doesn't
+			provide this function, "xdg-open" or "open" is used on
+			Unix and the URL handler of the system on MS-Windows.
+
+			You may want to map a key to invoke this command: >
+
+			    nnoremap <buffer> gx <Cmd>LspDocumentLinkOpen<CR>
+<
 							*:LspGotoDeclaration*
 :[count]LspGotoDeclaration
 			Jumps to the declaration of the symbol under the
@@ -1774,7 +1819,7 @@ keepFocusInDiags     	|Boolean| option.  Focus on the location list window
 
 					*lsp-opt-keepFocusInReferences*
 keepFocusInReferences	|Boolean| option.  Focus on the location list window
-			after LspShowReferences.
+			after |:LspShowReferences| and |:LspDocumentLink|.
 			By default this is set to true.
 
 						*lsp-opt-maxDiagnostics*
@@ -2064,8 +2109,9 @@ usePopupInCodeAction    |Boolean| option.  When using the |:LspCodeAction|
 			By default this is set to false.
 
 					*lsp-opt-useQuickfixForLocations*
-useQuickfixForLocations	|Boolean| option.  Show |:LspShowReferences| in a
-			quickfix list instead of a location list.
+useQuickfixForLocations	|Boolean| option.  Show |:LspShowReferences| and
+			|:LspDocumentLink| in a quickfix list instead of a
+			location list.
 			By default this is set to false.
 
 						*lsp-opt-useBufferCompletion*
@@ -3471,6 +3517,9 @@ documentFormatting		Used by the |:LspFormat| command, and
 					*lsp-features-documentHighlight*
 documentHighlight		Used by the |:LspHighlight| and the
 				|:LspHighlightClear| commands.
+					*lsp-features-documentLink*
+documentLink			Used by the |:LspDocumentLink| and the
+				|:LspDocumentLinkOpen| commands.
 					*lsp-features-documentSymbol*
 documentSymbol			Used by the |:LspDocumentSymbol| and the
 				|:LspOutline| commands.
