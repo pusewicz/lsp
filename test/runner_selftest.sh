@@ -10,6 +10,7 @@ cd "$(dirname "$0")" || exit 1
 
 FIXTURE=runner_selftest_fixture.vim
 RES_FILE="results_${FIXTURE}_utf-8.txt"
+SCREEN_FILE="screen_${FIXTURE}_utf-8.log"
 TIMEOUT_SECS=60
 
 # Where a "timeout" command is available, a runner that hangs fails after
@@ -52,7 +53,7 @@ FAIL: g:StopLangServer() threw in the test pass stop: stop failed
 Test_First: pass
 Test_Second: pass"
 actual=$(sed 's/ at .*//' "$RES_FILE" 2>/dev/null)
-rm -f "$RES_FILE"
+rm -f "$RES_FILE" "$SCREEN_FILE"
 
 errors=()
 # run_tests.sh returns 3 when a test failed.
