@@ -2699,6 +2699,118 @@ def g:Test_ApplyTextEdits_WholeDocumentFollowsWriteRule()
   :%bw!
 enddef
 
+# Returns a TextEdit that replaces the text from line "sline", character
+# "schar" to line "eline", character "echar" with "text".
+def MakeTextEdit(sline: number, schar: number, eline: number, echar: number,
+		 text: string): dict<any>
+  return {range: {start: {line: sline, character: schar},
+		  end: {line: eline, character: echar}},
+	  newText: text}
+enddef
+
+# getbufline() returns one empty line both for a buffer without lines and for
+# a buffer with one empty line.  When Vim writes a newline at the end, the
+# empty line is taken to be the one after that newline, unless an edit
+# reaches the line after it, so that edits for the empty document and for the
+# document "\n" both apply.  Otherwise the document is empty, and a newline
+# inserted at its end leaves an empty last line.
+def g:Test_ApplyTextEdits_EmptyBuffer()
+  silent! edit XApplyTextEditsEmpty.txt
+  var bnr = bufnr()
+  var withEol: list<list<any>> = [
+    [[MakeTextEdit(0, 0, 0, 0, "foo\n")], ['foo']],
+    [[MakeTextEdit(0, 0, 0, 0, 'foo')], ['foo']],
+    [[MakeTextEdit(0, 0, 1, 0, "foo\n")], ['foo']],
+    [[MakeTextEdit(0, 0, 1, 0, '')], ['']],
+    [[MakeTextEdit(1, 0, 1, 0, "foo\n")], ['', 'foo']],
+    [[MakeTextEdit(1, 0, 1, 0, 'foo')], ['', 'foo']],
+    [[MakeTextEdit(0, 0, 0, 0, "a\n"), MakeTextEdit(0, 0, 0, 0, "b\n")],
+     ['a', 'b']],
+    [[MakeTextEdit(0, 0, 0, 0, 'a'), MakeTextEdit(1, 0, 1, 0, "b\n")],
+     ['a', 'b']],
+  ]
+  var withoutEol: list<list<any>> = [
+    [[MakeTextEdit(0, 0, 0, 0, "foo\n")], ['foo', '']],
+    [[MakeTextEdit(0, 0, 0, 0, 'foo')], ['foo']],
+    [[MakeTextEdit(0, 0, 0, 0, "a\n"), MakeTextEdit(0, 0, 0, 0, "b\n")],
+     ['a', 'b', '']],
+  ]
+  var cases: list<list<any>> = [
+    ['eol fixeol nobinary', withEol],
+    ['noeol fixeol nobinary', withEol],
+    ['eol nofixeol nobinary', withEol],
+    ['eol fixeol binary', withEol],
+    ['noeol nofixeol nobinary', withoutEol],
+    ['noeol fixeol binary', withoutEol],
+  ]
+  for [opts, editCases] in cases
+    for [textEdits, expected] in editCases
+      for oneEmptyLine in [false, true]
+	:%d
+	if oneEmptyLine
+	  setline(1, '')
+	endif
+	exe $'setlocal {opts}'
+	textedit.ApplyTextEdits(bnr, textEdits)
+	assert_equal(expected, getline(1, '$'),
+		     $'{opts}, one empty line: {oneEmptyLine}, {textEdits}')
+      endfor
+    endfor
+  endfor
+
+  :%bw!
+enddef
+
+# When Vim writes a newline at the end, an edit can insert text on the empty
+# line after it.
+def g:Test_ApplyTextEdits_InsertAfterLastLine()
+  silent! edit XApplyTextEditsAfterLast.txt
+  var bnr = bufnr()
+  var cases: list<list<any>> = [
+    [['abc'], [MakeTextEdit(1, 0, 1, 0, "x\n")], ['abc', 'x']],
+    [['abc'], [MakeTextEdit(1, 0, 1, 0, "x\ny\nz\n")], ['abc', 'x', 'y', 'z']],
+    [['abc', ''], [MakeTextEdit(2, 0, 2, 0, "x\n")], ['abc', '', 'x']],
+    [['abc', ''], [MakeTextEdit(1, 0, 1, 0, "x\n"),
+		   MakeTextEdit(2, 0, 2, 0, "y\n")], ['abc', 'x', '', 'y']],
+  ]
+  for [text, textEdits, expected] in cases
+    :%d
+    setline(1, text)
+    textedit.ApplyTextEdits(bnr, textEdits)
+    assert_equal(expected, getline(1, '$'), $'{text}, {textEdits}')
+  endfor
+
+  :%bw!
+enddef
+
+# A workspace edit inserts text in an empty file that it creates first, or
+# that exists but is not loaded.  The buffer is then loaded from the file,
+# without a window.
+def g:Test_ApplyWorkspaceEdit_EditsEmptyFile()
+  var fname = 'XWorkspaceEditEmpty.txt'
+  var uri = util.LspFileToUri(fname)
+  var insert = MakeTextEdit(0, 0, 0, 0, "line1\nline2\n")
+  try
+    var createAndEdit = {documentChanges: [
+      {kind: 'create', uri: uri},
+      {textDocument: {uri: uri, version: v:null}, edits: [insert]}
+    ]}
+    textedit.ApplyWorkspaceEdit(createAndEdit)
+    assert_equal([], win_findbuf(bufnr(fname)))
+    assert_equal(['line1', 'line2'], getbufline(fname, 1, '$'))
+    exe $'bwipe! {fname}'
+
+    writefile([], fname)
+    var changes = {changes: {[uri]: [insert]}}
+    textedit.ApplyWorkspaceEdit(changes)
+    assert_equal([], win_findbuf(bufnr(fname)))
+    assert_equal(['line1', 'line2'], getbufline(fname, 1, '$'))
+  finally
+    exe $'silent! bwipe! {fname}'
+    delete(fname)
+  endtry
+enddef
+
 # A completion request supersedes the pending one, which is cancelled, so a
 # late reply to it must not be taken as the reply to the latest one.
 def g:Test_GetCompletion_CancelsSupersededRequest()
