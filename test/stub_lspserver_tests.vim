@@ -323,7 +323,6 @@ def g:Test_Rpc_StaleRequestReplyIsNotAnError()
   endtry
 enddef
 
-<<<<<<< HEAD
 # Returns a running test language server that records the notifications and
 # the requests it is sent in "messages", in the order they are sent.
 def MakeRecordingLspServer(messages: list<dict<any>>): dict<any>
@@ -404,9 +403,9 @@ def g:Test_AsyncRpc_SendsPendingChangesOfAllBuffersFirst()
     assert_equal([{text: "ONE\n"}], messages[0].params.contentChanges)
   finally
     g:LSPTest = true
-    listenerIds->foreach((_, id) => {
+    for id in listenerIds
       listener_remove(id)
-    })
+    endfor
     job_stop(lspserver.job)
     buf.BufLspServerRemove(bnr1, lspserver)
     buf.BufLspServerRemove(bnr2, lspserver)
@@ -414,7 +413,6 @@ def g:Test_AsyncRpc_SendsPendingChangesOfAllBuffersFirst()
   endtry
 enddef
 
-=======
 # Test that the reply to a semantic tokens request saying that the content was
 # modified leaves the semantic highlighting as it is, without an error.
 def g:Test_SemanticHighlightUpdate_ContentModifiedIsNotAnError()
@@ -539,7 +537,6 @@ def g:Test_GotoDefinitionAndTagFunc_ErrorReplyFindsNothing()
   :%bw!
 enddef
 
->>>>>>> origin/main
 # Test that a "$/cancelRequest" notification from the server is accepted
 # quietly.
 def g:Test_ProcessNotif_CancelRequestIsIgnored()

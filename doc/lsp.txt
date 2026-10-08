@@ -3165,14 +3165,6 @@ The returned dict has the following methods:
 
 	rpc(method: string, params: any, opts: dict<any> = {}): dict<any>
 		Send a sync RPC request message to the LSP server and return
-<<<<<<< HEAD
-		the received reply. In case of an error, an empty Dict is
-		returned.  When the reply doesn't arrive in time, or CTRL-C
-		interrupts the wait, the request is cancelled.  The changes
-		made to the buffers attached to the LSP server that were not
-		sent to it yet are sent first, so that the reply is for the
-		current text, also right after a change made by a script.
-=======
 		the received reply. In case of an error, the error is
 		reported and an empty Dict is returned.  An error saying that
 		the request was cancelled, or that the content was modified
@@ -3180,20 +3172,19 @@ The returned dict has the following methods:
 		"handleError" set to v:false, no error is reported and the
 		reply, with its "error" item, is returned.  When the reply
 		doesn't arrive in time, or CTRL-C interrupts the wait, the
-		request is cancelled.
->>>>>>> origin/main
+		request is cancelled.  The changes made to the buffers
+		attached to the LSP server that were not sent to it yet are
+		sent first, so that the reply is for the current text, also
+		right after a change made by a script.
 
 	rpc_a(method: string, params: any, Cbfunc: func): number
 		Send an async RPC request message to the LSP server with a
 		callback function. Returns the LSP message id.  This id can be
 		used to cancel the RPC request (if needed).  Returns -1 on
-<<<<<<< HEAD
-		error.  Like rpc(), first sends the pending buffer changes.
-=======
 		error.  A reply saying that the request was cancelled, or
 		that the content was modified (ContentModified), is not
-		reported as an error: the callback gets no result.
->>>>>>> origin/main
+		reported as an error: the callback gets no result.  Like
+		rpc(), first sends the pending buffer changes.
 
 	cancelRequest(id: number)
 		Ask the LSP server to cancel the request with the LSP message
