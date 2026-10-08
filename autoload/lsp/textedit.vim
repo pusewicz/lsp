@@ -140,10 +140,15 @@ export def ApplyTextEdits(bnr: number, text_edits: list<dict<any>>): void
   # that they can be applied without interfering with each other.
   updated_edits->sort('Edit_sort_func')
 
+  # When Vim writes a newline after the last line, the document has one more,
+  # empty, line.  Unless an edit reaches that line, an empty last line is
+  # taken to be it, so that edits for an empty document apply to a buffer
+  # without lines, which Vim shows as one empty line.
+  var linecount: number = bnr->getbufinfo()[0].linecount
   var lines: list<string> = bnr->getbufline(start_line + 1, finish_line + 1)
-  var set_eol = util.BufWritesEol(bnr)
-		&& bnr->getbufinfo()[0].linecount <= finish_line + 1
-  if !lines->empty() && set_eol && lines[-1]->len() != 0
+  var set_eol = util.BufWritesEol(bnr) && linecount <= finish_line + 1
+  if set_eol && start_line <= linecount
+      && (finish_line >= linecount || lines[-1] != '')
     lines->add('')
   endif
 
@@ -165,15 +170,6 @@ export def ApplyTextEdits(bnr: number, text_edits: list<dict<any>>): void
 
   #echomsg $'ApplyTextEdits: start_line = {start_line}, finish_line = {finish_line}'
   #echomsg $'lines = {string(lines)}'
-
-  # if the buffer is empty, appending lines before the first line adds an
-  # extra empty line at the end. Delete the empty line after appending the
-  # lines.
-  var dellastline: bool = false
-  if start_line == 0 && bnr->getbufinfo()[0].linecount == 1 &&
-					bnr->getbufline(1)->get(0, '')->empty()
-    dellastline = true
-  endif
 
   # Now we apply the textedits to the actual buffer.
   # In theory we could just delete all old lines and append the new lines.
@@ -207,10 +203,6 @@ export def ApplyTextEdits(bnr: number, text_edits: list<dict<any>>): void
   prop_clear(start_line + 1 + lines->len(), finish_line + 1, {'bufnr': bnr})
 
   deletebufline(bnr, start_line + 1 + lines->len(), finish_line + 1)
-
-  if dellastline
-    bnr->deletebufline(bnr->getbufinfo()[0].linecount)
-  endif
 enddef
 
 # interface TextDocumentEdit
