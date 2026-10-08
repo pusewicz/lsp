@@ -2,6 +2,8 @@ vim9script
 # Unit tests for language server protocol offset encoding using clangd
 
 import '../autoload/lsp/buffer.vim' as buf
+import '../autoload/lsp/diag.vim' as diag
+import '../autoload/lsp/util.vim' as util
 
 source common.vim
 
@@ -78,6 +80,48 @@ def g:Test_LspDiagShow_multibyte()
   assert_equal([5, 37], [qfl[0].lnum, qfl[0].col])
   assert_equal([6, 33], [qfl[1].lnum, qfl[1].col])
   assert_equal([7, 41], [qfl[2].lnum, qfl[2].col])
+  :lclose
+  :%bw!
+enddef
+
+# Test for the inline highlight and the location list entry of diagnostics
+# whose range starts or ends past the end of a line with multibyte and
+# composing characters.  A position past the end of a line is at the end of
+# the line.
+def g:Test_LspDiag_RangePastEol_multibyte()
+  :silent! edit XLspDiagPastEol_mb.c
+  sleep 200m
+  setline(1, ['int x;', '// ééé', '// 😊😊', "// a\u0301b\u0301"])
+  g:WaitForServerFileLoad(0)
+  var bnr = bufnr()
+  var lspserver = buf.CurbufGetServer()
+
+  # Length of each line in the UTF-8, UTF-16 and UTF-32 encodings
+  var lineLen: dict<list<number>> = {8: [6, 9, 11, 9], 16: [6, 6, 7, 7],
+				     32: [6, 6, 5, 7]}
+  # The range on the first line starts past the end of the line.  The other
+  # ranges start at the first multibyte character.
+  var diags: list<dict<any>> = []
+  for i in range(4)
+    var pastEol = lineLen[lspserver.posEncoding][i] + 1
+    diags->add({
+      range: {
+	start: {line: i, character: i == 0 ? pastEol : 3},
+	end: {line: i, character: pastEol}
+      },
+      severity: 1,
+      message: $'Diag {i + 1}'
+    })
+  endfor
+  diag.DiagNotification(lspserver, util.LspBufnrToUri(bnr), diags, 'push')
+
+  assert_equal([[1, 7, 0], [2, 4, 6], [3, 4, 8], [4, 4, 6]],
+	       prop_list(1, {end_lnum: line('$')})
+		 ->filter((_, p) => p.type == 'LspDiagInlineError')
+		 ->mapnew((_, p) => [p.lnum, p.col, p.length]))
+  :LspDiag show
+  assert_equal([[1, 7, 1, 7], [2, 4, 2, 10], [3, 4, 3, 12], [4, 4, 4, 10]],
+	       getloclist(0)->mapnew((_, v) => [v.lnum, v.col, v.end_lnum, v.end_col]))
   :lclose
   :%bw!
 enddef

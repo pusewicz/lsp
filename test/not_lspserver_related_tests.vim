@@ -1290,6 +1290,49 @@ def g:Test_WorkspaceIgnoredPaths_NormalRoot()
   assert_false(util.IsIgnoredRoot(root, ignored))
 enddef
 
+# Test for converting an LSP position to a byte index on lines with multibyte,
+# composing and tab characters.  A position past the end of a line is at the
+# end of the line.
+def g:Test_GetLineByteFromPos()
+  :new
+  var bnr = bufnr()
+  setline(1, ['int abc;', 'ééé', '😊😊', "a\u0301b\u0301", "\tx", ''])
+  assert_equal([8, 6, 8, 6, 2, 0], getline(1, '$')->mapnew((_, l) => l->strlen()))
+
+  # [line, character, byte index]
+  var cases: list<list<number>> = [
+    [0, 0, 0], [0, 3, 3], [0, 8, 8], [0, 9, 8], [0, 20, 8],
+    [1, 1, 2], [1, 3, 6], [1, 4, 6], [1, 7, 6],
+    [2, 1, 4], [2, 2, 8], [2, 3, 8], [2, 5, 8],
+    [3, 1, 1], [3, 2, 3], [3, 3, 4], [3, 4, 6], [3, 5, 6],
+    [4, 1, 1], [4, 2, 2], [4, 3, 2],
+    [5, 3, 0],
+    [6, 3, 3]
+  ]
+  for [line, character, byteIdx] in cases
+    assert_equal(byteIdx,
+		 util.GetLineByteFromPos(bnr, {line: line, character: character}),
+		 $'line {line}, character {character}')
+  endfor
+  :bw!
+enddef
+
+# Test for converting an LSP position past the end of a line to a byte index
+# in a buffer that is not loaded
+def g:Test_GetLineByteFromPos_UnloadedBuffer()
+  var fname = 'XGetLineByteFromPos.txt'
+  writefile(['ééé'], fname)
+  var bnr = bufadd(fname)
+  try
+    assert_false(bnr->bufloaded())
+    assert_equal(6, util.GetLineByteFromPos(bnr, {line: 0, character: 4}))
+    assert_equal(3, util.GetLineByteFromPos(bnr, {line: 1, character: 3}))
+  finally
+    exe $'bwipe! {bnr}'
+    delete(fname)
+  endtry
+enddef
+
 # Test for util.JumpToLspLocation() with file names that have characters that
 # are special in the file name argument of an Ex command.  Each file is opened
 # with ":edit", ":belowright split" and ":{cmdmods} split".

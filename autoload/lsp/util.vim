@@ -272,6 +272,13 @@ enddef
 # LSP's line and characters are 0-indexed.
 # Vim's line and columns are 1-indexed.
 # Returns a zero-indexed column.
+#
+# "pos.character" is a character index that counts the composing characters
+# separately.  A position past the end of the line is at the end of the line,
+# as the LSP specification requires, so the returned byte index is at most
+# the length of the line.  When the line is not available, because it is past
+# the end of the buffer or the buffer cannot be loaded, the character index is
+# returned unchanged.
 export def GetLineByteFromPos(bnr: number, pos: dict<number>): number
   var col: number = pos.character
   # When on the first character, we can ignore the difference between byte and
@@ -283,17 +290,18 @@ export def GetLineByteFromPos(bnr: number, pos: dict<number>): number
   # Need a loaded buffer to read the line and compute the offset
   :silent! bnr->bufload()
 
-  var ltext: string = bnr->getbufline(pos.line + 1)->get(0, '')
-  if ltext->empty()
+  var lines: list<string> = bnr->getbufline(pos.line + 1)
+  if lines->empty()
     return col
   endif
 
+  var ltext: string = lines[0]
   var byteIdx = ltext->byteidxcomp(col)
   if byteIdx != -1
     return byteIdx
   endif
 
-  return col
+  return ltext->strlen()
 enddef
 
 # Get the index of the character at [pos.line, pos.character] in buffer "bnr"
