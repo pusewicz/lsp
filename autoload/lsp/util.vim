@@ -91,88 +91,64 @@ export def LspLocationParse(lsploc: dict<any>): list<any>
   endif
 enddef
 
-# convert a normal string to a url encoded string
+# The text in a URI path for each octet value: an unreserved character (RFC
+# 3986), ":" and "/" stand for themselves, any other octet is percent-encoded.
+# str2blob() turns a NL into a NUL, which a Vim string cannot hold, so the
+# octet 0 is a NL.
+const URI_PATH_OCTETS: list<string> = range(256)->mapnew((_, b) =>
+  b != 0 && nr2char(b) =~# '^[A-Za-z0-9._~:/-]$' ? nr2char(b)
+  : printf('%%%02X', b == 0 ? 10 : b))
+
+# Returns "str" with each octet of its UTF-8 encoding percent-encoded, except
+# for an unreserved character (RFC 3986), ":" and "/".  The string is encoded
+# octet by octet, as a regexp sees a composing character as a part of the
+# character before it, which may be one that is not encoded.
 def UriEncode(str: string): string
-  var parts: list<string> = []
-  for ch in str
-    if ch =~# '[A-Za-z0-9-._~:/]'
-      parts->add(ch)
-    else
-      # Get UTF-8 bytes for the character and encode each byte
-      var byte_len = strlen(ch)
-      for i in range(byte_len)
-        var byte = char2nr(strpart(ch, i, 1))
-        parts->add(printf('%%%02X', byte))
-      endfor
-    endif
-  endfor
-  return parts->join('')
+  return [str]->str2blob()->blob2list()
+    ->mapnew((_, b) => URI_PATH_OCTETS[b])->join('')
 enddef
 
-# convert an url encoded string to a normal string
+# Returns "str" with each percent-encoded octet, "%" followed by two
+# hexadecimal digits of either case, replaced by the octet, so that the octets
+# of a multibyte character form the character again.  Octets that are not
+# valid UTF-8 are kept as they are.  A "%" that is not followed by two
+# hexadecimal digits is kept, and so is "%00": a Vim string cannot hold a NUL.
+# A "+" is not a space in a URI path and is kept too.  A regexp sees a
+# composing character after the second digit as a part of the digit, so the
+# match is the digits and any composing characters after them.
 def UriDecode(str: string): string
-  var parts: list<string> = []
-  var i: number = 0
-  var byte_array: list<number> = []
-  var str_len = strlen(str)
-
-  while i < str_len
-    # Use byte-level operations since we're dealing with percent-encoded bytes
-    var ch = strpart(str, i, 1)
-    if ch == '%' && i + 2 < str_len
-      var hex = strpart(str, i + 1, 2)
-      # Check if the next two characters are valid hex digits
-      if hex =~# '^[0-9A-Fa-f]\{2}$'
-        byte_array->add(str2nr(hex, 16))
-        i += 3
-        continue
-      endif
-    endif
-
-    # If we have accumulated bytes, convert them to a UTF-8 string
-    if !byte_array->empty()
-      for byte in byte_array
-        parts->add(printf('%c', byte))
-      endfor
-      byte_array = []
-    endif
-
-    parts->add(ch)
-    i += 1
-  endwhile
-
-  # Handle any remaining bytes at the end
-  if !byte_array->empty()
-    for byte in byte_array
-      parts->add(printf('%c', byte))
-    endfor
-  endif
-
-  return parts->join('')
+  return str->substitute('%\%(00\)\@!\(\x\x\)',
+    '\=printf("%c", str2nr(submatch(1), 16)) .. submatch(1)->strpart(2)', 'g')
 enddef
 
-# Convert a LSP file URI (file://<absolute_path>) to a Vim file name
+# Convert the LSP URI "uri" to a Vim file name.  A "file:" URI (RFC 8089) of a
+# local file, one without a host ("file:///path" or "file:/path") or with the
+# host "localhost", is converted to its path with the percent-encoded octets
+# (e.g. "%20" for a space) decoded.  Any other URI, with another scheme (e.g.
+# "jdt:") or with another host, is returned unchanged: it is the name of the
+# buffer for the URI, see LspFileToUri().
 export def LspUriToFile(uri: string): string
-  # Replace all the %xx numbers (e.g. %20 for space) in the URI to character
-  var uri_decoded: string = UriDecode(uri)
-
-  # File URIs on MS-Windows start with file:///[a-zA-Z]:'
-  if uri_decoded =~? '^file:///\a:'
-    # MS-Windows URI
-    uri_decoded = uri_decoded[8 : ]
-    if has("win32unix")
-      # Cygwin, C:/path/to/file -> /c/path/to/file
-      uri_decoded = uri_decoded->substitute('^\(\a\):',
-	'\="/" .. submatch(1)', '')
-    else
-      uri_decoded = uri_decoded->tr('/', '\')
-    endif
-  # On GNU/Linux (pattern not end with `:`)
-  elseif uri_decoded =~? '^file:///\a'
-    uri_decoded = uri_decoded[7 : ]
+  # The path starts after "file:", "file://" or "file://localhost", and with
+  # "file:" it doesn't start with "//", as that starts a host.
+  var pathIdx: number = uri->matchend(
+    '\c^file:\%(//\%(localhost\)\=\ze/\|\ze/\%(/\)\@!\)')
+  if pathIdx == -1
+    return uri
   endif
 
-  return uri_decoded
+  var path: string = UriDecode(uri->strpart(pathIdx))
+  if (has('win32') || has('win32unix')) && path =~ '^/\a:'
+    # MS-Windows path, e.g. file:///C:/path/to/file
+    path = path[1 : ]
+    if has('win32unix')
+      # Cygwin, C:/path/to/file -> /C/path/to/file
+      path = path->substitute('^\(\a\):', '/\1', '')
+    else
+      path = path->tr('/', '\')
+    endif
+  endif
+
+  return path
 enddef
 
 # Convert a LSP file URI (file://<absolute_path>) to a Vim buffer number.
@@ -201,12 +177,20 @@ enddef
 
 var resolvedUris = {}
 
-# Convert a Vim filename to an LSP URI (file://<absolute_path>)
+# Convert the Vim file name "fname" to an LSP URI: a "file:" URI of its full
+# path.  A name that Vim keeps as a URL, like the name of a buffer for a URI
+# that LspUriToFile() does not convert to a path, is the URI itself and is
+# returned unchanged.
 export def LspFileToUri(fname: string): string
   var fname_full: string = fname->fnamemodify(':p')
 
   if resolvedUris->has_key(fname_full)
     return resolvedUris[fname_full]
+  endif
+
+  if LspUriRemote(fname_full)
+    resolvedUris[fname_full] = fname_full
+    return fname_full
   endif
 
   var uri: string = fname_full
