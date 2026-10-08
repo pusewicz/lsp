@@ -75,6 +75,10 @@ def LspRunTests()
 enddef
 
 # --- Main Execution Flow ---
+# A swap file left behind by a crashed run would otherwise block every later
+# run at the E325 "ATTENTION" prompt.
+:set noswapfile
+
 try
   # Ensure results.txt is empty before starting
   writefile([], 'results.txt')
