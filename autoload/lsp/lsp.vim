@@ -70,6 +70,7 @@ def RegisterEvents()
     autocmd BufWinEnter * BufferLoadedInWin(expand('<abuf>')->str2nr())
     # Pull fresh diagnostics when a file is modified outside Vim and reloaded
     autocmd FileChangedShellPost * BufferExternallyChanged(expand('<abuf>')->str2nr())
+    autocmd OptionSet endofline,fixendofline,binary EolOptionSet(bufnr())
   augroup END
 enddef
 
@@ -857,6 +858,27 @@ export def BufferExternallyChanged(bnr: number): void
         # For pull-based diagnostics, explicitly request fresh diagnostics
         lspserver.queuePullDiagnostics(bnr)
       endif
+    endif
+  endfor
+enddef
+
+# 'endofline', 'fixendofline' or 'binary' was set for buffer "bnr", which is
+# the current buffer, also for setbufvar().  That decides whether the document
+# ends with a newline, so send the change to the language servers.
+def EolOptionSet(bnr: number): void
+  if v:option_command == 'setglobal'
+    return
+  endif
+  var lspservers: list<dict<any>> = buf.BufLspServersGet(bnr)
+  if lspservers->empty()
+    return
+  endif
+
+  # The pending changes were made before this one
+  bnr->listener_flush()
+  for lspserver in lspservers
+    if !lspserver->empty() && lspserver.running
+      lspserver.textdocEolChanged(bnr)
     endif
   endfor
 enddef
