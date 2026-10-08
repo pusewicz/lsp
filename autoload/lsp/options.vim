@@ -250,6 +250,10 @@ export var lspOptions: dict<any> = {
   # Condenses the completion menu items to single (key-)words (plus kind)
   condensedCompletionMenu: false,
 
+  # Maximum width, in screen cells, of a label in the completion menu.  A
+  # longer label is cut and ends in an ellipsis.  Zero means no limit.
+  completionLabelMaxWidth: 0,
+
   # Ignore >ItemsIsIncomplete< messages from misbehaving servers:
   ignoreCompleteItemsIsIncomplete: [],
 
