@@ -747,6 +747,24 @@ def GetSymbolsDocSymbol(lspserver: dict<any>,
   endfor
 enddef
 
+# Add a text property of type "propType" for the LSP range "range" in the
+# current buffer.  A range that ends past the last line, e.g. at the start of
+# the line after it, ends at the end of the last line.
+def RangePropAdd(propType: string, range: dict<dict<number>>)
+  var bnr: number = bufnr()
+  var start_col: number = util.GetLineByteFromPos(bnr, range.start) + 1
+  var end_lnum: number = range.end.line + 1
+  var end_col: number
+  if end_lnum > line('$')
+    end_lnum = line('$')
+    end_col = col([end_lnum, '$'])
+  else
+    end_col = util.GetLineByteFromPos(bnr, range.end) + 1
+  endif
+  prop_add(range.start.line + 1, start_col,
+	   {type: propType, end_lnum: end_lnum, end_col: end_col})
+enddef
+
 # Highlight the name and the range of lines for the symbol at symTbl[symIdx]
 def SymbolHighlight(symTbl: list<dict<any>>, symIdx: number)
   prop_remove({type: 'LspSymbolNameProp', all: true})
@@ -759,37 +777,15 @@ def SymbolHighlight(symTbl: list<dict<any>>, symIdx: number)
   if r->empty()
     return
   endif
-  var rangeStart = r.start
-  var rangeEnd = r.end
-  var start_lnum = rangeStart.line + 1
-  var start_col = rangeStart.character + 1
-  var end_lnum = rangeEnd.line + 1
-  var end_col: number
-  var last_lnum = line('$')
-  if end_lnum > line('$')
-    end_lnum = last_lnum
-    end_col = col([last_lnum, '$'])
-  else
-    end_col = rangeEnd.character + 1
-  endif
-  prop_add(start_lnum, start_col,
-	   {type: 'LspSymbolRangeProp',
-	    end_lnum: end_lnum,
-	    end_col: end_col})
-  cursor(start_lnum, 1)
+  RangePropAdd('LspSymbolRangeProp', r)
+  cursor(r.start.line + 1, 1)
   :normal! z.
 
   var sr = symTbl[symIdx].selectionRange
   if sr->empty()
     return
   endif
-  rangeStart = sr.start
-  rangeEnd = sr.end
-  prop_add(rangeStart.line + 1, 1,
-	   {type: 'LspSymbolNameProp',
-	    start_col: rangeStart.character + 1,
-	    end_lnum: rangeEnd.line + 1,
-	    end_col: rangeEnd.character + 1})
+  RangePropAdd('LspSymbolNameProp', sr)
 enddef
 
 # Callback invoked when an item is selected in the symbol popup menu
