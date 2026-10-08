@@ -1678,7 +1678,10 @@ completionMatcher	|String| option.  Enable fuzzy or case insensitive
 
 						*lsp-opt-completionTextEdit*
 completionTextEdit	|Boolean| option.  If true, apply the LSP server
-			supplied text edits after a completion.  If a snippet
+			supplied text edits after a completion.  This
+			includes the text edit of a completion item that also
+			replaces text before the completed keyword (e.g.
+			"foo." completed to "foo?.bar").  If a snippet
 			plugin is going to apply the text edits, then set
 			this to false to avoid applying the text edits twice.
 			By default this is set to true.
@@ -2196,6 +2199,8 @@ incrementalSync		|Boolean| option.  Specifies the method used to
 			  for large files and reduces network/CPU overhead.
 			  Note: This needs the support for the |diff()|
 			  function which was introduced in patch 9.1.0099.
+			  A Vim built without its internal diff library,
+			  like the macOS system Vim, uses full sync.
 			- If |false|, the entire buffer content is sent on
 			  every change (full sync). This is more robust but
 			  can cause lag in very large documents.
@@ -2528,6 +2533,11 @@ severe diagnostics, the one starting in the leftmost column is shown.  This
 affects only the virtual text: a sign and an inline highlight are still placed
 for every diagnostic.  When a line has signs for several diagnostics, the sign
 of the most severe one is displayed.
+
+The options that change how the diagnostics are displayed (the options above,
+"autoHighlightDiags", the "diagSign*Text" options, "showDiagInBalloon" and
+"showDiagOnStatusLine") can be changed at any time with |LspOptionsSet()|.
+The diagnostics already displayed are updated right away.
 
 The LSP plugin offers convenient ways to highlight diagnostic messages, making
 it easier to spot errors, warnings, hints, or informational notices within
