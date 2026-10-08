@@ -1272,8 +1272,7 @@ export def LspDiagsOptionsChanged()
     ->filter((_, name) => options[name] != appliedOptions[name])
   appliedOptions = options
   for applier in displayOptionAppliers
-    if util.Indexof(applier.options,
-		    (_, name) => changed->index(name) != -1) != -1
+    if applier.options->indexof((_, name) => changed->index(name) != -1) != -1
       applier.Apply()
     endif
   endfor

@@ -28,11 +28,7 @@ export def ProcessServerCaps(lspserver: dict<any>, caps: dict<any>)
     lspserver.posEncoding = 32
   endif
 
-  if has('patch-9.0.1629') && lspserver.posEncoding != 32
-    lspserver.needOffsetEncoding = true
-  else
-    lspserver.needOffsetEncoding = false
-  endif
+  lspserver.needOffsetEncoding = lspserver.posEncoding != 32
 
   # textDocumentSync capabilities
   lspserver.supportsDidSave = false
@@ -454,11 +450,7 @@ export def GetClientCaps(): dict<any>
   # client capabilities (ClientCapabilities)
   var clientCaps: dict<any> = {
     general: {
-      # Currently we always send character count as position offset,
-      # which meanas only utf-32 is supported.
-      # Adding utf-16 simply for good mesure, as I'm scared some servers will
-      # give up if they don't support utf-32 only.
-      positionEncodings: ['utf-32', 'utf-16'],
+      positionEncodings: ['utf-32', 'utf-16', 'utf-8'],
       staleRequestSupport: {
 	cancel: true,
 	retryOnContentModified: ['textDocument/diagnostic']
@@ -663,14 +655,8 @@ export def GetClientCaps(): dict<any>
     },
     # This is the way clangd expects to be informated about supported encodings:
     # https://clangd.llvm.org/extensions#utf-8-offsets
-    offsetEncoding: ['utf-32', 'utf-16']
+    offsetEncoding: ['utf-32', 'utf-16', 'utf-8']
   }
-
-  # Vim patch 1629 is needed to properly encode/decode UTF-16 offsets
-  if has('patch-9.0.1629')
-    clientCaps.general.positionEncodings = ['utf-32', 'utf-16', 'utf-8']
-    clientCaps.offsetEncoding = ['utf-32', 'utf-16', 'utf-8']
-  endif
 
   return clientCaps
 enddef

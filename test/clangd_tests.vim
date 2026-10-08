@@ -370,10 +370,6 @@ enddef
 
 # Test for on-type formatting (opt-in), triggered by typing a newline.
 def g:Test_LspOnTypeFormatting()
-  if !exists('##KeyInputPre')
-    # A typed newline can't be detected
-    return
-  endif
   g:LspOptionsSet({onTypeFormatting: true})
 
   :silent! edit XLspOnTypeFormat.c
@@ -470,14 +466,12 @@ def g:Test_LspOnTypeFormatting_TypedTrigger()
     # Typed trigger characters.
     feedkeys("2GA;\<Esc>", 'xt')
     assert_equal([[';', 2, 15]], requests)
-    if exists('##KeyInputPre')
-      requests = []
-      feedkeys("3GA\<CR>\<Esc>", 'xt')
-      :4delete
-      feedkeys("3GA\<C-J>\<Esc>", 'xt')
-      :4delete
-      assert_equal([["\n", 4, 3], ["\n", 4, 3]], requests)
-    endif
+    requests = []
+    feedkeys("3GA\<CR>\<Esc>", 'xt')
+    :4delete
+    feedkeys("3GA\<C-J>\<Esc>", 'xt')
+    :4delete
+    assert_equal([["\n", 4, 3], ["\n", 4, 3]], requests)
 
     # A typed trigger character for which Vim reindents the line.
     requests = []
@@ -2901,10 +2895,6 @@ enddef
 
 # Test for the diagnostics virtual text text property
 def g:Test_DiagVirtualText()
-  if !has('patch-9.0.1157')
-    # Doesn't support virtual text
-    return
-  endif
   g:LspOptionsSet({highlightDiagInline: false})
   :silent! edit XdiagVirtualText.c
   sleep 200m
