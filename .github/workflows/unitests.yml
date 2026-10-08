@@ -32,8 +32,6 @@ jobs:
           sudo apt install -y nodejs
           echo "node version: $(node -v)"
           echo "npm version: $(npm -v)"
-          # install the typescript language server
-          sudo npm install -g typescript-language-server typescript
           # install the golang language server
           sudo apt install -y golang
           sudo apt install -y gopls
@@ -65,6 +63,9 @@ jobs:
           version: ${{ matrix.vim }}
       - name: Checkout LSP plugin Code
         uses: actions/checkout@v7.0.1
+      - name: Install the TypeScript language server
+        working-directory: test
+        run: npm ci
       - name: Run Tests
         run: |
           set -euo pipefail

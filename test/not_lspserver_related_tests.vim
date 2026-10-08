@@ -550,6 +550,11 @@ def TeardownTruncatingServerBuffer(lspserver: dict<any>)
     timer_stop(timer)
   endfor
   test_override('char_avail', 0)
+  # 'autocomplete' is global before patch 9.1.1779, so ":setlocal" sets it for
+  # the following tests too.
+  if exists('+autocomplete')
+    set noautocomplete
+  endif
   buf.BufLspServerRemove(bufnr(), lspserver)
   :%bw!
 enddef
@@ -840,6 +845,26 @@ def g:Test_Completion_MarkdownDoc_LazyDocRenderedOnce()
 			       'menuone,popup'))
   finally
     g:LspOptionsSet({autoComplete: true, omniComplete: null})
+  endtry
+enddef
+
+# Same without "popup" in 'completeopt': the documentation is shown and
+# rendered in the preview window.
+def g:Test_Completion_MarkdownDoc_LazyDocPreviewWindow()
+  if !exists('+autocomplete')
+    return
+  endif
+  g:LspOptionsSet({autoComplete: false, omniComplete: true,
+		   closePreviewOnComplete: false})
+  try
+    assert_equal({
+	popup: {},
+	preview: {ft: 'lspgfm', text: ['int x;'], codeBlocks: 1},
+      }, SelectMarkdownDocItem(MakeMarkdownDocServer("```c\nint x;\n```", true),
+			       'menuone,preview'))
+  finally
+    g:LspOptionsSet({autoComplete: true, omniComplete: null,
+		     closePreviewOnComplete: true})
   endtry
 enddef
 
