@@ -1190,8 +1190,14 @@ Commands to modify, rename, or format your code using the language server.
 			For each diagnostic strictly within the range (sorted
 			from bottom to top):
 			- Requests code actions for the diagnostic's line.
-			- Filters actions to those marked isPreferred and
-			  relevant to the diagnostic.
+			- Keeps the actions relevant to the diagnostic: the
+			  ones resolving a diagnostic with the same range,
+			  and the ones not listing the diagnostics they
+			  resolve.  If some resolve a diagnostic with the
+			  same range and message, the others resolving a
+			  diagnostic with the same range are dropped.
+			- Filters the relevant actions to those marked
+			  isPreferred.
 			- If multiple preferred actions are available, prompts
 			  the user to choose one (using popup menu or
 			  |inputlist()| depending on
@@ -1201,8 +1207,9 @@ Commands to modify, rename, or format your code using the language server.
 			  next diagnostic in the range. Pressing <C-C> cancels
 			  the popup and stops applying further diagnostics.
 			- If no preferred actions are available for a
-			  diagnostic, skips it.
-			- Applies the chosen preferred action.
+			  diagnostic, chooses the relevant action if there is
+			  only one, and skips the diagnostic otherwise.
+			- Applies the chosen action.
 			- If an error occurs while applying a code action,
 			  stops further processing.
 
