@@ -629,11 +629,10 @@ export def DiagNotification(lspserver: dict<any>, uri: string, diags_arg: list<d
     return
   endif
 
-  var fname: string = util.LspUriToFile(uri)
-  if !fname->bufexists() # exact match on fname, not file-pattern
+  var bnr: number = util.BufnrExact(util.LspUriToFile(uri))
+  if bnr == -1
     return
   endif
-  var bnr: number = fname->bufnr()
 
   var serverId = lspserver.id
   var serverDiags: dict<dict<list<any>>> = diagsMap->has_key(bnr) ?
