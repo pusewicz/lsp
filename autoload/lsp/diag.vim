@@ -620,6 +620,26 @@ export def ProcessNewDiags(bnr: number)
   DiagsRefresh(bnr)
 enddef
 
+# Returns the number of the buffer that the diagnostics for "uri" are for, or
+# -1 if there is none.  "docBufnrs" holds the buffer numbers of the documents
+# open on the language server by the URIs they were opened with, which may
+# include a buffer wiped out without autocommands.  A server may escape a URI
+# differently (gopls doesn't escape "+"), so the URI is also looked up as this
+# plugin escapes it.  Only a document that isn't open on the server is looked
+# up by its file name, which takes time proportional to the number of buffers.
+def DiagBufnr(docBufnrs: dict<number>, uri: string): number
+  var bnr: number = docBufnrs->get(uri, -1)
+  if bnr->bufexists()
+    return bnr
+  endif
+  var fname: string = util.LspUriToFile(uri)
+  bnr = docBufnrs->get(util.LspFileToUri(fname), -1)
+  if bnr->bufexists()
+    return bnr
+  endif
+  return util.BufnrExact(fname)
+enddef
+
 # process a diagnostic notification message from the LSP server
 # Notification: textDocument/publishDiagnostics
 # Param: PublishDiagnosticsParams
@@ -629,7 +649,7 @@ export def DiagNotification(lspserver: dict<any>, uri: string, diags_arg: list<d
     return
   endif
 
-  var bnr: number = util.BufnrExact(util.LspUriToFile(uri))
+  var bnr: number = DiagBufnr(lspserver.docBufnrs, uri)
   if bnr == -1
     return
   endif
