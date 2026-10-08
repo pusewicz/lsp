@@ -919,6 +919,44 @@ def g:Test_Completion_Preselect_NoopWithoutPreselect()
   :%bw!
 enddef
 
+# The completion menu items are sorted by their score, the sortText or else the
+# label, in the order that sorting the items with the compare function
+# "a.score == b.score ? 0 : a.score >? b.score ? 1 : -1" gives: the order of
+# the reply for the same score, and an arbitrary but fixed order for scores
+# that differ only in case.
+def g:Test_Completion_SortOrder()
+  silent! edit XCompletionSortOrder.vim
+  var lspserver = MakeCompletionReplyServer(false)
+  var cItems = [
+    {label: 'w1', sortText: 'b'},
+    {label: 'w2', sortText: 'a'},
+    {label: 'w3', sortText: 'B'},
+    {label: 'w4', sortText: 'a'},
+    {label: 'Zeta'},
+    {label: 'w6', sortText: ''},
+    {label: 'alpha'},
+    {label: 'w8', sortText: 'Ä'},
+    {label: 'w9', sortText: 'ä'},
+    {label: 'w10', sortText: 'b'},
+    {label: 'w11', sortText: 'A'},
+  ]
+  var expected = cItems
+    ->mapnew((_, v) => ({
+      word: v.label,
+      score: v->get('sortText', '')->empty() ? v.label : v.sortText,
+    }))
+    ->sort((a, b) => a.score == b.score ? 0 : a.score >? b.score ? 1 : -1)
+    ->mapnew((_, v) => v.word)
+
+  completion.CompletionReply(lspserver, cItems, {})
+
+  var words = lspserver.completeItems->mapnew((_, v) => v.word)
+  assert_equal(expected, words)
+  assert_true(words->index('w2') < words->index('w4'))
+  assert_true(words->index('w1') < words->index('w10'))
+  :%bw!
+enddef
+
 # Returns the LSP range from character "start" to "end" on the first line.
 def FirstLineRange(start: number, end: number): dict<any>
   return {start: {line: 0, character: start}, end: {line: 0, character: end}}
