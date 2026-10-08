@@ -156,6 +156,82 @@ def g:Test_Completion_LabelDetails_Rendering()
   :%bw!
 enddef
 
+# The menu shows CompletionItem.detail also when the documentation is resolved
+# lazily.
+def g:Test_Completion_Detail_LazyDoc()
+  g:LspOptionsSet({condensedCompletionMenu: false})
+
+  silent! edit XCompletionDetailLazyDoc.vim
+  setline(1, ['fo'])
+  cursor(1, 3)
+
+  var lspserver = {
+    name: 'test',
+    omniCompletePending: true,
+    completionLazyDoc: true,
+    completeItems: [],
+    completeItemsIsIncomplete: false,
+  }
+
+  completion.CompletionReply(lspserver, [{label: 'foo', detail: 'bool'}], {})
+
+  var item = lspserver.completeItems[0]
+  assert_equal('bool', item.menu)
+  assert_equal('Resolving completion...', item.info)
+
+  :%bw!
+enddef
+
+# The kind of a completion item is shown with the configured kind text and,
+# when Vim supports it, highlighted with the "LspCompletionKind{Name}" group.
+def g:Test_Completion_Kind()
+  completion.InitOnce()
+  assert_equal('Function', hlget('LspCompletionKindFunction')[0].linksto)
+  assert_equal('Type', hlget('LspCompletionKindStruct')[0].linksto)
+
+  silent! edit XCompletionKind.vim
+  setline(1, ['fo'])
+  cursor(1, 3)
+
+  var lspserver = {
+    name: 'test',
+    omniCompletePending: true,
+    completionLazyDoc: false,
+    completeItems: [],
+    completeItemsIsIncomplete: false,
+  }
+
+  var cItems = [
+    {label: 'foo1', kind: 3},
+    {label: 'foo2', kind: 22},
+    {label: 'foo3', kind: 0},
+    {label: 'foo4', kind: 99},
+    {label: 'foo5'},
+  ]
+  g:LspOptionsSet({customCompletionKinds: true,
+                   completionKinds: {Struct: ""}})
+  try
+    completion.CompletionReply(lspserver, cItems, {})
+  finally
+    g:LspOptionsSet({customCompletionKinds: false, completionKinds: {}})
+  endtry
+
+  var items = lspserver.completeItems
+  assert_equal(['f', "", '', ''],
+               items[0 : 3]->mapnew((_, v) => v.kind))
+  assert_false(items[4]->has_key('kind'))
+  if has('patch-9.1.0690')
+    assert_equal('LspCompletionKindFunction', items[0].kind_hlgroup)
+    assert_equal('LspCompletionKindStruct', items[1].kind_hlgroup)
+  else
+    assert_false(items[0]->has_key('kind_hlgroup'))
+  endif
+  assert_false(items[2]->has_key('kind_hlgroup'))
+  assert_false(items[3]->has_key('kind_hlgroup'))
+
+  :%bw!
+enddef
+
 # Regression test for CompletionTriggerKind=3 retrigger on incomplete lists.
 def g:Test_Completion_RetriggerKind_IncompleteList()
   silent! edit XCompletionRetriggerKind.vim

@@ -52,52 +52,102 @@ export def OmniComplSet(ftype: string, enabled: bool)
   ftypeOmniCtrlMap->extend({[ftype]: enabled})
 enddef
 
-# Map LSP complete item kind to a character
-export def LspCompleteItemKindChar(kind: number): string
-  var kindMap: list<string> = [
-    '',
-    'Text',
-    'Method',
-    'Function',
-    'Constructor',
-    'Field',
-    'Variable',
-    'Class',
-    'Interface',
-    'Module',
-    'Property',
-    'Unit',
-    'Value',
-    'Enum',
-    'Keyword',
-    'Snippet',
-    'Color',
-    'File',
-    'Reference',
-    'Folder',
-    'EnumMember',
-    'Constant',
-    'Struct',
-    'Event',
-    'Operator',
-    'TypeParameter',
-    'Buffer'
-  ]
+# Names of the LSP CompletionItemKind values, indexed by kind.  "Buffer" (26)
+# is not an LSP kind; it marks the words added by buffer completion.
+const kindNames: list<string> = [
+  '',
+  'Text',
+  'Method',
+  'Function',
+  'Constructor',
+  'Field',
+  'Variable',
+  'Class',
+  'Interface',
+  'Module',
+  'Property',
+  'Unit',
+  'Value',
+  'Enum',
+  'Keyword',
+  'Snippet',
+  'Color',
+  'File',
+  'Reference',
+  'Folder',
+  'EnumMember',
+  'Constant',
+  'Struct',
+  'Event',
+  'Operator',
+  'TypeParameter',
+  'Buffer'
+]
 
-  if kind > 26
+# Default links of the "LspCompletionKind{Name}" highlight groups.  "Text" and
+# "Buffer" have none, so that their kind uses the plain PmenuKind highlight.
+const kindHighlightLinks: dict<string> = {
+  Method:         'Function',
+  Function:       'Function',
+  Constructor:    'Function',
+  Field:          'Identifier',
+  Variable:       'Identifier',
+  Property:       'Identifier',
+  Reference:      'Identifier',
+  Class:          'Type',
+  Interface:      'Type',
+  Struct:         'Type',
+  Enum:           'Type',
+  TypeParameter:  'Type',
+  Module:         'Include',
+  Unit:           'Number',
+  Value:          'Constant',
+  Constant:       'Constant',
+  EnumMember:     'Constant',
+  Keyword:        'Keyword',
+  Operator:       'Operator',
+  Snippet:        'Special',
+  Color:          'Special',
+  Event:          'Special',
+  File:           'Directory',
+  Folder:         'Directory',
+}
+
+# The "kind_hlgroup" complete-item field needs Vim 9.1.0690 or later.
+const kindHlGroupSupported: bool = has('patch-9.1.0690')
+
+# Define the default highlight groups for the completion item kinds.
+export def InitOnce()
+  hlset(kindHighlightLinks->items()->mapnew((_, kv) => ({
+    name: $'LspCompletionKind{kv[0]}',
+    default: true,
+    linksto: kv[1],
+  })))
+enddef
+
+# Return the name of the LSP CompletionItemKind "kind" (e.g. "Function"), or
+# an empty string for an unknown kind.
+def CompletionItemKindName(kind: number): string
+  if kind < 1 || kind >= kindNames->len()
     return ''
   endif
+  return kindNames[kind]
+enddef
 
-  var kindName = kindMap[kind]
-  var kindValue = defaultKinds[kindName]
+# Map LSP complete item kind to a character
+export def LspCompleteItemKindChar(kind: number): string
+  var kindName = CompletionItemKindName(kind)
+  if kindName->empty()
+    return ''
+  endif
 
   var lspOpts = opt.lspOptions
   if lspOpts.customCompletionKinds &&
       lspOpts.completionKinds->has_key(kindName)
-    kindValue = lspOpts.completionKinds[kindName]
+    return lspOpts.completionKinds[kindName]
   endif
 
-  return kindValue
+  return defaultKinds[kindName]
 enddef
 
 # Remove all the snippet placeholders from "str" and return the value.
@@ -486,24 +536,27 @@ def BuildCompletionMenuItem(item: dict<any>, lspserver: dict<any>,
     # namespace CompletionItemKind
     # map LSP kind to complete-item-kind
     d.kind = LspCompleteItemKindChar(item.kind)
+    var kindName = CompletionItemKindName(item.kind)
+    if kindHlGroupSupported && !kindName->empty()
+      d.kind_hlgroup = $'LspCompletionKind{kindName}'
+    endif
+  endif
+
+  if item->has_key('detail') && !item.detail->empty()
+    # Solve a issue where if a server send a detail field with a "\n", on
+    # the menu will be everything joined with a "^@" separating it.
+    d.menu = item.detail->split("\n")[0]
   endif
 
   if lspserver.completionLazyDoc
     d.info = 'Resolving completion...'
-  else
-    if item->has_key('detail') && !item.detail->empty()
-      # Solve a issue where if a server send a detail field with a "\n", on
-      # the menu will be everything joined with a "^@" separating it.
-      d.menu = item.detail->split("\n")[0]
-    endif
-    if item->has_key('documentation')
-      var itemDoc = item.documentation
-      if itemDoc->type() == v:t_string && !itemDoc->empty()
-        d.info = itemDoc
-      elseif itemDoc->type() == v:t_dict
-          && itemDoc.value->type() == v:t_string
-        d.info = itemDoc.value
-      endif
+  elseif item->has_key('documentation')
+    var itemDoc = item.documentation
+    if itemDoc->type() == v:t_string && !itemDoc->empty()
+      d.info = itemDoc
+    elseif itemDoc->type() == v:t_dict
+        && itemDoc.value->type() == v:t_string
+      d.info = itemDoc.value
     endif
   endif
 

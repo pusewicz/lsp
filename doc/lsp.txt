@@ -2754,6 +2754,13 @@ override them.
 				diagnostics.  By default linked to "NONE"
 				(cleared).  You can link this to a highlight
 				group to highlight the line.
+*LspCompletionKind*		The "LspCompletionKind{Name}" groups, for
+				example "LspCompletionKindFunction", highlight
+				the kind of a completion item in the popup
+				menu, where {Name} is a kind name from
+				|lsp-custom-kinds|, which also lists the
+				default links.  Requires Vim 9.1.0690 or
+				later.
 *LspDiagSignErrorText*		Used to highlight the sign text for error
 				diags.  By default linked to 'ErrorMsg'.
 *LspDiagSignHintText*		Used to highlight the sign text for hint
@@ -3102,35 +3109,43 @@ use the option |lsp-opt-customCompletionKinds| and set all custom kinds in the
 option |lsp-opt-completionKinds| . There is a table with all default LSP
 kinds:
 
- Kind Name              | Value
-------------------------|--------------------
- Text                   | t
- Method                 | m
- Function               | f
- Constructor            | C
- Field                  | F
- Variable               | v
- Class                  | c
- Interface              | i
- Module                 | M
- Property               | p
- Unit                   | u
- Value                  | V
- Enum                   | e
- Keyword                | k
- Snippet                | S
- Color                  | C
- File                   | f
- Reference              | r
- Folder                 | F
- EnumMember             | E
- Constant               | d
- Struct                 | s
- Event                  | E
- Operator               | o
- TypeParameter          | T
- Buffer                 | B
+ Kind Name              | Value   | Highlight link
+------------------------|---------|-------------------
+ Text                   | t       | -
+ Method                 | m       | Function
+ Function               | f       | Function
+ Constructor            | C       | Function
+ Field                  | F       | Identifier
+ Variable               | v       | Identifier
+ Class                  | c       | Type
+ Interface              | i       | Type
+ Module                 | M       | Include
+ Property               | p       | Identifier
+ Unit                   | u       | Number
+ Value                  | V       | Constant
+ Enum                   | e       | Type
+ Keyword                | k       | Keyword
+ Snippet                | S       | Special
+ Color                  | C       | Special
+ File                   | f       | Directory
+ Reference              | r       | Identifier
+ Folder                 | F       | Directory
+ EnumMember             | E       | Constant
+ Constant               | d       | Constant
+ Struct                 | s       | Type
+ Event                  | E       | Special
+ Operator               | o       | Operator
+ TypeParameter          | T       | Type
+ Buffer                 | B       | -
 
+In Vim 9.1.0690 and later, the kind of each item is highlighted with the
+"LspCompletionKind{Name}" highlight group, for example
+"LspCompletionKindFunction".  The table above lists the group each one is
+linked to by default; "Text" and "Buffer" are not linked, so they use the
+|hl-PmenuKind| highlight.  To change the color of a kind: >
+
+	highlight LspCompletionKindVariable ctermfg=Blue guifg=#75beff
+<
 For example, if you want to change the "Method" kind to the kind "method()": >
 
 	vim9script
@@ -3150,6 +3165,44 @@ In the completion popup, will show something like this: >
 		| create                method() |
 		| createIfNotExists     method() |
 		| ...				 |
+<
+To show icons instead of letters, use a font patched with the Nerd Fonts
+(https://www.nerdfonts.com) glyphs.  The following uses the same codicons as
+Visual Studio Code: >
+
+	vim9script
+
+	g:LspOptionsSet({
+		customCompletionKinds: true,
+		completionKinds: {
+			Text:          "\uea93",
+			Method:        "\uea8c",
+			Function:      "\uea8c",
+			Constructor:   "\uea8c",
+			Field:         "\ueb5f",
+			Variable:      "\uea88",
+			Class:         "\ueb5b",
+			Interface:     "\ueb61",
+			Module:        "\uea8b",
+			Property:      "\ueb65",
+			Unit:          "\uea96",
+			Value:         "\uea95",
+			Enum:          "\uea95",
+			Keyword:       "\ueb62",
+			Snippet:       "\ueb66",
+			Color:         "\ueb5c",
+			File:          "\ueb60",
+			Reference:     "\ueb36",
+			Folder:        "\uea83",
+			EnumMember:    "\ueb5e",
+			Constant:      "\ueb5d",
+			Struct:        "\uea91",
+			Event:         "\uea86",
+			Operator:      "\ueb64",
+			TypeParameter: "\uea92",
+			Buffer:        "\uea7b",
+		}
+	})
 <
 ==============================================================================
 						*lsp-custom-popup-styles*
