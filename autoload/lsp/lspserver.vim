@@ -1659,7 +1659,7 @@ def TextDocFormat(lspserver: dict<any>, fname: string, rangeFormat: bool,
     options: fmtopts
   }
 
-  var bnr: number = fname->bufnr()
+  var bnr: number = bufnr()
 
   if rangeFormat
     var r: dict<dict<number>> = {
@@ -1679,11 +1679,6 @@ def TextDocFormat(lspserver: dict<any>, fname: string, rangeFormat: bool,
 
   if reply->empty() || reply.result->empty()
     # nothing to format
-    return
-  endif
-
-  if bnr == -1
-    # file is already removed
     return
   endif
 
@@ -1762,10 +1757,7 @@ def TextDocOnTypeFormat(lspserver: dict<any>, ch: string)
     return
   endif
 
-  var bnr: number = @%->bufnr()
-  if bnr == -1
-    return
-  endif
+  var bnr: number = bufnr()
 
   # interface DocumentOnTypeFormattingParams
   #   interface TextDocumentIdentifier
@@ -2195,7 +2187,7 @@ def GetCodeActionParams(lspserver: dict<any>, fname_arg: string, line1: number,
   # stay behaviorally identical.
   var params: dict<any> = {}
   var fname: string = fname_arg->fnamemodify(':p')
-  var bnr: number = fname_arg->bufnr()
+  var bnr: number = util.BufnrExact(fname_arg)
   var r: dict<dict<number>> = {
     start: {
       line: line1 - 1,
@@ -2313,7 +2305,7 @@ def CodeLens(lspserver: dict<any>, fname: string)
     return
   endif
 
-  var bnr = fname->bufnr()
+  var bnr = bufnr()
 
   # Decode the position encoding in all the code lens items
   if lspserver.needOffsetEncoding
@@ -2601,7 +2593,7 @@ def SelectionRange(lspserver: dict<any>, fname: string)
 
   # Decode the position encoding in all the selection range items
   if lspserver.needOffsetEncoding
-    var bnr = fname->bufnr()
+    var bnr = bufnr()
     reply.result->map((_, selItem) => {
 	DecodeSelectionRange(lspserver, bnr, selItem)
 	return selItem

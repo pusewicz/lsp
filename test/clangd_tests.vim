@@ -1586,6 +1586,37 @@ def g:Test_LspGotoDefinition_SpecialFileName()
   endtry
 enddef
 
+# Test for the diagnostics of, and :LspGotoDefinition jumping to, files whose
+# names used as a file pattern match the names of other loaded files
+def g:Test_LspDiagAndGotoDefinition_FileNameIsNotAPattern()
+  var src: string = 'Xexact[1].c'
+  var hdr: string = 'Xexact[1].h'
+  writefile(['int xexact_target;'], hdr)
+  writefile([$'#include "{hdr}"',
+	     'int xexact_use(void) { return xexact_target; }',
+	     'int xexact_err(void) { return xexact_undeclared; }'], src)
+  writefile(['int xexact_decoy;'], 'Xexact1.c')
+  writefile(['int xexact_decoy;'], 'Xexact1.h')
+
+  try
+    :silent! edit Xexact1.h
+    :silent! edit Xexact1.c
+    exe $'silent! edit {src->fnameescape()}'
+    sleep 200m
+    g:WaitForDiags(1)
+
+    cursor(2, 31)
+    :LspGotoDefinition
+    assert_equal([hdr, 1, 5], [expand('%:t'), line('.'), col('.')])
+  finally
+    delete(src)
+    delete(hdr)
+    delete('Xexact1.c')
+    delete('Xexact1.h')
+    :%bw!
+  endtry
+enddef
+
 # Test for :LspSwitchSourceHeader with file names that have characters that
 # are special in the file name argument of an Ex command
 def g:Test_LspSwitchSourceHeader_SpecialFileName()

@@ -3468,6 +3468,143 @@ def g:Test_ApplyWorkspaceEdit_EditsEmptyFile()
   endtry
 enddef
 
+# Returns pairs of a file name and the name of a decoy file.  Used as a file
+# pattern, like bufnr() and bufwinid() use a String, the file name matches the
+# whole decoy file name or a part of it.
+def PatternDecoys(): list<list<string>>
+  return [
+    ['XExactName[1].c', 'XExactName1.c'],
+    ['XExactName*.c', 'XExactNameb.c'],
+    ['XExactName.c', 'XExactName.c.orig']
+  ]
+enddef
+
+# Returns "result" in a reply to a request.  Stands in for lspserver.rpc().
+def StubRpcReply(result: any, method: string, params: any,
+		 opts: dict<any> = {}): dict<any>
+  return {result: result->deepcopy()}
+enddef
+
+# Returns a running and ready language server that replies "result" to every
+# request.
+def MakeReplyingLspServer(result: any): dict<any>
+  var lspserver = MakeTestLspServer([])
+  lspserver.running = true
+  lspserver.ready = true
+  lspserver.rpc = function(StubRpcReply, [result])
+  return lspserver
+enddef
+
+# Test that the diagnostics for a file are stored for the buffer of the file,
+# not for a buffer that the file name matches as a file pattern.
+def g:Test_DiagNotification_FileNameIsNotAPattern()
+  DiagInitOnce()
+  for [target, decoy] in PatternDecoys()
+    writefile(['int target;'], target)
+    writefile(['int decoy;'], decoy)
+    try
+      exe $'edit {decoy->fnameescape()}'
+      var decoyBnr = bufnr()
+      # An unlisted buffer, like the buffer of a file changed by a workspace
+      # edit
+      var targetBnr = target->bufadd()
+      targetBnr->bufload()
+
+      diag.DiagNotification(MakeDiagServer('srv'), util.LspFileToUri(target),
+			    [MakeLineDiag(0, 'target diag')], 'push')
+      var targetMsgs = diag.GetDiagsForBuf(targetBnr)
+	->mapnew((_, d) => d.message)
+      assert_equal(['target diag'], targetMsgs, target)
+      assert_equal([], diag.GetDiagsForBuf(decoyBnr), target)
+      diag.DiagRemoveFile(targetBnr)
+      diag.DiagRemoveFile(decoyBnr)
+    finally
+      :%bw!
+      delete(target)
+      delete(decoy)
+    endtry
+  endfor
+enddef
+
+# Test that ":LspGotoDefinition" jumps to the buffer of the file with the
+# definition, not to a buffer that the file name matches as a file pattern.
+def g:Test_LspGotoDefinition_FileNameIsNotAPattern()
+  var pos = {line: 0, character: 4}
+  for [target, decoy] in PatternDecoys()
+    writefile(['int target;'], target)
+    writefile(['int decoy;'], decoy)
+    var lspserver = MakeReplyingLspServer(
+      {uri: util.LspFileToUri(target), range: {start: pos, end: pos}})
+    lspserver.isDefinitionProvider = true
+    try
+      exe $'edit {decoy->fnameescape()}'
+      edit XGotoSource.c
+      var srcBnr = bufnr()
+      buf.BufLspServerSet(srcBnr, lspserver)
+      :LspGotoDefinition
+      buf.BufLspServerRemove(srcBnr, lspserver)
+      assert_equal([target, 'int target;', [1, 5]],
+		   [expand('%:t'), getline(1), getpos('.')[1 : 2]], target)
+    finally
+      :%bw!
+      delete(target)
+      delete(decoy)
+    endtry
+  endfor
+enddef
+
+# Test that ":LspFormat" changes the current buffer, not a buffer that the name
+# of the current file matches as a file pattern.
+def g:Test_LspFormat_FileNameIsNotAPattern()
+  for [target, decoy] in PatternDecoys()
+    writefile(['int  target;'], target)
+    writefile(['int  decoy;'], decoy)
+    var lspserver = MakeReplyingLspServer([MakeTextEdit(0, 3, 0, 4, '')])
+    lspserver.isDocumentFormattingProvider = true
+    try
+      exe $'edit {decoy->fnameescape()}'
+      var decoyBnr = bufnr()
+      exe $'edit {target->fnameescape()}'
+      buf.BufLspServerSet(bufnr(), lspserver)
+      :LspFormat
+      buf.BufLspServerRemove(bufnr(), lspserver)
+      assert_equal(['int target;'], getline(1, '$'), target)
+      assert_false(decoyBnr->getbufvar('&modified'), target)
+    finally
+      :%bw!
+      delete(target)
+      delete(decoy)
+    endtry
+  endfor
+enddef
+
+# Test that a workspace edit changes the buffer of the file it is for, not a
+# buffer that the file name matches as a file pattern.
+def g:Test_ApplyWorkspaceEdit_FileNameIsNotAPattern()
+  for [target, decoy] in PatternDecoys()
+    writefile(['int target;'], target)
+    writefile(['int decoy;'], decoy)
+    var uri = util.LspFileToUri(target)
+    var changes = {changes: {[uri]: [MakeTextEdit(0, 4, 0, 10, 'edited')]}}
+    var docEdit = {textDocument: {uri: uri, version: v:null},
+		   edits: [MakeTextEdit(0, 0, 0, 3, 'long')]}
+    try
+      exe $'edit {decoy->fnameescape()}'
+      var decoyBnr = bufnr()
+      textedit.ApplyWorkspaceEdit(changes)
+      textedit.ApplyWorkspaceEdit({documentChanges: [docEdit]})
+      assert_equal(['long edited;'], target->bufadd()->getbufline(1, '$'),
+		   target)
+      assert_equal(['int decoy;'], decoyBnr->getbufline(1, '$'), target)
+      assert_false(decoyBnr->getbufvar('&modified'), target)
+    finally
+      :%bw!
+      delete(target)
+      delete(decoy)
+    endtry
+  endfor
+enddef
+
 # Returns a TextDocumentEdit inserting "text" at the start of the document
 # with URI "uri".
 def MakeInsertEdit(uri: string, text: string): dict<any>
