@@ -442,7 +442,7 @@ def g:Test_LspOnTypeFormatting_TypedTrigger()
   :silent! edit XLspOnTypeFormatTrigger.c
   sleep 200m
   setline(1, ['int f1(int a) {', '  a = 1;a = 2', '  return a;', '}'])
-  g:WaitForServerFileLoad(0)
+  g:WaitForServerFileLoad(1)
   :redraw!
 
   # Record the requests instead of sending them, and add a trigger character
