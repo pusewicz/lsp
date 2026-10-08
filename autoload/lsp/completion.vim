@@ -346,22 +346,21 @@ def ApplyCompletionItemDefaults(cItem: dict<any>, itemDefaults: dict<any>): dict
   return item
 enddef
 
-# Apply CompletionList.itemDefaults to all completion items.
-def ApplyCompletionListItemDefaults(cItems: any, items: list<dict<any>>): list<dict<any>>
-  # Validate cItems is a dict with itemDefaults key
-  if cItems->type() != v:t_dict || !cItems->has_key('itemDefaults')
-    return items
-  endif
-
-  var itemDefaults = cItems.itemDefaults
+# Apply the itemDefaults of the CompletionList "cItems" to its completion items
+# "items", in place.
+def ApplyCompletionListItemDefaults(cItems: dict<any>, items: list<dict<any>>)
+  var itemDefaults = cItems->get('itemDefaults', v:none)
 
   # Skip if itemDefaults is invalid or empty
   if itemDefaults->type() != v:t_dict || itemDefaults->empty()
-    return items
+    return
   endif
 
-  # Apply defaults to each item using functional map
-  return items->map((_, item) => ApplyCompletionItemDefaults(item, itemDefaults))
+  # A loop and not map(), which would pass each item to a lambda too: Vim
+  # checks the type of every value of a dict passed to a function.
+  for i in range(items->len())
+    items[i] = ApplyCompletionItemDefaults(items[i], itemDefaults)
+  endfor
 enddef
 
 # For the InsertReplaceEdit of the completion item "cItem" from "lspserver",
@@ -452,7 +451,8 @@ def ApplyCompletionTextEdit(lspserver: dict<any>, cItem: dict<any>,
     return
   endif
 
-  var rangeStart = TextEditStartByteIdx(lspserver, ltext, textEdit)
+  var rangeStart = TextEditStartByteIdx(textEdit,
+					CursorLineByteIdxFunc(lspserver, ltext))
   if rangeStart < 0 || rangeStart >= wordStart
     return
   endif
@@ -528,12 +528,31 @@ def PromotePreselectedCompletionItem(completeItems: list<dict<any>>)
   endif
 enddef
 
-# Return the byte index in "ltext", the cursor line or the start of it, where
-# the range of the completion item text edit "textEdit" from "lspserver" (the
-# insert range of an InsertReplaceEdit) starts.  Returns -1 when it doesn't
-# start on the cursor line within "ltext".
-def TextEditStartByteIdx(lspserver: dict<any>, ltext: string,
-			 textEdit: dict<any>): number
+# Return a function that returns the byte index in "ltext", the cursor line or
+# the start of it, of a character offset on the cursor line in the position
+# encoding of "lspserver", or -1 when it is not within "ltext".  It decodes
+# each offset once, and the functions that build the completion menu items
+# take it instead of "lspserver": Vim checks the type of every value of a dict
+# passed to a function, and the server dict has many.
+def CursorLineByteIdxFunc(lspserver: dict<any>,
+			  ltext: string): func(number): number
+  var byteIdx: dict<number> = {}
+  return (character: number): number => {
+    if !byteIdx->has_key(character)
+      var pos: dict<number> = {line: line('.') - 1, character: character}
+      offset.DecodePosition(lspserver, bufnr(), pos)
+      byteIdx[character] = ltext->byteidxcomp(pos.character)
+    endif
+    return byteIdx[character]
+  }
+enddef
+
+# Return the byte index where the range of the completion item text edit
+# "textEdit" (the insert range of an InsertReplaceEdit) starts, in the text
+# that "ByteIdx", a function returned by CursorLineByteIdxFunc(), is for.
+# Returns -1 when it doesn't start on the cursor line within that text.
+def TextEditStartByteIdx(textEdit: dict<any>,
+			 ByteIdx: func(number): number): number
   var range = textEdit->get('range', textEdit->get('insert', v:none))
   var start = range->type() == v:t_dict ? range->get('start', v:none) : v:none
   if start->type() != v:t_dict || start->get('line', -1) != line('.') - 1
@@ -541,9 +560,7 @@ def TextEditStartByteIdx(lspserver: dict<any>, ltext: string,
     return -1
   endif
 
-  var decodedStart: dict<number> = start->copy()
-  offset.DecodePosition(lspserver, bufnr(), decodedStart)
-  return ltext->byteidxcomp(decodedStart.character)
+  return ByteIdx(start.character)
 enddef
 
 # Make "text", which is relative to the start of a completion edit range that
@@ -558,11 +575,13 @@ enddef
 # Return the word to complete "item" with and the text to match the keyword
 # before the cursor against.  "starttext" is the text before the cursor and
 # "kwStart" the byte index of the keyword in it, where the word is inserted.
+# "StartByteIdx" is the CursorLineByteIdxFunc() for "starttext".
 # The word for an item whose text edit replaces text before the keyword (e.g.
 # "?.state" replacing the "." in "foo.") can only complete the keyword;
 # LspCompleteDone() then applies the text edit.
-def GetCompletionWordAndFilterText(lspserver: dict<any>, item: dict<any>,
-				   starttext: string, kwStart: number): list<any>
+def GetCompletionWordAndFilterText(item: dict<any>, starttext: string,
+				   kwStart: number,
+				   StartByteIdx: func(number): number): list<any>
   var word = item->get('insertText', item->get('label', ''))
   var filterText = item->get('filterText', v:none)
   var textEdit = item->get('textEdit', v:none)
@@ -575,7 +594,7 @@ def GetCompletionWordAndFilterText(lspserver: dict<any>, item: dict<any>,
   var editFilterText: string =
     filterText->type() == v:t_string ? filterText : newText
 
-  var rangeStart = TextEditStartByteIdx(lspserver, starttext, textEdit)
+  var rangeStart = TextEditStartByteIdx(textEdit, StartByteIdx)
   if rangeStart < 0
     return [newText, editFilterText]
   endif
@@ -615,15 +634,21 @@ def CompletionItemPrefixMatched(filterText: string, prefix: string,
   return filterText->stridx(prefix) == 0
 enddef
 
-# Build one completion menu item. Returns {} when the item should be skipped.
-def BuildCompletionMenuItem(item: dict<any>, lspserver: dict<any>,
-                           lspOpts: dict<any>, matcher: number,
-                           shouldFilterByPrefix: bool, prefix: string,
-                           starttext: string, start_idx: number): dict<any>
+# Build the completion menu item for the completion item "item".  Returns {}
+# when the item should be skipped.  "starttext", "kwStart" and "StartByteIdx"
+# are as for GetCompletionWordAndFilterText().  An item that is not a snippet
+# is skipped when its filter text doesn't match "filterPrefix" with
+# "matcher".  "lazyDoc" is true when the documentation is resolved when the
+# item is selected, and "condensed" is the "condensedCompletionMenu" option.
+def BuildCompletionMenuItem(item: dict<any>, starttext: string,
+			    kwStart: number,
+			    StartByteIdx: func(number): number,
+			    filterPrefix: string, matcher: number,
+			    lazyDoc: bool, condensed: bool): dict<any>
   var d: dict<any> = {}
 
   var [word, filterText] =
-    GetCompletionWordAndFilterText(lspserver, item, starttext, start_idx)
+    GetCompletionWordAndFilterText(item, starttext, kwStart, StartByteIdx)
   d.word = word
 
   var insertTextFormat = item->get('insertTextFormat', 1)
@@ -636,11 +661,8 @@ def BuildCompletionMenuItem(item: dict<any>, lspserver: dict<any>,
   if insertTextFormat == 2
     # snippet completion. Needs a snippet plugin to expand the snippet.
     d.word = MakeValidWord(d.word)
-  elseif shouldFilterByPrefix
-    # Filter only for complete lists or when buffer completion is enabled.
-    if !CompletionItemPrefixMatched(filterText, prefix, matcher)
-      return {}
-    endif
+  elseif !CompletionItemPrefixMatched(filterText, filterPrefix, matcher)
+    return {}
   endif
 
   d.abbr = CompletionItemLabel(item)
@@ -666,7 +688,7 @@ def BuildCompletionMenuItem(item: dict<any>, lspserver: dict<any>,
     d.menu = item.detail->split("\n")->get(0, '')
   endif
 
-  if lspserver.completionLazyDoc
+  if lazyDoc
     d.info = 'Resolving completion...'
   elseif item->has_key('documentation')
     var itemDoc = item.documentation
@@ -691,7 +713,7 @@ def BuildCompletionMenuItem(item: dict<any>, lspserver: dict<any>,
   # Condense completion menu items to single words (plus kind)
   # Move all additional details to the info popup
   # Caveat: LazyDoc will override moved details!
-  if lspOpts.condensedCompletionMenu
+  if condensed
     var moved: list<string> = []
     if len(d.abbr) > len(d.word)
       moved->add(d.abbr)
@@ -701,7 +723,7 @@ def BuildCompletionMenuItem(item: dict<any>, lspserver: dict<any>,
       moved->add(d.menu)
       d.menu = ''
     endif
-    if !lspserver.completionLazyDoc && !moved->empty()
+    if !lazyDoc && !moved->empty()
       PrependCompletionInfo(d, moved)
     endif
   endif
@@ -709,42 +731,55 @@ def BuildCompletionMenuItem(item: dict<any>, lspserver: dict<any>,
   return d
 enddef
 
-# Normalize completion response payload to a completion-item list and update
-# the server incomplete-list state.
+# Return the list of completion items of the completion reply "cItems", with
+# the CompletionList.itemDefaults applied, and update the server
+# incomplete-list state.  The List in the reply gets its type here, once, so
+# that Vim no longer checks the type of every value of every item each time
+# the List or the reply is passed to a function.
 def GetCompletionSourceItems(lspserver: dict<any>, cItems: any): list<dict<any>>
   lspserver.completeItemsIsIncomplete = false
 
+  var items: list<dict<any>> = []
   if cItems->type() == v:t_list
-    return cItems
-  endif
-
-  if cItems->type() != v:t_dict || !cItems->has_key('items')
-    return []
-  endif
-
-  if cItems.items->type() != v:t_list
-    return []
-  endif
-
-  var items = ApplyCompletionListItemDefaults(cItems, cItems.items)
-  if opt.lspOptions.ignoreCompleteItemsIsIncomplete->index(lspserver.name) >= 0
-    lspserver.completeItemsIsIncomplete = false
-  else
-    lspserver.completeItemsIsIncomplete = cItems->get('isIncomplete', false)
+    items = cItems
+  elseif cItems->type() == v:t_dict && cItems->get('items')->type() == v:t_list
+    items = cItems.items
+    ApplyCompletionListItemDefaults(cItems, items)
+    if opt.lspOptions.ignoreCompleteItemsIsIncomplete->index(lspserver.name) < 0
+      lspserver.completeItemsIsIncomplete = cItems->get('isIncomplete', false)
+    endif
   endif
 
   return items
 enddef
 
-# Sort and apply server preselect hint.
-def FinalizeCompletionItems(completeItems: list<dict<any>>, matcher: number)
-  if matcher != opt.COMPLETIONMATCHER_FUZZY
-    # Lexographical sort (case-insensitive).
-    completeItems->sort((a, b) =>
-      a.score == b.score ? 0 : a.score >? b.score ? 1 : -1)
-  endif
+# Return the completion menu items "completeItems" sorted by their score,
+# ignoring case, with the items of the same score kept in order.
+def SortCompletionItems(completeItems: list<dict<any>>): list<dict<any>>
+  # The compare function gets the indexes of the items, as Vim checks the
+  # type of every value of a dict passed to a function, which for a menu item
+  # includes the completion item in "user_data".  Tuples, as indexing a List
+  # walks it from the index looked up last.
+  var scoreList: list<any> = []
+  for d in completeItems
+    scoreList->add(d.score)
+  endfor
+  var scores = scoreList->list2tuple()
+  var items = completeItems->list2tuple()
+  return range(completeItems->len())
+    ->sort((i: number, j: number): number =>
+      scores[i] == scores[j] ? 0 : scores[i] >? scores[j] ? 1 : -1)
+    ->mapnew((_, i: number): dict<any> => items[i])
+enddef
 
-  PromotePreselectedCompletionItem(completeItems)
+# Return the completion menu items "completeItems" sorted, unless "matcher"
+# is fuzzy, and with the item the server preselects first.
+def FinalizeCompletionItems(completeItems: list<dict<any>>,
+			    matcher: number): list<dict<any>>
+  var finalItems = matcher == opt.COMPLETIONMATCHER_FUZZY
+    ? completeItems : SortCompletionItems(completeItems)
+  PromotePreselectedCompletionItem(finalItems)
+  return finalItems
 enddef
 
 # Send completion items either directly to popup (autoComplete) or to omnifunc
@@ -826,15 +861,19 @@ export def CompletionReply(lspserver: dict<any>, cItems: any,
   endif
 
   var matcher = lspOpts.completionMatcherValue
-  var shouldFilterByPrefix =
+  # Filter only for complete lists or when buffer completion is enabled.
+  var filterPrefix =
     !lspserver.completeItemsIsIncomplete || lspOpts.useBufferCompletion
+    ? prefix : ''
+  var lazyDoc: bool = lspserver.completionLazyDoc
+  var condensed: bool = lspOpts.condensedCompletionMenu
+  var StartByteIdx = CursorLineByteIdxFunc(lspserver, starttext)
 
   var completeItems: list<dict<any>> = []
   var seenItemKeys: dict<bool> = {}
   for item in items
-    var d = BuildCompletionMenuItem(item, lspserver, lspOpts, matcher,
-                                    shouldFilterByPrefix, prefix,
-                                    starttext, start_idx)
+    var d = BuildCompletionMenuItem(item, starttext, start_idx, StartByteIdx,
+				    filterPrefix, matcher, lazyDoc, condensed)
     if d->empty()
       continue
     endif
@@ -855,32 +894,25 @@ export def CompletionReply(lspserver: dict<any>, cItems: any,
 
     # Cut the label only now, so that overloads that differ only in the part
     # that is cut off are not taken for duplicates.
-    CutCompletionMenuLabel(d, lspserver.completionLazyDoc)
+    CutCompletionMenuLabel(d, lazyDoc)
     completeItems->add(d)
   endfor
 
-  FinalizeCompletionItems(completeItems, matcher)
+  completeItems = FinalizeCompletionItems(completeItems, matcher)
   DispatchCompletionItems(lspserver, completeItems, start_col,
                           lspOpts.autoComplete)
 enddef
 
 # Check if completion item is selected
 def CheckCompletionItemSel(label: string): bool
-  var cInfo = complete_info()
-  if cInfo->empty() || !cInfo.pum_visible || cInfo.selected == -1
+  # Only the selected item: for "items", complete_info() makes a dict for
+  # every item in the menu.
+  var cInfo = complete_info(['pum_visible', 'selected', 'completed'])
+  if !cInfo.pum_visible || cInfo.selected == -1
     return false
   endif
 
-  if cInfo.selected >= cInfo.items->len()
-    return false
-  endif
-
-  var selItem = cInfo.items[cInfo.selected]
-  if selItem->type() != v:t_dict
-    return false
-  endif
-
-  var userData = selItem->get('user_data', v:none)
+  var userData = cInfo->get('completed', {})->get('user_data', v:none)
   if userData->type() != v:t_dict
     return false
   endif
@@ -1133,11 +1165,11 @@ def OmniCompleteMatches(lspserver: dict<any>): any
   endif
 
   if lspOpts.completionMatcherValue == opt.COMPLETIONMATCHER_ICASE
-    return res->filter((i, v) =>
+    return res->filter((_, v: dict<any>): bool =>
       v.word->tolower()->stridx(prefix->tolower()) == 0)
   endif
 
-  return res->filter((i, v) => v.word->stridx(prefix) == 0)
+  return res->filter((_, v: dict<any>): bool => v.word->stridx(prefix) == 0)
 enddef
 
 # omni complete handler.  Set as 'omnifunc' and called directly by external
