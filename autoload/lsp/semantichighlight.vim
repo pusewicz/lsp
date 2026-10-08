@@ -325,6 +325,7 @@ export def BufferInit(lspserver: dict<any>, bnr: number)
   acmds->add({bufnr: bnr,
 	      event: 'TextChanged',
 	      group: 'LSPBufferAutocmds',
+	      replace: true,
 	      cmd: $'LspUpdateSemanticHighlight({bnr})'})
 
   autocmd_add(acmds)

@@ -7202,38 +7202,86 @@ def HighlightAndHoverAutocmds(bnr: number): dict<list<string>>
 enddef
 
 # Test that the autocmds for the features that use one of the language
-# servers of a buffer are added once, when all the servers are ready, however
-# many servers provide the features.
+# servers of a buffer are added once, when all the servers are ready and have
+# the document open, however many servers provide the features.  The second
+# server is ready either when it is attached to the buffer or only later.
 def g:Test_BufFeatureAutocmds_AddedOnce()
   g:LspOptionsSet({autoHighlight: true, hoverOnCursorHold: true})
   var caps = {textDocumentSync: {openClose: true, change: 1},
 	      documentHighlightProvider: true, hoverProvider: true}
   try
-    var srv1 = MakeCapsServer(caps, [])
-    var srv2 = MakeCapsServer(caps, [])
+    for readyWhenAttached in [true, false]
+      var srv1 = MakeCapsServer(caps, [])
+      var srv2 = MakeCapsServer(caps, [])
+      srv2.ready = readyWhenAttached
+      :silent edit XBufFeatureAutocmds.txt
+      var bnr = bufnr()
+      buf.BufLspServerSet(bnr, srv1)
+      buf.BufLspServerSet(bnr, srv2)
+      lsp.BufferInit(srv1.id, bnr)
+      assert_equal({CursorMoved: [], CursorHold: [], BufLeave: []},
+		   BufFeatureAutocmds(bnr), readyWhenAttached)
+      srv2.ready = true
+      lsp.BufferInit(srv2.id, bnr)
+      assert_equal(HighlightAndHoverAutocmds(bnr), BufFeatureAutocmds(bnr),
+		   readyWhenAttached)
+      lsp.RemoveFile(bnr)
+      :%bw!
+    endfor
+  finally
+    g:LspOptionsSet({autoHighlight: false, hoverOnCursorHold: false})
+  endtry
+enddef
+
+# Test that the semantic highlighting of a buffer is initialized for the
+# language server that provides it, when another server is the last to get
+# ready.
+def g:Test_SemanticHighlight_InitForItsServer()
+  g:LspOptionsSet({semanticHighlight: true})
+  try
+    var sync = {textDocumentSync: {openClose: true, change: 1}}
+    var srv1 = MakeCapsServer(sync->extendnew({semanticTokensProvider: {
+      legend: {tokenTypes: [], tokenModifiers: []}, full: true}}), [])
+    var srv2 = MakeCapsServer(sync, [])
     srv2.ready = false
-    :silent edit XBufFeatureAutocmds1.txt
+    :silent edit XSemanticInit.txt
     var bnr = bufnr()
     buf.BufLspServerSet(bnr, srv1)
     buf.BufLspServerSet(bnr, srv2)
     lsp.BufferInit(srv1.id, bnr)
-    assert_equal({CursorMoved: [], CursorHold: [], BufLeave: []},
-		 BufFeatureAutocmds(bnr))
     srv2.ready = true
     lsp.BufferInit(srv2.id, bnr)
-    assert_equal(HighlightAndHoverAutocmds(bnr), BufFeatureAutocmds(bnr))
-    lsp.RemoveFile(bnr)
-
-    # Both servers are ready when they are attached to the buffer
-    var srv3 = MakeCapsServer(caps, [])
-    var srv4 = MakeCapsServer(caps, [])
-    bnr = SaveTestEdit('XBufFeatureAutocmds2.txt', [], [srv3, srv4], [])
-    assert_equal(HighlightAndHoverAutocmds(bnr), BufFeatureAutocmds(bnr))
+    assert_equal([$'LspUpdateSemanticHighlight({bnr})'],
+		 autocmd_get({group: 'LSPBufferAutocmds', bufnr: bnr,
+			      event: 'TextChanged'})->mapnew((_, a) => a.cmd))
     lsp.RemoveFile(bnr)
   finally
-    g:LspOptionsSet({autoHighlight: false, hoverOnCursorHold: false})
+    g:LspOptionsSet({semanticHighlight: false})
     :%bw!
-    delete('XBufFeatureAutocmds2.txt')
+  endtry
+enddef
+
+# Test that initializing the inlay hints of a buffer again, as when it is
+# attached to the language servers again, doesn't add the autocmds again.
+def g:Test_InlayHints_BufferInitTwice()
+  g:LspOptionsSet({showInlayHints: true})
+  try
+    var srv = MakeCapsServer({inlayHintProvider: true}, [])
+    srv.syncInit = true
+    :silent edit XInlayHintsInitTwice.txt
+    var bnr = bufnr()
+    inlayhints.BufferInit(srv, bnr)
+    inlayhints.BufferInit(srv, bnr)
+    # autocmd_get() names the BufReadPost event BufRead
+    assert_equal(['BufLeave', 'BufRead', 'CursorHold', 'TextChanged'],
+		 autocmd_get({group: 'LspInlayHints', bufnr: bnr})
+		   ->mapnew((_, a) => a.event)->sort())
+    assert_equal(1, autocmd_get({group: 'LspAttached', bufnr: bnr})->len())
+    autocmd_delete([{group: 'LspInlayHints', bufnr: bnr},
+		    {group: 'LspAttached', bufnr: bnr}])
+  finally
+    g:LspOptionsSet({showInlayHints: false})
+    :%bw!
   endtry
 enddef
 
