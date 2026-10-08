@@ -2522,6 +2522,11 @@ affects only the virtual text: a sign and an inline highlight are still placed
 for every diagnostic.  When a line has signs for several diagnostics, the sign
 of the most severe one is displayed.
 
+The options that change how the diagnostics are displayed (the options above,
+"autoHighlightDiags", the "diagSign*Text" options, "showDiagInBalloon" and
+"showDiagOnStatusLine") can be changed at any time with |LspOptionsSet()|.
+The diagnostics already displayed are updated right away.
+
 The LSP plugin offers convenient ways to highlight diagnostic messages, making
 it easier to spot errors, warnings, hints, or informational notices within
 your code.  By default, the plugin automatically highlights the range of text
