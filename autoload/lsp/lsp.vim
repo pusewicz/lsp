@@ -226,40 +226,29 @@ export def ShowAllServers()
     endif
   endfor
 
-  var wid = bufwinid('Language-Servers')
-  if wid != -1
-    wid->win_gotoid()
-    :setlocal modifiable
-    :silent! :%d _
-  else
-    :new Language-Servers
-    :setlocal buftype=nofile
-    :setlocal bufhidden=wipe
-    :setlocal noswapfile
-    :setlocal nonumber nornu
-    :setlocal fdc=0 signcolumn=no
-  endif
+  OpenScratchWindow('Language-Servers')
   setline(1, lines)
   :setlocal nomodified
   :setlocal nomodifiable
 enddef
 
-# Create a new window containing the buffer "bname" or if the window is
-# already present then jump to it.
+# Numbers of the buffers opened by OpenScratchWindow(), by buffer name
+var scratchBufnrs: dict<number> = {}
+
+# Create a new window containing the empty scratch buffer "bname" or if the
+# window is already present then jump to it and empty the buffer.
 def OpenScratchWindow(bname: string)
-  var wid = bufwinid(bname)
+  var bnr: number = scratchBufnrs->get(bname, -1)
+  var wid: number = bnr->bufwinid()
   if wid != -1
     wid->win_gotoid()
-    :setlocal modifiable
-    :silent! :%d _
   else
-    exe $':new {bname}'
-    :setlocal buftype=nofile
-    :setlocal bufhidden=wipe
-    :setlocal noswapfile
+    scratchBufnrs[bname] = util.ScratchWindowOpen(bnr, bname)
     :setlocal nonumber nornu
     :setlocal fdc=0 signcolumn=no
   endif
+  :setlocal modifiable
+  :silent! :%d _
 enddef
 
 # Show the status of the LSP server for the current buffer
@@ -1287,14 +1276,11 @@ enddef
 
 # open a window and display all the symbols in a file (outline)
 export def Outline(ctl: string, cmdmods: string, winsize: number)
-  var fname: string = @%
-  if fname->empty()
-    return
-  endif
-
-  var lspserver: dict<any> = buf.CurbufGetServerChecked('documentSymbol')
-  if (lspserver->empty() || !lspserver.running || !lspserver.ready) && fname != 'LSP-Outline'
-    return
+  if bufnr() != outline.OutlineBufnr()
+    var lspserver: dict<any> = buf.CurbufGetServerChecked('documentSymbol')
+    if lspserver->empty() || !lspserver.running || !lspserver.ready
+      return
+    endif
   endif
 
   if ctl == 'open' || ctl == ''
