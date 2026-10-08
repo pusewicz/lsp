@@ -1864,6 +1864,12 @@ formatFallback  	|Boolean| option. Fall back to |gq| in case no
 			  nnoremap gq <plug>(LspFormat)
 			  xnoremap gq <plug>(LspFormat)
 
+						*lsp-opt-formatOnSave*
+formatOnSave		|Boolean| option.  Format a buffer with the language
+			server before writing it to its file, as |:LspFormat|
+			does.  See |lsp-format-on-save|.
+			By default this is set to false.
+
 						*lsp-opt-ignoreMissingServer*
 ignoreMissingServer	|Boolean| option.  Do not print a missing language
 			server executable.  By default this is set to false.
@@ -2715,6 +2721,23 @@ by default, since it edits the buffer while you are typing.
 Only a trigger character that you type in Insert mode reformats the code, not
 one that is already before the cursor (for example, after "cw") and not a
 newline started with "o".
+
+						*lsp-format-on-save*
+If the |lsp-opt-formatOnSave| option is set to true, a buffer is formatted
+with the language server before it is written to its file, as |:LspFormat|
+formats it.  Writing the buffer to another file (for example, with ":write
+copy.c") doesn't format it.  To write a buffer without formatting it, use
+":noautocmd write" (see |:noautocmd|).
+
+A language server can also ask to make edits to a buffer before it is written
+to its file (for example, the ESLint language server can fix the problems in
+it).  These edits are made after formatting.  To write buffers without the
+edits of a language server, set its |lsp-features-willSaveWaitUntil| feature
+to false.
+
+Vim waits for the formatting and for the edits of each language server as long
+as it waits for the reply to other requests (two seconds).  When a language
+server doesn't reply in time, the buffer is written without its changes.
 
 ==============================================================================
 							*lsp-call-hierarchy*
@@ -3672,6 +3695,12 @@ typeDefinition			Used by the |:LspGotoTypeDef| and the
 						*lsp-features-typeHierarchy*
 typeHierarchy			Used by the |:LspSubTypeHierarchy| and the
 				|:LspSuperTypeHierarchy| commands.
+					*lsp-features-willSaveWaitUntil*
+willSaveWaitUntil		Used to make the edits that a language server
+				asks for before a buffer is written to its
+				file.  By setting this to |false| buffers are
+				written without the edits of the language
+				server.  See |lsp-format-on-save|.
 workspaceSymbol			Used by the |:LspSymbolSearch| command.
 
 ==============================================================================

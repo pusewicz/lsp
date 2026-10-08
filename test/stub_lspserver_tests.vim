@@ -11,6 +11,7 @@ import '../autoload/lsp/diag.vim' as diag
 import '../autoload/lsp/symbol.vim' as symbol
 import '../autoload/lsp/util.vim' as util
 import '../autoload/lsp/buffer.vim' as buf
+import '../autoload/lsp/capabilities.vim'
 import '../autoload/lsp/ontypeformat.vim' as ontypeformat
 import '../autoload/lsp/textedit.vim' as textedit
 import '../autoload/lsp/hover.vim' as hover
@@ -5023,6 +5024,323 @@ def g:Test_HoverInPreview_KeepsModifiedPreviewBuffer()
   finally
     buf.BufLspServerRemove(srcBnr, lspserver)
     :%bw!
+  endtry
+enddef
+
+# The text document sync capabilities of a language server that wants to know
+# when a document is saved and to make edits to it before that.  The changes
+# are sent as the full text, to make them easy to check.
+const WILL_SAVE_SYNC_CAPS: dict<any> = {
+  openClose: true,
+  change: 1,
+  save: true,
+  willSave: true,
+  willSaveWaitUntil: true
+}
+
+# Returns a TextEdit that inserts "text" at the start of the document.
+def InsertAtStartEdit(text: string): dict<any>
+  var pos = {line: 0, character: 0}
+  return {range: {start: pos, end: pos}, newText: text}
+enddef
+
+# Returns a running and ready language server with the capabilities "caps".
+# It replies to a request with the reply for its method in "replies", and
+# with none (as when the request times out) to the other requests.  The
+# notifications and the requests sent to the server are added to "messages".
+def MakeSaveServer(caps: dict<any>, replies: dict<dict<any>>,
+		   messages: list<dict<any>>): dict<any>
+  var lspserver = MakeTestLspServer(messages)
+  lspserver.caps = caps
+  capabilities.ProcessServerCaps(lspserver, caps)
+  lspserver.running = true
+  lspserver.ready = true
+  lspserver.rpc = (method: string, params: any): dict<any> => {
+    messages->add({method: method, params: params->deepcopy()})
+    return replies->get(method, {})->deepcopy()
+  }
+  return lspserver
+enddef
+
+# Edits file "fname" with the lines "lines", and attaches the language servers
+# "lspservers" to its buffer, as when they get ready.  Returns the buffer
+# number.  The messages sent to the servers when they are attached are not
+# kept.
+def SaveTestEdit(fname: string, lines: list<string>,
+		 lspservers: list<dict<any>>,
+		 messages: list<list<dict<any>>>): number
+  writefile(lines, fname)
+  exe $'silent edit {fname}'
+  var bnr = bufnr()
+  for lspserver in lspservers
+    buf.BufLspServerSet(bnr, lspserver)
+  endfor
+  for lspserver in lspservers
+    lsp.BufferInit(lspserver.id, bnr)
+  endfor
+  for msgs in messages
+    msgs->filter('0')
+  endfor
+  return bnr
+enddef
+
+# Returns the methods of the messages "messages".
+def Methods(messages: list<dict<any>>): list<string>
+  return messages->mapnew((_, msg) => msg.method)
+enddef
+
+# Test that before a buffer is written to its file, the language server is
+# told so and the edits it asks for are made to the buffer and written.  The
+# server gets the edits before the notification that the file was saved.
+def g:Test_WillSave_EditsWrittenWithBuffer()
+  var fname = 'XWillSaveEdits.txt'
+  var messages: list<dict<any>> = []
+  var lspserver = MakeSaveServer({textDocumentSync: WILL_SAVE_SYNC_CAPS},
+    {'textDocument/willSaveWaitUntil': {result: [InsertAtStartEdit("// fixed\n")]}},
+    messages)
+  var bnr = SaveTestEdit(fname, ['int x;'], [lspserver], [messages])
+  try
+    :write
+    assert_equal(['// fixed', 'int x;'], readfile(fname))
+    assert_false(&modified)
+
+    var uri = util.LspFileToUri(fname)
+    var params = {textDocument: {uri: uri}, reason: 1}
+    assert_equal(['textDocument/willSave', 'textDocument/willSaveWaitUntil'],
+		 Methods(messages[: 1]))
+    assert_equal([params, params], messages[: 1]->mapnew((_, m) => m.params))
+    assert_equal('textDocument/didChange', messages[-2].method)
+    assert_equal([{text: "// fixed\nint x;\n"}],
+		 messages[-2].params.contentChanges)
+    assert_equal({method: 'textDocument/didSave',
+		  params: {textDocument: {uri: uri}}}, messages[-1])
+  finally
+    lsp.RemoveFile(bnr)
+    :%bw!
+    delete(fname)
+  endtry
+enddef
+
+# Test that a buffer with several language servers attached to it is saved
+# once: each server gets one of each save message, and the edits of each are
+# made once.
+def g:Test_WillSave_SeveralServers()
+  var fname = 'XWillSaveServers.txt'
+  var messages1: list<dict<any>> = []
+  var messages2: list<dict<any>> = []
+  var srv1 = MakeSaveServer({textDocumentSync: WILL_SAVE_SYNC_CAPS},
+    {'textDocument/willSaveWaitUntil': {result: [InsertAtStartEdit("// one\n")]}},
+    messages1)
+  var srv2 = MakeSaveServer({textDocumentSync: WILL_SAVE_SYNC_CAPS},
+    {'textDocument/willSaveWaitUntil': {result: [InsertAtStartEdit("// two\n")]}},
+    messages2)
+  var bnr = SaveTestEdit(fname, ['int x;'], [srv1, srv2],
+			 [messages1, messages2])
+  try
+    for event in ['BufWritePre', 'BufWritePost', 'InsertLeave']
+      assert_equal(1, autocmd_get({group: 'LSPBufferAutocmds', bufnr: bnr,
+				   event: event})->len(), event)
+    endfor
+
+    :write
+    assert_equal(['// two', '// one', 'int x;'], readfile(fname))
+    for msgs in [messages1, messages2]
+      assert_equal(['textDocument/willSave', 'textDocument/willSaveWaitUntil',
+		    'textDocument/didSave'],
+		   Methods(msgs)->filter((_, m) => m != 'textDocument/didChange'))
+    endfor
+  finally
+    lsp.RemoveFile(bnr)
+    :%bw!
+    delete(fname)
+  endtry
+enddef
+
+# Test that writing a buffer to another file doesn't save its document: the
+# language server is not told about the write and the buffer is not changed.
+def g:Test_WillSave_WriteToOtherFile()
+  var fname = 'XWillSaveOrig.txt'
+  var copy = 'XWillSaveCopy.txt'
+  var messages: list<dict<any>> = []
+  var caps = {textDocumentSync: WILL_SAVE_SYNC_CAPS,
+	      documentFormattingProvider: true}
+  var lspserver = MakeSaveServer(caps,
+    {'textDocument/formatting': {result: [InsertAtStartEdit("// fmt\n")]},
+     'textDocument/willSaveWaitUntil': {result: [InsertAtStartEdit("// fixed\n")]}},
+    messages)
+  var bnr = SaveTestEdit(fname, ['int x;'], [lspserver], [messages])
+  g:LspOptionsSet({formatOnSave: true})
+  try
+    exe $'write {copy}'
+    assert_equal(['int x;'], readfile(copy))
+    assert_equal(['int x;'], getline(1, '$'))
+    assert_equal([], messages)
+  finally
+    g:LspOptionsSet({formatOnSave: false})
+    lsp.RemoveFile(bnr)
+    :%bw!
+    delete(fname)
+    delete(copy)
+  endtry
+enddef
+
+# Test that a buffer that is not modifiable is written unchanged, after the
+# language server is told about the write.
+def g:Test_WillSave_NotModifiable()
+  var fname = 'XWillSaveNoModifiable.txt'
+  var messages: list<dict<any>> = []
+  var caps = {textDocumentSync: WILL_SAVE_SYNC_CAPS,
+	      documentFormattingProvider: true}
+  var lspserver = MakeSaveServer(caps,
+    {'textDocument/formatting': {result: [InsertAtStartEdit("// fmt\n")]},
+     'textDocument/willSaveWaitUntil': {result: [InsertAtStartEdit("// fixed\n")]}},
+    messages)
+  var bnr = SaveTestEdit(fname, ['int x;'], [lspserver], [messages])
+  g:LspOptionsSet({formatOnSave: true})
+  try
+    setlocal nomodifiable
+    :write!
+    assert_equal(['int x;'], readfile(fname))
+    assert_equal(['textDocument/willSave', 'textDocument/didSave'],
+		 Methods(messages))
+  finally
+    g:LspOptionsSet({formatOnSave: false})
+    lsp.RemoveFile(bnr)
+    :%bw!
+    delete(fname)
+  endtry
+enddef
+
+# Test that a buffer is written without the edits of a language server that
+# has the "willSaveWaitUntil" feature disabled, which is not asked for them.
+def g:Test_WillSave_FeatureDisabled()
+  var fname = 'XWillSaveDisabled.txt'
+  var messages: list<dict<any>> = []
+  var lspserver = MakeSaveServer({textDocumentSync: WILL_SAVE_SYNC_CAPS},
+    {'textDocument/willSaveWaitUntil': {result: [InsertAtStartEdit("// fixed\n")]}},
+    messages)
+  lspserver.features = {willSaveWaitUntil: false}
+  var bnr = SaveTestEdit(fname, ['int x;'], [lspserver], [messages])
+  try
+    :write
+    assert_equal(['int x;'], readfile(fname))
+    assert_equal(['textDocument/willSave', 'textDocument/didSave'],
+		 Methods(messages))
+  finally
+    lsp.RemoveFile(bnr)
+    :%bw!
+    delete(fname)
+  endtry
+enddef
+
+# Test that a buffer is written unchanged when the language server doesn't
+# reply in time to the request for the edits to make before the write.
+def g:Test_WillSave_NoReply()
+  var fname = 'XWillSaveNoReply.txt'
+  var messages: list<dict<any>> = []
+  var lspserver = MakeSaveServer({textDocumentSync: WILL_SAVE_SYNC_CAPS}, {},
+				 messages)
+  var bnr = SaveTestEdit(fname, ['int x;'], [lspserver], [messages])
+  try
+    :write
+    assert_equal(['int x;'], readfile(fname))
+    assert_equal(['textDocument/willSave', 'textDocument/willSaveWaitUntil',
+		  'textDocument/didSave'], Methods(messages))
+  finally
+    lsp.RemoveFile(bnr)
+    :%bw!
+    delete(fname)
+  endtry
+enddef
+
+# Test that only a language server that asks for them gets the messages about
+# a write, and that a buffer is written without an error when the
+# "formatOnSave" option is set and the server doesn't support formatting.
+def g:Test_WillSave_NotSupported()
+  var fname = 'XWillSaveUnsupported.txt'
+  var messages: list<dict<any>> = []
+  var lspserver = MakeSaveServer(
+    {textDocumentSync: {openClose: true, change: 1, save: true}},
+    {'textDocument/formatting': {result: [InsertAtStartEdit("// fmt\n")]},
+     'textDocument/willSaveWaitUntil': {result: [InsertAtStartEdit("// fixed\n")]}},
+    messages)
+  var bnr = SaveTestEdit(fname, ['int x;'], [lspserver], [messages])
+  g:LspOptionsSet({formatOnSave: true})
+  try
+    :write
+    assert_equal(['int x;'], readfile(fname))
+    assert_equal(['textDocument/didSave'], Methods(messages))
+  finally
+    g:LspOptionsSet({formatOnSave: false})
+    lsp.RemoveFile(bnr)
+    :%bw!
+    delete(fname)
+  endtry
+enddef
+
+# Returns a TextEdit that replaces the two spaces in "int  x;" with one.
+def SpacesFormatEdit(): dict<any>
+  return {range: {start: {line: 0, character: 3}, end: {line: 0, character: 5}},
+	  newText: ' '}
+enddef
+
+# Test that with the "formatOnSave" option set, a buffer is formatted before
+# it is written, and that it is not formatted by default.
+def g:Test_FormatOnSave()
+  var fname = 'XFormatOnSave.txt'
+  var messages: list<dict<any>> = []
+  var caps = {textDocumentSync: {openClose: true, change: 1, save: true},
+	      documentFormattingProvider: true}
+  var lspserver = MakeSaveServer(caps,
+    {'textDocument/formatting': {result: [SpacesFormatEdit()]}}, messages)
+  var bnr = SaveTestEdit(fname, ['int  x;'], [lspserver], [messages])
+  try
+    :write
+    assert_equal(['int  x;'], readfile(fname))
+    assert_equal(['textDocument/didSave'], Methods(messages))
+
+    messages->filter('0')
+    g:LspOptionsSet({formatOnSave: true})
+    :write
+    assert_equal(['int x;'], readfile(fname))
+    assert_equal('textDocument/formatting', messages[0].method)
+    assert_equal(util.LspFileToUri(fname),
+		 messages[0].params.textDocument.uri)
+    assert_equal('textDocument/didChange', messages[-2].method)
+    assert_equal([{text: "int x;\n"}], messages[-2].params.contentChanges)
+    assert_equal('textDocument/didSave', messages[-1].method)
+  finally
+    g:LspOptionsSet({formatOnSave: false})
+    lsp.RemoveFile(bnr)
+    :%bw!
+    delete(fname)
+  endtry
+enddef
+
+# Test that with the "formatOnSave" option set, a buffer is formatted before
+# the language server is told that it will be written and makes its edits.
+def g:Test_FormatOnSave_BeforeWillSave()
+  var fname = 'XFormatOnSaveOrder.txt'
+  var messages: list<dict<any>> = []
+  var caps = {textDocumentSync: WILL_SAVE_SYNC_CAPS,
+	      documentFormattingProvider: true}
+  var lspserver = MakeSaveServer(caps,
+    {'textDocument/formatting': {result: [SpacesFormatEdit()]},
+     'textDocument/willSaveWaitUntil': {result: [InsertAtStartEdit("// fixed\n")]}},
+    messages)
+  var bnr = SaveTestEdit(fname, ['int  x;'], [lspserver], [messages])
+  g:LspOptionsSet({formatOnSave: true})
+  try
+    :write
+    assert_equal(['// fixed', 'int x;'], readfile(fname))
+    assert_equal(['textDocument/formatting', 'textDocument/willSave',
+		  'textDocument/willSaveWaitUntil', 'textDocument/didSave'],
+		 Methods(messages)->filter((_, m) => m != 'textDocument/didChange'))
+  finally
+    g:LspOptionsSet({formatOnSave: false})
+    lsp.RemoveFile(bnr)
+    :%bw!
+    delete(fname)
   endtry
 enddef
 

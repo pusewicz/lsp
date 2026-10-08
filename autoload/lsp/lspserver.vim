@@ -1475,6 +1475,49 @@ def ShowSignature(lspserver: dict<any>, triggerKind_arg: number = 1, triggerChar
 	})
 enddef
 
+# Tell the language server that buffer "bnr" is about to be written to its
+# file, and apply the edits that the server asks to make to it before that.
+# The buffer is written without the edits when the server doesn't reply in
+# time.
+def WillSaveFile(lspserver: dict<any>, bnr: number): void
+  # Notification: 'textDocument/willSave'
+  # Request: 'textDocument/willSaveWaitUntil'
+  # Params: WillSaveTextDocumentParams
+  # The reason is TextDocumentSaveReason.Manual: Vim writes a buffer only
+  # when it is asked to.
+  var params: dict<any> = {
+    textDocument: {uri: util.LspBufnrToUri(bnr)},
+    reason: 1
+  }
+
+  if lspserver.supportsWillSave
+    lspserver.sendNotification('textDocument/willSave', params)
+  endif
+
+  # The edits can't be made to a buffer that is not modifiable
+  if !lspserver.supportsWillSaveWaitUntil
+      || !lspserver.featureEnabled('willSaveWaitUntil')
+      || !bnr->getbufvar('&modifiable')
+    return
+  endif
+
+  var reply = lspserver.rpc('textDocument/willSaveWaitUntil', params)
+
+  # Result: TextEdit[] | null
+  if reply->empty() || reply.result->empty()
+    return
+  endif
+
+  if lspserver.needOffsetEncoding
+    reply.result->map((_, textEdit) => {
+      lspserver.decodeRange(bnr, textEdit.range)
+      return textEdit
+    })
+  endif
+
+  textedit.ApplyTextEdits(bnr, reply.result)
+enddef
+
 # Send a file/document saved notification to the language server
 def DidSaveFile(lspserver: dict<any>, bnr: number): void
   # Check whether the LSP server supports the didSave notification
@@ -1482,6 +1525,11 @@ def DidSaveFile(lspserver: dict<any>, bnr: number): void
     # LSP server doesn't support text document synchronization
     return
   endif
+
+  # The server must get the changes made just before the write (e.g. by a
+  # BufWritePre autocmd) before the notification.  Vim passes them to the
+  # listeners only before redrawing.
+  bnr->listener_flush()
 
   # Notification: 'textDocument/didSave'
   # Params: DidSaveTextDocumentParams
@@ -2947,6 +2995,8 @@ export def NewLspServer(serverParams: dict<any>): dict<any>
     pendingPullBufnrs: pendingPullBufnrs,
     supportsDidOpenClose: false,
     supportsDidSave: false,
+    supportsWillSave: false,
+    supportsWillSaveWaitUntil: false,
     supportsWorkDoneProgress: false,
     sawWorkDoneProgressEnd: false,
     workDoneProgressTokens: workDoneProgressTokens,
@@ -3015,6 +3065,7 @@ export def NewLspServer(serverParams: dict<any>): dict<any>
     tagFunc: function(TagFunc, [lspserver]),
     switchSourceHeader: function(SwitchSourceHeader, [lspserver]),
     showSignature: function(ShowSignature, [lspserver]),
+    willSaveFile: function(WillSaveFile, [lspserver]),
     didSaveFile: function(DidSaveFile, [lspserver]),
     hover: function(ShowHoverInfo, [lspserver]),
     showReferences: function(ShowReferences, [lspserver]),
