@@ -14,6 +14,15 @@ rm -f results.txt
 # --- Configuration ---
 VIM_CMD="$VIMPRG -u NONE -U NONE -i NONE --noplugin -N --not-a-term"
 
+# Vim checks its input for typed keys while a test waits (":sleep",
+# complete_check()) and exits when the input is at end of file, as when stdin
+# is /dev/null.  Give Vim an input that never has anything to read: a pipe
+# that this script keeps open for writing on file descriptor 3.
+STDIN_DIR=$(mktemp -d) || exit 1
+mkfifo "$STDIN_DIR/stdin" || exit 1
+exec 3<>"$STDIN_DIR/stdin" || exit 1
+rm -r "$STDIN_DIR"
+
 # Use arguments if provided, otherwise run the full suite
 ALL_TESTS=(
   "clangd_tests.vim"
@@ -39,7 +48,8 @@ RunTestsInFile() {
 
   # Execute Vim and redirect its internal 'results.txt' logic if possible,
   # or handle the renaming here.
-  $VIM_CMD -c "let g:TestName='$testfile'" -S runner.vim
+  $VIM_CMD -c "let g:TestName='$testfile'" -S runner.vim <&3
+  local vim_status=$?
 
   # Standardizing the results file name if runner.vim always outputs 'results.txt'
   if [[ -f results.txt ]]; then
@@ -52,6 +62,13 @@ RunTestsInFile() {
   fi
 
   cat "$res_file"
+
+  # runner.vim always ends with ":qall!", so any other exit means that Vim
+  # stopped before running all the tests.
+  if [[ $vim_status -ne 0 ]]; then
+    echo "RESULT: Vim exited with status $vim_status while running $testfile."
+    return 4
+  fi
 
   if grep -qw "FAIL" "$res_file"; then
     echo "RESULT: Some tests in $testfile FAILED."
