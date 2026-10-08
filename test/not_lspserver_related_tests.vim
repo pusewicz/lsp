@@ -1183,6 +1183,46 @@ def g:Test_Completion_AdditionalTextEdits_PositionEncoding()
   endtry
 enddef
 
+# Returns true when auto-completion at the end of "text" shows the completion
+# menu for the single completion item "item".
+def AutoCompleteShowsMenu(text: string, item: dict<any>): bool
+  silent! edit XCompletionSingleMatch.ts
+  setline(1, text)
+  var lspserver = MakeTextEditServer({items: [item]})
+  buf.BufLspServerSet(bufnr(), lspserver)
+  var menuShown = false
+  try
+    completion.BufferInit(lspserver, bufnr(), &filetype)
+    setlocal completeopt=menuone,noinsert,noselect
+    inoremap <buffer> <F5> <ScriptCmd>completion.LspComplete(true)<CR>
+    inoremap <buffer> <F2> <ScriptCmd>b:menuShown = pumvisible()<CR>
+    b:menuShown = false
+    feedkeys("A\<F5>\<F2>\<Esc>", 'xt')
+    menuShown = b:menuShown
+  finally
+    buf.BufLspServerRemove(bufnr(), lspserver)
+    :%bw!
+  endtry
+  return menuShown
+enddef
+
+# Auto-completion leaves out the menu for a single match only when the keyword
+# before the cursor is the match already, whatever characters it has.
+def g:Test_Completion_SingleMatch_Menu()
+  var saveAutoComplete = g:LspOptionsGet().autoComplete
+  var saveCompleteopt = &g:completeopt
+  g:LspOptionsSet({autoComplete: true})
+  try
+    assert_false(AutoCompleteShowsMenu('x = foo', {label: 'foo'}))
+    assert_true(AutoCompleteShowsMenu('x = fo', {label: 'foo'}))
+    assert_true(AutoCompleteShowsMenu('foo = fo', {label: 'foo'}))
+    assert_true(AutoCompleteShowsMenu('p->', {label: '~Foo'}))
+  finally
+    g:LspOptionsSet({autoComplete: saveAutoComplete})
+    &g:completeopt = saveCompleteopt
+  endtry
+enddef
+
 # Regression test for documentOnTypeFormattingProvider trigger char capture.
 def g:Test_OnTypeFormattingCapability()
   var lspserver = {
