@@ -629,7 +629,8 @@ def InstallAleStub(): string
     'endfunction',
     'function ale#other_source#ShowResults(buffer, linter_name, loclist) abort',
     '  call add(g:LspTestAleCalls,',
-    '        \ ["show", a:buffer, a:linter_name, map(copy(a:loclist), "v:val.text")])',
+    '        \ ["show", a:buffer, a:linter_name, map(copy(a:loclist), "v:val.text"),',
+    '        \  deepcopy(a:loclist)])',
     'endfunction'
   ], fname)
   execute 'source' fnameescape(fname)
@@ -807,6 +808,54 @@ def g:Test_AleSupport_InsertModeFollowsAleLintOnTextChanged()
   assert_equal({clangd: ['clangd diag']}, AleResultsByLinter())
 
   unlet g:LspTestPublishDiags
+  diag.DiagRemoveFile(bnr)
+  buf.BufLspServerRemove(bnr, clangd)
+  RemoveAleStub(aleStub)
+  :%bw!
+enddef
+
+# ALE highlights a diagnostic up to and including its end column, so the
+# exclusive end of a diagnostic range is sent to ALE as the position of the
+# last byte in the range, kept within the buffer.
+def g:Test_AleSupport_InclusiveEndColumn()
+  var aleStub = InstallAleStub()
+  silent! edit XAleSupportEndCol.c
+  setline(1, ['int abc;', "x = éé;", 'int b;', '', "ééé"])
+  var bnr = bufnr()
+  var uri = util.LspBufnrToUri(bnr)
+  var clangd = MakeDiagServer('clangd')
+  buf.BufLspServerSet(bnr, clangd)
+
+  # [description, LSP [start line, start char, end line, end char],
+  #  ALE [lnum, col, end_lnum, end_col]]
+  var cases: list<list<any>> = [
+    ['single line', [0, 4, 0, 7], [1, 5, 1, 7]],
+    ['multibyte last character', [1, 4, 1, 6], [2, 5, 2, 8]],
+    ['multiple lines', [0, 4, 1, 5], [1, 5, 2, 6]],
+    ['zero width', [0, 4, 0, 4], [1, 5, 1, 5]],
+    ['zero width on an empty line', [3, 0, 3, 0], [4, 1, 4, 1]],
+    ['end at the start of the next line', [1, 4, 2, 0], [2, 5, 2, 9]],
+    ['whole line', [2, 0, 3, 0], [3, 1, 3, 6]],
+    ['newline only', [0, 8, 1, 0], [1, 9, 1, 9]],
+    ['end past the end of the line', [0, 4, 0, 20], [1, 5, 1, 8]],
+    ['multibyte end past the end of the line', [4, 1, 4, 4], [5, 3, 5, 6]],
+    ['end past the end of the buffer', [2, 0, 9, 0], [3, 1, 5, 6]]
+  ]
+  for [desc, lspRange, aleRange] in cases
+    var d = {
+      range: {
+	start: {line: lspRange[0], character: lspRange[1]},
+	end: {line: lspRange[2], character: lspRange[3]}
+      },
+      severity: 1,
+      message: desc
+    }
+    g:LspTestAleCalls = []
+    diag.DiagNotification(clangd, uri, [d], 'push')
+    assert_equal([aleRange], g:LspTestAleCalls[-1][4]->mapnew((_, v) =>
+		   [v.lnum, v.col, v.end_lnum, v.end_col]), desc)
+  endfor
+
   diag.DiagRemoveFile(bnr)
   buf.BufLspServerRemove(bnr, clangd)
   RemoveAleStub(aleStub)
