@@ -3663,6 +3663,105 @@ def g:Test_ApplyWorkspaceEdit_RenameHiddenBufferLeavesNoTrace()
   endtry
 enddef
 
+# Returns a DeleteFile operation deleting file "fname".
+def MakeDelete(fname: string, options: dict<bool> = {}): dict<any>
+  return {kind: 'delete', uri: util.LspFileToUri(fname), options: options}
+enddef
+
+# Deleting a file wipes out its buffer, in a window or hidden.
+def g:Test_ApplyWorkspaceEdit_DeleteLoadedBuffer()
+  var fname = 'XWorkspaceEditDelete.txt'
+  try
+    writefile(['text'], fname)
+    exe $'edit {fname}'
+    var bnr = bufnr()
+    ApplyResourceOp(MakeDelete(fname))
+    assert_false(filereadable(fname))
+    assert_false(bufexists(bnr))
+
+    writefile(['text'], fname)
+    bnr = bufadd(fname)
+    bufload(bnr)
+    ApplyResourceOp(MakeDelete(fname))
+    assert_false(filereadable(fname))
+    assert_false(bufexists(bnr))
+  finally
+    delete(fname)
+    :%bwipe!
+  endtry
+enddef
+
+# Deleting a file whose buffer has unsaved changes fails, and leaves both
+# unchanged.
+def g:Test_ApplyWorkspaceEdit_DeleteKeepsModifiedBuffer()
+  var fname = 'XWorkspaceEditDeleteModified.txt'
+  try
+    writefile(['saved'], fname)
+    var bnr = bufadd(fname)
+    bufload(bnr)
+    setbufline(bnr, 1, 'unsaved')
+    ApplyResourceOp(MakeDelete(fname))
+    assert_equal('Error: File delete failed, '
+		 .. $'{fnamemodify(fname, ":p")} has unsaved changes', LastMessage())
+    assert_equal(['saved'], readfile(fname))
+    assert_equal(['unsaved'], getbufline(bnr, 1, '$'))
+    assert_true(getbufvar(bnr, '&modified'))
+  finally
+    delete(fname)
+    :%bwipe!
+  endtry
+enddef
+
+# Deleting a file that does not exist fails, unless "ignoreIfNotExists" is
+# set.
+def g:Test_ApplyWorkspaceEdit_DeleteMissingFile()
+  var fname = 'XWorkspaceEditDeleteMissing.txt'
+  ApplyResourceOp(MakeDelete(fname))
+  assert_equal('Error: File delete failed, '
+	       .. $'{fnamemodify(fname, ":p")} does not exist', LastMessage())
+  var messages = execute('messages')
+  ApplyResourceOp(MakeDelete(fname, {ignoreIfNotExists: true}))
+  assert_equal(messages, execute('messages'))
+  :%bwipe!
+enddef
+
+# Deleting a directory that is not empty fails, unless "recursive" is set.
+# The buffers of the files in a deleted directory are wiped out, and none of
+# them may have unsaved changes.
+def g:Test_ApplyWorkspaceEdit_DeleteDirectory()
+  var dname = 'XWorkspaceEditDeleteDir'
+  var path = $'{getcwd()}/{dname}'
+  try
+    mkdir($'{dname}/sub', 'p')
+    writefile(['a'], $'{dname}/sub/a.txt')
+    var bnr = bufadd($'{dname}/sub/a.txt')
+    bufload(bnr)
+    ApplyResourceOp(MakeDelete(dname))
+    assert_equal($'Error: File delete failed for {path}', LastMessage())
+    assert_true(filereadable($'{dname}/sub/a.txt'))
+    assert_true(bufloaded(bnr))
+
+    setbufline(bnr, 1, 'unsaved')
+    ApplyResourceOp(MakeDelete(dname, {recursive: true}))
+    assert_equal('Error: File delete failed, '
+		 .. $'{path}/sub/a.txt has unsaved changes', LastMessage())
+    assert_true(filereadable($'{dname}/sub/a.txt'))
+    assert_equal(['unsaved'], getbufline(bnr, 1, '$'))
+
+    setbufvar(bnr, '&modified', false)
+    ApplyResourceOp(MakeDelete(dname, {recursive: true}))
+    assert_false(isdirectory(dname))
+    assert_false(bufexists(bnr))
+
+    mkdir(dname)
+    ApplyResourceOp(MakeDelete(dname))
+    assert_false(isdirectory(dname))
+  finally
+    delete(dname, 'rf')
+    :%bwipe!
+  endtry
+enddef
+
 # A completion request supersedes the pending one, which is cancelled, so a
 # late reply to it must not be taken as the reply to the latest one.
 def g:Test_GetCompletion_CancelsSupersededRequest()

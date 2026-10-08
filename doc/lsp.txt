@@ -1337,12 +1337,16 @@ of such a file follows it:
   renamed buffer instead.  Renaming a directory renames the buffers of the
   files in it.  A renamed buffer with unsaved changes has not been written
   with its new name yet: the first time, write it with ":write!" (see |E13|).
+- Deleting a file wipes out its buffer, and deleting a directory wipes out
+  the buffers of the files in it.  A directory that is not empty is deleted
+  only when the language server asks for it with the "recursive" option.
 
 Creating or renaming a file over one that exists fails, unless the language
 server asks for the file to be overwritten or for the operation to be
-ignored.  An operation also fails when it would change or remove a buffer
-with unsaved changes, as |:edit| does without "!": write or undo the changes
-first.
+ignored.  So does deleting a file that does not exist, unless the language
+server asks for the operation to be ignored.  An operation also fails when it
+would change or remove a buffer with unsaved changes, as |:edit| does without
+"!": write or undo the changes first.
 
 ------------------------------------------------------------------------------
 							*lsp-hierarchy-cmds*
