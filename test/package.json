@@ -1,0 +1,9 @@
+{
+  "name": "lsp-tests",
+  "private": true,
+  "description": "Language servers used by tsserver_tests.vim. Install with \"npm ci\" in this directory.",
+  "devDependencies": {
+    "typescript": "5.9.3",
+    "typescript-language-server": "6.0.1"
+  }
+}
