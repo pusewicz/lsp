@@ -5,6 +5,7 @@ import '../autoload/lsp/completion.vim' as completion
 import '../autoload/lsp/buffer.vim' as buf
 import '../autoload/lsp/capabilities.vim' as capabilities
 import '../autoload/lsp/documentlink.vim' as documentlink
+import '../autoload/lsp/offset.vim' as offset
 import '../autoload/lsp/selection.vim' as selection
 import '../autoload/lsp/util.vim' as util
 import '../autoload/lsp/options.vim' as opt
@@ -1833,6 +1834,129 @@ def g:Test_SelectionStart_RangeEnd()
     set selection&
     :bw!
   endtry
+enddef
+
+# Set the text of the current buffer for the position encoding tests: lines
+# with ASCII, multibyte, astral plane and composing characters and an empty
+# line.
+def SetPositionEncodingTestLines()
+  setline(1, ['int abc;', 'ééé', '😊😊', "a\u0301b\u0301", ''])
+  assert_equal([8, 6, 8, 6, 0], getline(1, '$')->mapnew((_, l) => l->strlen()))
+  assert_equal([8, 3, 4, 4, 0],
+	       getline(1, '$')->mapnew((_, l) => l->strutf16len(true)))
+  assert_equal([8, 3, 2, 4, 0],
+	       getline(1, '$')->mapnew((_, l) => l->strchars()))
+enddef
+
+# Test for encoding a position, which counts the composing characters
+# separately, in each position encoding.  A position past the end of a line is
+# at the end of the line.  A position on a line past the end of the buffer is
+# left unchanged.
+def g:Test_EncodePosition()
+  :new
+  var bnr = bufnr()
+  SetPositionEncodingTestLines()
+
+  # Per position encoding: [line, character, encoded character]
+  var cases: dict<list<list<number>>> = {
+    8: [
+      [0, 0, 0], [0, 3, 3], [0, 8, 8], [0, 9, 8], [0, 20, 8],
+      [1, 1, 2], [1, 3, 6], [1, 4, 6], [1, 7, 6],
+      [2, 1, 4], [2, 2, 8], [2, 3, 8],
+      [3, 1, 1], [3, 2, 3], [3, 3, 4], [3, 4, 6], [3, 5, 6],
+      [4, 0, 0], [4, 3, 0],
+      [5, 3, 3]
+    ],
+    16: [
+      [0, 0, 0], [0, 3, 3], [0, 8, 8], [0, 9, 8], [0, 20, 8],
+      [1, 1, 1], [1, 3, 3], [1, 4, 3], [1, 7, 3],
+      [2, 1, 2], [2, 2, 4], [2, 3, 4],
+      [3, 1, 1], [3, 2, 2], [3, 3, 3], [3, 4, 4], [3, 5, 4],
+      [4, 0, 0], [4, 3, 0],
+      [5, 3, 3]
+    ],
+    32: [
+      [0, 3, 3], [0, 9, 9], [1, 4, 4], [2, 3, 3], [3, 5, 5], [4, 3, 3],
+      [5, 3, 3]
+    ]
+  }
+  for [posEncoding, encCases] in cases->items()
+    var lspserver = {posEncoding: posEncoding->str2nr()}
+    for [line, character, expected] in encCases
+      var pos = {line: line, character: character}
+      offset.EncodePosition(lspserver, bnr, pos)
+      assert_equal({line: line, character: expected}, pos,
+		   $'UTF-{posEncoding}, line {line}, character {character}')
+    endfor
+  endfor
+  :bw!
+enddef
+
+# Test for decoding a position in each position encoding to one that counts
+# the composing characters separately.  A position past the end of a line is
+# at the end of the line.  A position on a line past the end of the buffer is
+# left unchanged.
+def g:Test_DecodePosition()
+  :new
+  var bnr = bufnr()
+  SetPositionEncodingTestLines()
+
+  # Per position encoding: [line, encoded character, character]
+  var cases: dict<list<list<number>>> = {
+    8: [
+      [0, 0, 0], [0, 3, 3], [0, 8, 8], [0, 9, 8], [0, 20, 8],
+      [1, 2, 1], [1, 6, 3], [1, 7, 3], [1, 12, 3],
+      [2, 4, 1], [2, 8, 2], [2, 9, 2], [2, 16, 2],
+      [3, 1, 1], [3, 3, 2], [3, 4, 3], [3, 6, 4], [3, 7, 4],
+      [4, 0, 0], [4, 3, 0],
+      [5, 3, 3]
+    ],
+    16: [
+      [0, 0, 0], [0, 3, 3], [0, 8, 8], [0, 9, 8], [0, 20, 8],
+      [1, 1, 1], [1, 3, 3], [1, 4, 3], [1, 7, 3],
+      [2, 2, 1], [2, 4, 2], [2, 5, 2], [2, 8, 2],
+      [3, 1, 1], [3, 2, 2], [3, 4, 4], [3, 5, 4],
+      [4, 0, 0], [4, 3, 0],
+      [5, 3, 3]
+    ],
+    32: [
+      [0, 3, 3], [0, 9, 9], [1, 4, 4], [2, 3, 3], [3, 5, 5], [4, 3, 3],
+      [5, 3, 3]
+    ]
+  }
+  for [posEncoding, decCases] in cases->items()
+    var lspserver = {posEncoding: posEncoding->str2nr()}
+    for [line, character, expected] in decCases
+      var pos = {line: line, character: character}
+      offset.DecodePosition(lspserver, bnr, pos)
+      assert_equal({line: line, character: expected}, pos,
+		   $'UTF-{posEncoding}, line {line}, character {character}')
+    endfor
+  endfor
+  :bw!
+enddef
+
+# Test for decoding and encoding again a range that ends past the end of a
+# line, as a language server sends and gets back a diagnostic.  The range ends
+# at the end of the line in the position encoding of the server.
+def g:Test_EncodeRange_DecodedRangePastEndOfLine()
+  :new
+  var bnr = bufnr()
+  SetPositionEncodingTestLines()
+
+  for [posEncoding, lineLens] in [[8, [8, 6, 8, 6, 0]], [16, [8, 3, 4, 4, 0]]]
+    var lspserver = {posEncoding: posEncoding}
+    for line in range(5)
+      var r = {start: {line: line, character: 0},
+	       end: {line: line, character: 20}}
+      offset.DecodeRange(lspserver, bnr, r)
+      offset.EncodeRange(lspserver, bnr, r)
+      assert_equal({start: {line: line, character: 0},
+		    end: {line: line, character: lineLens[line]}}, r,
+		   $'UTF-{posEncoding}, line {line}')
+    endfor
+  endfor
+  :bw!
 enddef
 
 # vim: tabstop=8 shiftwidth=2 softtabstop=2 noexpandtab
