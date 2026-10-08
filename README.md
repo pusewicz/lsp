@@ -1,4 +1,4 @@
-[![unit-tests](https://github.com/yegappan/lsp/workflows/unit-tests/badge.svg?branch=main)](https://github.com/yegappan/lsp/actions/workflows/unitests.yml?query=branch%3Amain)
+[![unit-tests](https://github.com/pusewicz/lsp/workflows/unit-tests/badge.svg?branch=main)](https://github.com/pusewicz/lsp/actions/workflows/unitests.yml?query=branch%3Amain)
 
 Language Server Protocol (LSP) plugin for Vim. You need Vim version 9.0 or above to use this plugin.  This plugin is written using only the Vim9 script.
 
@@ -244,6 +244,26 @@ Command|Description
 `:LspWorkspaceRemoveFolder {folder}`|Remove a folder from the workspace.
 
 For code actions, when multiple servers return actions, the menu shows one merged list. If duplicate action titles exist, the source server label is shown only for those duplicate-title entries. The selected action is resolved/executed by the server that provided it.
+
+## Running the Tests
+
+The tests run with the Vim of MacVim against real language servers, as the GitHub Actions workflow does:
+
+```sh
+brew install --cask macvim-app
+brew install llvm@15 gopls rustup node
+rustup default stable && rustup component add rust-src
+(cd test && npm ci)
+```
+
+The clangd tests need clangd 15, which they take from `llvm@15`. The Rust tests use the `rust-analyzer` on `PATH`; CI pins it to the [2024-06-24 release](https://github.com/rust-lang/rust-analyzer/releases/tag/2024-06-24). Then run the whole suite, or only some test files:
+
+```sh
+cd test && ./run_tests.sh
+cd test && ./run_tests.sh clangd_tests.vim markdown_tests.vim
+```
+
+Set `VIMPRG` to run the tests with another Vim.
 
 ## Similar Vim LSP Plugins
 

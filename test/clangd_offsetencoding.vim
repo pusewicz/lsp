@@ -18,7 +18,7 @@ g:LspOptionsSet(lspOpts)
 
 var lspServers = [{
       filetype: ['c', 'cpp'],
-      path: (exepath('clangd-15') ?? exepath('clangd')),
+      path: g:ClangdPath(),
       args: ['--background-index',
 	     '--clang-tidy',
 	     $'--offset-encoding={$LSP_OFFSET_ENCODING}']
