@@ -11,7 +11,6 @@ import '../autoload/lsp/diag.vim' as diag
 import '../autoload/lsp/symbol.vim' as symbol
 import '../autoload/lsp/util.vim' as util
 import '../autoload/lsp/buffer.vim' as buf
-import '../autoload/lsp/capabilities.vim'
 import '../autoload/lsp/ontypeformat.vim' as ontypeformat
 import '../autoload/lsp/textedit.vim' as textedit
 import '../autoload/lsp/inlayhints.vim' as inlayhints
