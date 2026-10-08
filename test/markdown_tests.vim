@@ -587,6 +587,21 @@ def g:Test_Markdown()
       ]
     ],
     [
+      # Escaped backslashes (e.g. Doxygen commands escaped by clangd)
+      # Input text
+      [
+	'\\param fmt a \\\*format\\\* string; C:\\\\dir'
+      ],
+      # Expected text
+      [
+	'\param fmt a \*format\* string; C:\\dir'
+      ],
+      # Expected text properties
+      [
+	[]
+      ]
+    ],
+    [
       # Complex LSP hover documentation
       # Input text
       [
