@@ -550,6 +550,11 @@ def TeardownTruncatingServerBuffer(lspserver: dict<any>)
     timer_stop(timer)
   endfor
   test_override('char_avail', 0)
+  # 'autocomplete' is global before patch 9.1.1779, so ":setlocal" sets it for
+  # the following tests too.
+  if exists('+autocomplete')
+    set noautocomplete
+  endif
   buf.BufLspServerRemove(bufnr(), lspserver)
   :%bw!
 enddef
