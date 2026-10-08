@@ -436,7 +436,7 @@ enddef
 # Vim inserted "word" for it before the cursor, when the edit also replaces
 # text before "word" that its new text doesn't start with (e.g. "?.state"
 # replacing the "." in "foo.").  Vim can only insert such an item's text after
-# that text, see GetCompletionWordAndTailDelete().
+# that text, see GetCompletionWordAndFilterText().
 def ApplyCompletionTextEdit(lspserver: dict<any>, cItem: dict<any>,
 			    word: string)
   var textEdit = cItem->get('textEdit', v:none)
@@ -556,37 +556,34 @@ def KeywordRelativeText(text: string, gap: string): string
   return relText->matchstr('\k\_.*')
 enddef
 
-# Return the word to complete "item" with, the text to match the keyword
-# before the cursor against and the InsertReplace tail-delete length.
-# "starttext" is the text before the cursor and "kwStart" the byte index of
-# the keyword in it, where the word is inserted.  The word for an item whose
-# text edit replaces text before the keyword (e.g. "?.state" replacing the
-# "." in "foo.") can only complete the keyword; LspCompleteDone() then applies
-# the text edit.
-def GetCompletionWordAndTailDelete(lspserver: dict<any>, item: dict<any>,
-				   starttext: string, kwStart: number,
-				   curLine: number): list<any>
+# Return the word to complete "item" with and the text to match the keyword
+# before the cursor against.  "starttext" is the text before the cursor and
+# "kwStart" the byte index of the keyword in it, where the word is inserted.
+# The word for an item whose text edit replaces text before the keyword (e.g.
+# "?.state" replacing the "." in "foo.") can only complete the keyword;
+# LspCompleteDone() then applies the text edit.
+def GetCompletionWordAndFilterText(lspserver: dict<any>, item: dict<any>,
+				   starttext: string, kwStart: number): list<any>
   var word = item->get('insertText', item->get('label', ''))
   var filterText = item->get('filterText', v:none)
   var textEdit = item->get('textEdit', v:none)
   if textEdit->type() != v:t_dict
       || textEdit->get('newText', v:none)->type() != v:t_string
-    return [word, filterText->type() == v:t_string ? filterText : word, 0]
+    return [word, filterText->type() == v:t_string ? filterText : word]
   endif
 
   var newText: string = textEdit.newText
   var editFilterText: string =
     filterText->type() == v:t_string ? filterText : newText
-  var tailDeleteChars = GetInsertReplaceTailDeleteChars(bufnr(), item, curLine)
 
   var rangeStart = TextEditStartByteIdx(lspserver, starttext, textEdit)
   if rangeStart < 0
-    return [newText, editFilterText, tailDeleteChars]
+    return [newText, editFilterText]
   endif
 
   if rangeStart >= kwStart
     var head = starttext->strpart(kwStart, rangeStart - kwStart)
-    return [head .. newText, head .. editFilterText, tailDeleteChars]
+    return [head .. newText, head .. editFilterText]
   endif
 
   var gap = starttext->strpart(rangeStart, kwStart - rangeStart)
@@ -599,7 +596,7 @@ def GetCompletionWordAndTailDelete(lspserver: dict<any>, item: dict<any>,
     word = newText
   endif
 
-  return [word, relFilterText->empty() ? word : relFilterText, tailDeleteChars]
+  return [word, relFilterText->empty() ? word : relFilterText]
 enddef
 
 # Return true when "filterText" passes prefix filtering for the configured
@@ -623,13 +620,11 @@ enddef
 def BuildCompletionMenuItem(item: dict<any>, lspserver: dict<any>,
                            lspOpts: dict<any>, matcher: number,
                            shouldFilterByPrefix: bool, prefix: string,
-                           starttext: string, start_idx: number,
-                           curLine: number): dict<any>
+                           starttext: string, start_idx: number): dict<any>
   var d: dict<any> = {}
 
-  var [word, filterText, insertReplaceTailDeleteChars] =
-    GetCompletionWordAndTailDelete(lspserver, item, starttext, start_idx,
-				   curLine)
+  var [word, filterText] =
+    GetCompletionWordAndFilterText(lspserver, item, starttext, start_idx)
   d.word = word
 
   var insertTextFormat = item->get('insertTextFormat', 1)
@@ -693,9 +688,6 @@ def BuildCompletionMenuItem(item: dict<any>, lspserver: dict<any>,
   endif
 
   d.user_data = item
-  if insertReplaceTailDeleteChars > 0
-    d.lsp_insertReplaceTailDeleteChars = insertReplaceTailDeleteChars
-  endif
 
   # Condense completion menu items to single words (plus kind)
   # Move all additional details to the info popup
@@ -839,11 +831,10 @@ export def CompletionReply(lspserver: dict<any>, cItems: any,
 
   var completeItems: list<dict<any>> = []
   var seenItemKeys: dict<bool> = {}
-  var curLine = line('.') - 1
   for item in items
     var d = BuildCompletionMenuItem(item, lspserver, lspOpts, matcher,
                                     shouldFilterByPrefix, prefix,
-                                    starttext, start_idx, curLine)
+                                    starttext, start_idx)
     if d->empty()
       continue
     endif
@@ -1315,11 +1306,8 @@ def LspCompleteDone(bnr: number)
     endif
   endif
 
-  var tailDeleteChars = v:completed_item->get('lsp_insertReplaceTailDeleteChars', 0)
-  if tailDeleteChars <= 0
-    tailDeleteChars =
-      GetInsertReplaceTailDeleteChars(bnr, completionData, line('.') - 1)
-  endif
+  var tailDeleteChars =
+    GetInsertReplaceTailDeleteChars(bnr, completionData, line('.') - 1)
   ApplyInsertReplaceTailDelete(bnr, tailDeleteChars)
 
   if !completionData->get('additionalTextEdits', {})->empty()
