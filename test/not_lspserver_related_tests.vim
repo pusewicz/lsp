@@ -1352,7 +1352,6 @@ def g:Test_StaleRequestSupportCapability()
 	       capabilities.GetClientCaps().general.staleRequestSupport)
 enddef
 
-<<<<<<< HEAD
 # Test for the "willSave" and "willSaveWaitUntil" text document sync server
 # capabilities and the synchronization client capability
 def g:Test_WillSaveCapability()
@@ -1375,7 +1374,8 @@ def g:Test_WillSaveCapability()
   assert_equal({dynamicRegistration: false, didSave: true, willSave: true,
 		willSaveWaitUntil: true},
 	       capabilities.GetClientCaps().textDocument.synchronization)
-=======
+enddef
+
 # Test that the client advertises the workspace edits that it applies: text
 # document edits for a version of a document and the file operations, up to
 # the first change that fails, but not the change annotations, which it
@@ -1385,7 +1385,6 @@ def g:Test_WorkspaceEditCapability()
 		resourceOperations: ['rename', 'create', 'delete'],
 		failureHandling: 'abort'},
 	       capabilities.GetClientCaps().workspace.workspaceEdit)
->>>>>>> main
 enddef
 
 # Test for parsing the line and column fragment in a document link file URI
