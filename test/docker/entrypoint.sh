@@ -1,19 +1,29 @@
 #!/bin/bash
 # Entry point of the image built from test/docker/Dockerfile.
 #
-# Copies the plugin source mounted read-only at /src to the directory
-# actions/checkout uses in CI and runs test/run_tests.sh there, passing on
-# the arguments.  Working on a copy lets several containers run the tests at
-# the same time without sharing the files the tests write, and keeps those
-# files out of the checkout.  With --shell, starts a shell there instead.
+# Copies the plugin source, mounted read-only at the working directory as
+# test/docker/run_tests.sh does:
+#
+#   docker run -v "$PWD:$PWD:ro" -w "$PWD" lsp-tests:vim-nightly
+#
+# to $HOME/work/NAME/NAME, where actions/checkout puts a repository NAME in
+# CI, and runs test/run_tests.sh there, passing on the arguments.  Working on
+# a copy lets several containers run the tests at the same time without
+# sharing the files the tests write, and keeps those files out of the
+# checkout.  With --shell, starts a shell there instead.
 
 set -euo pipefail
 
-src=/src
-work=$HOME/work/lsp/lsp
+src=$PWD
+name=${src##*/}
+work=$HOME/work/$name/$name
 
 if [[ ! -d $src/test ]]; then
-  echo "ERROR: mount the plugin source at $src: docker run -v \"\$PWD:$src:ro\" ..." >&2
+  echo "ERROR: mount the plugin source at the working directory: docker run -v \"\$PWD:\$PWD:ro\" -w \"\$PWD\" ..." >&2
+  exit 1
+fi
+if [[ $src == "$work" ]]; then
+  echo "ERROR: the plugin source is mounted at $work, where its copy goes" >&2
   exit 1
 fi
 

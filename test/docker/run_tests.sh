@@ -11,9 +11,22 @@ IMAGE=lsp-tests
 # without downloading it on every run.
 NPM_CACHE=lsp-tests-npm-cache
 
-here=$(cd "$(dirname "$0")" && pwd)
+# Follow the symlinks to the script, so that it also runs through one.
+script=$0
+while [[ -L $script ]]; do
+  target=$(readlink "$script")
+  if [[ $target != /* ]]; then
+    target=$(dirname "$script")/$target
+  fi
+  script=$target
+done
+here=$(cd "$(dirname "$script")" && pwd)
 repo=$(cd "$here/../.." && pwd)
 logdir=$here/logs
+# Mount the working tree at the same path as on the host and start there,
+# which is how entrypoint.sh finds it, and the npm cache.
+mounts=(--volume "$repo:$repo:ro" --workdir "$repo"
+  --volume "$NPM_CACHE:/home/runner/.npm")
 
 usage() {
   cat <<EOF
@@ -93,6 +106,7 @@ vim_commit() {
 
 build_image() {
   local version=$1 commit status=0
+  echo "==> Looking up Vim $version on GitHub"
   commit=$(vim_commit "$version") || status=$?
   if [[ $status -eq 2 ]]; then
     echo "ERROR: $version is neither \"nightly\" nor a tag of https://github.com/vim/vim" >&2
@@ -129,8 +143,7 @@ run_tests_on() {
   local version=$1 log=$logdir/vim-$1.log start=$SECONDS status=0
   shift
   docker run --rm --init --pull never --name "$(container_name "$version")" \
-    --volume "$repo:/src:ro" --volume "$NPM_CACHE:/home/runner/.npm" \
-    "$IMAGE:vim-$version" ${1+"$@"} 2>&1 \
+    "${mounts[@]}" "$IMAGE:vim-$version" ${1+"$@"} 2>&1 \
     | tee "$log" \
     | awk -v prefix="[$version] " '/^(===>|RESULT:|SUCCESS:|ERROR:)/ { print prefix $0; fflush() }' \
     || status=$?
@@ -150,8 +163,7 @@ fi
 
 if $shell; then
   exec docker run --rm --interactive --tty --init --pull never \
-    --volume "$repo:/src:ro" --volume "$NPM_CACHE:/home/runner/.npm" \
-    "$IMAGE:vim-${versions[0]}" --shell
+    "${mounts[@]}" "$IMAGE:vim-${versions[0]}" --shell
 fi
 
 pids=()
