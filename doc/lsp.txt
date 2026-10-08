@@ -2235,11 +2235,8 @@ incrementalSync		|Boolean| option.  Specifies the method used to
 			Either way, the language server gets the text that Vim
 			writes for the buffer: it ends with a newline as
 			'endofline', 'fixendofline' and 'binary' decide, and
-			it is empty for a buffer without lines.  Vim tells a
-			buffer without lines apart from a buffer with one
-			empty line only when it is in a window, so an empty
-			buffer that is not in any window is sent as one empty
-			line.
+			it is empty for a buffer without lines.  Text edits
+			from the server apply to that same text.
 
 			Default: |false|
 
