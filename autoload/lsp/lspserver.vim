@@ -14,6 +14,7 @@ import './util.vim'
 import './capabilities.vim'
 import './offset.vim'
 import './diag.vim'
+import './dochighlight.vim'
 import './selection.vim'
 import './symbol.vim'
 import './textedit.vim'
@@ -1413,61 +1414,12 @@ def g:LspRequestCustom(name: string, msg: string, params: any): string
   return ''
 enddef
 
-# process the 'textDocument/documentHighlight' reply from the LSP server
-# Result: DocumentHighlight[] | null
-def DocHighlightReply(lspserver: dict<any>, docHighlightReply: any,
-                      docHighlightError: dict<any>, bnr: number,
-                      cmdmods: string): void
-  # Handle document highlight error
-  if !docHighlightError->empty()
-    if cmdmods !~ 'silent'
-      util.ErrMsg($'Document highlight failed: {docHighlightError.message}')
-    endif
-    return
-  endif
-
-  if docHighlightReply->empty()
-    if cmdmods !~ 'silent'
-      util.WarnMsg($'No highlight for the current position')
-    endif
-    return
-  endif
-
-  for docHL in docHighlightReply
-    lspserver.decodeRange(bnr, docHL.range)
-    var kind: number = docHL->get('kind', 1)
-    var propName: string
-    if kind == 2
-      # Read-access
-      propName = 'LspReadRef'
-    elseif kind == 3
-      # Write-access
-      propName = 'LspWriteRef'
-    else
-      # textual reference
-      propName = 'LspTextRef'
-    endif
-    try
-      var docHL_range = docHL.range
-      var docHL_start = docHL_range.start
-      var docHL_end = docHL_range.end
-      prop_add(docHL_start.line + 1,
-                  util.GetLineByteFromPos(bnr, docHL_start) + 1,
-                  {end_lnum: docHL_end.line + 1,
-                    end_col: util.GetLineByteFromPos(bnr, docHL_end) + 1,
-                    bufnr: bnr,
-                    type: propName})
-    catch /E966\|E964/ # Invalid lnum | Invalid col
-      # Highlight replies arrive asynchronously and the document might have
-      # been modified in the mean time.  As the reply is stale, ignore invalid
-      # line number and column number errors.
-    endtry
-  endfor
-enddef
-
 # Request: "textDocument/documentHighlight"
 # Param: DocumentHighlightParams
-def DocHighlight(lspserver: dict<any>, bnr: number, cmdmods: string): void
+# When "auto" is true, the reply replaces the existing highlights unless the
+# cursor has moved or the buffer has changed in the meantime.
+def DocHighlight(lspserver: dict<any>, bnr: number, cmdmods: string,
+                 auto: bool = false): void
   # Check whether LSP server supports getting highlight information
   if !lspserver.isDocumentHighlightProvider
     util.ErrMsg('LSP server does not support document highlight')
@@ -1477,11 +1429,13 @@ def DocHighlight(lspserver: dict<any>, bnr: number, cmdmods: string): void
   # Send the pending buffer changes to the language server
   bnr->listener_flush()
 
+  var reqctx = auto ? dochighlight.DocHighlightRequestContextGet(bnr) : {}
+
   # interface DocumentHighlightParams
   #   interface TextDocumentPositionParams
   var params = lspserver.getTextDocPosition(false)
   lspserver.rpc_a('textDocument/documentHighlight', params, (_, reply, error) => {
-    DocHighlightReply(lspserver, reply, error, bnr, cmdmods)
+    dochighlight.DocHighlightReply(lspserver, reply, error, bnr, cmdmods, reqctx)
   })
 enddef
 

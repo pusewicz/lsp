@@ -23,6 +23,10 @@ export var lspOptions: dict<any> = {
   # In normal mode, highlight the current symbol automatically
   autoHighlight: false,
 
+  # Delay in milliseconds after the cursor stops moving before the
+  # occurrences of the current symbol are highlighted (autoHighlight)
+  autoHighlightDelay: 250,
+
   # Automatically highlight diagnostics messages from LSP server
   autoHighlightDiags: true,
 

@@ -16,6 +16,7 @@ import './buffer.vim' as buf
 import './completion.vim'
 import './textedit.vim'
 import './diag.vim'
+import './dochighlight.vim'
 import './symbol.vim'
 import './outline.vim'
 import './signature.vim'
@@ -508,6 +509,14 @@ def LspHoverAutoStop(bnr: number)
   hover.HoverAutoStop(bnr)
 enddef
 
+def LspDocHighlightAutoSchedule(bnr: number)
+  dochighlight.DocHighlightAutoSchedule(bnr)
+enddef
+
+def LspDocHighlightAutoStop(bnr: number)
+  dochighlight.DocHighlightAutoStop(bnr)
+enddef
+
 # Add buffer-local autocmds when attaching a LSP server to a buffer
 def AddBufLocalAutocmds(lspserver: dict<any>, bnr: number): void
   var acmds: list<dict<any>> = []
@@ -530,7 +539,11 @@ def AddBufLocalAutocmds(lspserver: dict<any>, bnr: number): void
     acmds->add({bufnr: bnr,
 		event: 'CursorMoved',
 		group: 'LSPBufferAutocmds',
-		cmd: $'call LspDocHighlightClear({bnr}) | call LspDocHighlight({bnr}, "silent")'})
+		cmd: $'LspDocHighlightAutoSchedule({bnr})'})
+    acmds->add({bufnr: bnr,
+		event: 'BufLeave',
+		group: 'LSPBufferAutocmds',
+		cmd: $'LspDocHighlightAutoStop({bnr})'})
   endif
 
   if opt.lspOptions.hoverOnCursorHold && lspserver.isHoverProvider
@@ -772,6 +785,7 @@ export def RemoveFile(bnr: number): void
   var hasLspDetachedAutocmd = exists('#User#LspDetached')
   var hadAttachedServers = !lspservers->empty()
   if hadAttachedServers
+    dochighlight.DocHighlightAutoStop(bnr)
     RemoveBufLocalAutocmds(bnr)
     RemoveBufListener(bnr)
     ontypeformat.BufferDeInit(bnr)
@@ -1228,14 +1242,7 @@ def g:LspDocHighlightClear(bnr: number = bufnr())
     return
   endif
 
-  var propNames = ['LspTextRef', 'LspReadRef', 'LspWriteRef']
-  if has('patch-9.0.0233')
-    prop_remove({types: propNames, bufnr: bnr, all: true})
-  else
-    for propName in propNames
-      prop_remove({type: propName, bufnr: bnr, all: true})
-    endfor
-  endif
+  dochighlight.DocHighlightClear(bnr)
 enddef
 
 def g:LspRequestDocSymbols()

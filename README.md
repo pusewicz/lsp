@@ -114,6 +114,7 @@ call LspOptionsSet(#{
         \   aleSupport: v:false,
         \   autoComplete: v:true,
         \   autoHighlight: v:false,
+        \   autoHighlightDelay: 250,
         \   autoHighlightDiags: v:true,
         \   autoPopulateDiags: v:false,
         \   completionMatcher: 'case',

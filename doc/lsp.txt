@@ -1576,7 +1576,18 @@ autoComplete		|Boolean| option. In insert mode, automatically
 						*lsp-opt-autoHighlight*
 autoHighlight		|Boolean| option. In normal mode, automatically
 			highlight all the occurrences of the symbol under the
-			cursor. By default this is set to false.
+			cursor once the cursor rests for
+			|lsp-opt-autoHighlightDelay| milliseconds.  The
+			highlights stay in place while the cursor moves
+			within the highlighted occurrences.
+			By default this is set to false.
+
+						*lsp-opt-autoHighlightDelay*
+autoHighlightDelay	|Number| option. Delay in milliseconds after the
+			cursor stops moving before the occurrences of the
+			symbol under the cursor are requested, when
+			|lsp-opt-autoHighlight| is enabled.
+			By default this is set to 250.
 
 						*lsp-opt-autoHighlightDiags*
 autoHighlightDiags	|Boolean| option. Automatically place signs on the

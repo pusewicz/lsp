@@ -5,6 +5,7 @@ import '../autoload/lsp/hover.vim' as hover
 import '../autoload/lsp/buffer.vim' as buf
 import '../autoload/lsp/signature.vim' as signature
 import '../autoload/lsp/codeaction.vim' as codeaction
+import '../autoload/lsp/dochighlight.vim' as dochighlight
 import '../autoload/lsp/lsp.vim' as lsp
 import '../autoload/lsp/util.vim' as util
 
@@ -1553,6 +1554,110 @@ def g:Test_LspHighlight()
   cursor(5, 3) # if (arg == 2) {
   var output = execute('LspHighlight')->split("\n")
   assert_equal('Warn: No highlight for the current position', output[0])
+  :%bw!
+enddef
+
+# Test for the 'autoHighlight' and 'autoHighlightDelay' options
+def g:Test_LspAutoHighlight()
+  # The CursorMoved autocmd is added when the server attaches to the buffer.
+  g:LspOptionsSet({autoHighlight: true, autoHighlightDelay: 1000})
+  silent! edit XLspAutoHighlight.c
+  sleep 200m
+  var lines: list<string> =<< trim END
+    void f1(int arg)
+    {
+      int i = arg;
+      arg = 2;
+      if (arg == 2) {
+        arg = 3;
+      }
+    }
+  END
+  setline(1, lines)
+  g:WaitForServerFileLoad(0)
+  var bnr = bufnr()
+  var ColLen = (lnum: number) => prop_list(lnum)->mapnew((_, p) => [p.type, p.col, p.length])
+
+  # Moving the cursor again restarts the delay instead of sending another
+  # request.
+  cursor(1, 13)
+  :doautocmd <nomodeline> CursorMoved
+  var firstTimer = getbufvar(bnr, 'LspDocHighlightTimer', -1)
+  assert_notequal(-1, firstTimer)
+  cursor(1, 14)
+  :doautocmd <nomodeline> CursorMoved
+  var secondTimer = getbufvar(bnr, 'LspDocHighlightTimer', -1)
+  assert_notequal(-1, secondTimer)
+  assert_equal([], timer_info(firstTimer))
+  assert_equal([], prop_list(1))
+
+  # Leaving the buffer cancels the pending request.
+  :new
+  assert_equal([], timer_info(secondTimer))
+  assert_equal(-1, getbufvar(bnr, 'LspDocHighlightTimer', -1))
+  :close
+
+  # Once the cursor rests, the occurrences of the symbol are highlighted.
+  g:LspOptionsSet({autoHighlightDelay: 10})
+  cursor(1, 13)
+  :doautocmd <nomodeline> CursorMoved
+  g:WaitForAssert(() => assert_equal([['LspTextRef', 13, 3]], ColLen(1)))
+  assert_equal([['LspReadRef', 11, 3]], ColLen(3))
+  assert_equal([['LspWriteRef', 3, 3]], ColLen(4))
+
+  # No new request while the cursor stays on a highlighted occurrence.
+  cursor(3, 11)
+  :doautocmd <nomodeline> CursorMoved
+  assert_equal(-1, getbufvar(bnr, 'LspDocHighlightTimer', -1))
+  assert_equal([['LspTextRef', 13, 3]], ColLen(1))
+
+  # After a buffer change the highlights are requested again.
+  append('$', '')
+  :doautocmd <nomodeline> CursorMoved
+  assert_notequal(-1, getbufvar(bnr, 'LspDocHighlightTimer', -1))
+  g:WaitForAssert(() => assert_equal(-1, getbufvar(bnr, 'LspDocHighlightTimer', -1)))
+  g:WaitForAssert(() => assert_equal(bnr->getbufvar('changedtick'),
+				      bnr->getbufvar('LspDocHighlightTick', -1)))
+  assert_equal([['LspTextRef', 13, 3]], ColLen(1))
+  deletebufline(bnr, '$')
+
+  # Moving to another symbol replaces the highlights.
+  cursor(3, 7) # int i = arg;
+  :doautocmd <nomodeline> CursorMoved
+  g:WaitForAssert(() => assert_equal([], prop_list(1)))
+  assert_equal([7], prop_list(3)->mapnew((_, p) => p.col))
+
+  # Moving off any symbol clears the highlights.
+  cursor(5, 3) # if (arg == 2) {
+  :doautocmd <nomodeline> CursorMoved
+  g:WaitForAssert(() => assert_equal([], prop_list(3)))
+
+  # A reply that arrives after the cursor has moved is dropped.  A current
+  # reply replaces the existing highlights.
+  var lspserver = buf.CurbufGetServer('documentHighlight')
+  var ArgRange = () => [{range: {start: {line: 0, character: 12},
+				  end: {line: 0, character: 15}}, kind: 1}]
+  cursor(1, 13)
+  var reqctx = dochighlight.DocHighlightRequestContextGet(bnr)
+  cursor(5, 3)
+  dochighlight.DocHighlightReply(lspserver, ArgRange(), {}, bnr, 'silent', reqctx)
+  assert_equal([], prop_list(1))
+  cursor(1, 13)
+  dochighlight.DocHighlightReply(lspserver, ArgRange(), {}, bnr, 'silent', reqctx)
+  assert_equal([['LspTextRef', 13, 3]], ColLen(1))
+  dochighlight.DocHighlightReply(lspserver, ArgRange(), {}, bnr, 'silent', reqctx)
+  assert_equal([['LspTextRef', 13, 3]], ColLen(1))
+
+  # Detaching the buffer from the server cancels the pending request.
+  g:LspOptionsSet({autoHighlightDelay: 1000})
+  cursor(5, 3)
+  :doautocmd <nomodeline> CursorMoved
+  var pendingTimer = getbufvar(bnr, 'LspDocHighlightTimer', -1)
+  assert_notequal(-1, pendingTimer)
+  lsp.RemoveFile(bnr)
+  assert_equal([], timer_info(pendingTimer))
+
+  g:LspOptionsSet({autoHighlight: false, autoHighlightDelay: 250})
   :%bw!
 enddef
 
