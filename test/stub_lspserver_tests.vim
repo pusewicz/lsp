@@ -2058,6 +2058,221 @@ def g:Test_CodeAction_OtherLineRangeStartsAtLineStart()
   :%bw!
 enddef
 
+# Returns the diagnostics for the lines set by PublishDiagsPastEnd(), in the
+# position encoding "posEncoding".  Once the last three lines are deleted,
+# "stale end" ends past the end of the buffer, "last line" covers the "é" at
+# the start of the last line and "stale start" is entirely past the end.
+def PastEndDiags(posEncoding: number): list<dict<any>>
+  return [
+    {range: {start: {line: 1, character: 2}, end: {line: 4, character: 3}},
+     severity: 1, message: 'stale end'},
+    {range: {start: {line: 2, character: 0},
+	     end: {line: 2, character: posEncoding == 8 ? 2 : 1}},
+     severity: 1, message: 'last line'},
+    {range: {start: {line: 4, character: 1}, end: {line: 5, character: 0}},
+     severity: 1, message: 'stale start'}
+  ]
+enddef
+
+# The ranges of PastEndDiags() in a buffer without their last three lines,
+# where the last line is 6 characters long.
+const PAST_END_DIAG_RANGES: list<dict<dict<number>>> = [
+  {start: {line: 1, character: 2}, end: {line: 2, character: 6}},
+  {start: {line: 2, character: 0}, end: {line: 2, character: 1}},
+  {start: {line: 2, character: 6}, end: {line: 2, character: 6}}
+]
+
+# Sets six lines in the current buffer, publishes PastEndDiags() for it from
+# "lspserver" and deletes the last three lines, before publishing if
+# "deleteFirst" is true and after it otherwise.  The third line, which is the
+# last one left, is 11 bytes, 7 UTF-16 code units and 6 characters long.
+def PublishDiagsPastEnd(lspserver: dict<any>, deleteFirst: bool)
+  setline(1, ['abcdef', 'ghijkl', "é á 😊", 'line 4', 'line 5',
+	      'line 6'])
+  if deleteFirst
+    :4,$delete _
+  endif
+  diag.DiagNotification(lspserver, util.LspBufnrToUri(bufnr()),
+			PastEndDiags(lspserver.posEncoding), 'push')
+  if !deleteFirst
+    :4,$delete _
+  endif
+enddef
+
+# Returns the message for the assertions of a test of PublishDiagsPastEnd()
+# with "deleteFirst".
+def PastEndMsg(deleteFirst: bool): string
+  return deleteFirst ? 'lines deleted before publishing'
+		     : 'lines deleted after publishing'
+enddef
+
+# The signs, the virtual text and the inline highlights of the diagnostics are
+# placed within the buffer when lines that the diagnostics are on are
+# deleted.  A diagnostic past the end of the buffer is at the end of the last
+# line, and a range ending past it ends there.
+def g:Test_DiagsPastEndOfBuffer_Visuals()
+  DiagInitOnce()
+  silent! edit XDiagsPastEndVisuals.txt
+  g:LspOptionsSet({showDiagWithVirtualText: true})
+  var bnr = bufnr()
+  var lspserver = MakeDiagServer('srv')
+  for deleteFirst in [false, true]
+    PublishDiagsPastEnd(lspserver, deleteFirst)
+    diag.DiagsRefresh(bnr)
+
+    var msg = PastEndMsg(deleteFirst)
+    assert_equal([2, 3, 3], sign_getplaced(bnr, {group: 'LSPDiag'})[0].signs
+		   ->mapnew((_, s) => s.lnum)->sort('n'), msg)
+    assert_equal([[2, '┌─ stale end'], [3, '┌─ last line'],
+		  [3, '┌─ stale start']],
+		 DiagVirtualTexts()->mapnew((_, v) => [v[0], v[2]])->sort(),
+		 msg)
+    # [lnum, col, length] of each line of the inline highlights, sorted as
+    # strings
+    assert_equal([[2, 3, 5], [3, 1, 11], [3, 1, 2], [3, 12, 0]],
+		 prop_list(1, {end_lnum: -1})
+		   ->filter((_, p) => p.type =~ '^LspDiagInline')
+		   ->mapnew((_, p) => [p.lnum, p.col, p.length])->sort(),
+		 msg)
+    diag.DiagRemoveFile(bnr)
+  endfor
+  g:LspOptionsSet({showDiagWithVirtualText: false})
+  :%bw!
+enddef
+
+# The location list items of the diagnostics are within the buffer when lines
+# that the diagnostics are on are deleted.  Their 'user_data' has the
+# diagnostics as the server sent them.
+def g:Test_DiagsPastEndOfBuffer_LocList()
+  silent! edit XDiagsPastEndLocList.txt
+  g:LspOptionsSet({autoHighlightDiags: false})
+  var bnr = bufnr()
+  var winid = win_getid()
+  var lspserver = MakeDiagServer('srv')
+  try
+    for deleteFirst in [false, true]
+      PublishDiagsPastEnd(lspserver, deleteFirst)
+      diag.ShowAllDiags()
+      :lclose
+      var msg = PastEndMsg(deleteFirst)
+      var items = getloclist(winid)
+      assert_equal([[2, 3, 3, 12, 'stale end'], [3, 1, 3, 3, 'last line'],
+		    [3, 12, 3, 12, 'stale start']],
+		   items->mapnew((_, item) =>
+		     [item.lnum, item.col, item.end_lnum, item.end_col,
+		      item.text]), msg)
+      assert_equal(PastEndDiags(32)->mapnew((_, d) => d.range),
+		   items->mapnew((_, item) => item.user_data.diagnostic.range),
+		   msg)
+    endfor
+  finally
+    DiagLocListTestCleanup([bnr])
+  endtry
+enddef
+
+# The diagnostics are looked up by the lines they cover in the buffer when
+# lines that the diagnostics are on are deleted, and they are returned with
+# their ranges within the buffer.  The diagnostics are kept as the server
+# sent them, so they are where they were when the lines are added back.
+def g:Test_DiagsPastEndOfBuffer_Lookups()
+  silent! edit XDiagsPastEndLookups.txt
+  g:LspOptionsSet({autoHighlightDiags: false})
+  var bnr = bufnr()
+  var lspserver = MakeDiagServer('srv')
+  var Ranges = (diags: list<dict<any>>): list<any> =>
+    diags->mapnew((_, d) => d.range)
+  var MsgAt = (lnum: number, col: number): string =>
+    diag.GetDiagByPos(bnr, lnum, col, true)->get('message', '')
+  for deleteFirst in [false, true]
+    PublishDiagsPastEnd(lspserver, deleteFirst)
+
+    var msg = PastEndMsg(deleteFirst)
+    assert_equal(['stale end'], DiagMsgs(diag.GetDiagsByLine(bnr, 2)), msg)
+    assert_equal(PAST_END_DIAG_RANGES, Ranges(diag.GetDiagsByLine(bnr, 3)),
+		 msg)
+    assert_equal(PAST_END_DIAG_RANGES,
+		 Ranges(diag.GetDiagsByLine(bnr, 3, lspserver)), msg)
+    assert_equal(PAST_END_DIAG_RANGES,
+		 Ranges(diag.GetDiagsInLineRange(bnr, 1, 3)), msg)
+    assert_equal([], diag.GetDiagsByLine(bnr, 4), msg)
+    assert_equal(PAST_END_DIAG_RANGES, Ranges(diag.GetDiagsForBuf(bnr)), msg)
+    # The last line is "é á 😊", 5 characters long without the composing
+    # character
+    assert_equal('last line', MsgAt(3, 1), msg)
+    assert_equal('stale end', MsgAt(3, 2), msg)
+    assert_equal('stale end', MsgAt(3, 5), msg)
+    assert_equal('', MsgAt(3, 6), msg)
+
+    append('$', ['line 4', 'line 5', 'line 6'])
+    assert_equal(PastEndDiags(32)->mapnew((_, d) => d.range),
+		 Ranges(diag.GetDiagsForBuf(bnr)), msg)
+    assert_equal(['stale end', 'stale start'],
+		 DiagMsgs(diag.GetDiagsByLine(bnr, 5)), msg)
+    diag.DiagRemoveFile(bnr)
+  endfor
+  g:LspOptionsSet({autoHighlightDiags: true})
+  :%bw!
+enddef
+
+# The diagnostics in the context of a code action request are within the
+# buffer when lines that the diagnostics are on are deleted, and in the
+# position encoding of the language server.  The server already has the
+# document without the deleted lines, so it gets a diagnostic past the end of
+# the document at its end.
+def g:Test_DiagsPastEndOfBuffer_CodeActionContext()
+  silent! edit XDiagsPastEndCodeAction.txt
+  # The length of the last line and the end of the "é" at its start
+  var lineLen = {8: 11, 16: 7, 32: 6}
+  var eEnd = {8: 2, 16: 1, 32: 1}
+  for posEncoding in [8, 16, 32]
+    for deleteFirst in [false, true]
+      var sentParams: list<dict<any>> = []
+      var lspserver = MakeDiagCodeActionServer(posEncoding, [], sentParams)
+      PublishDiagsPastEnd(lspserver, deleteFirst)
+      cursor(3, 1)
+      lspserver.codeActionAsync(@%, 2, 3, '', (_, _, _, _) => 0)
+
+      var msg = $'UTF-{posEncoding}, {PastEndMsg(deleteFirst)}'
+      var len = lineLen[posEncoding]
+      assert_equal({start: {line: 1, character: 0},
+		    end: {line: 2, character: len}},
+		   sentParams[0].range, msg)
+      assert_equal([
+	  {start: {line: 1, character: 2}, end: {line: 2, character: len}},
+	  {start: {line: 2, character: 0},
+	   end: {line: 2, character: eEnd[posEncoding]}},
+	  {start: {line: 2, character: len}, end: {line: 2, character: len}}
+	], sentParams[0].context.diagnostics->mapnew((_, d) => d.range), msg)
+      ClearBufferDiagnostics()
+    endfor
+  endfor
+  :%bw!
+enddef
+
+# The diagnostics sent to ALE are within the buffer when lines that the
+# diagnostics are on are deleted.  The end column sent to ALE is inclusive.
+def g:Test_DiagsPastEndOfBuffer_Ale()
+  var aleStub = InstallAleStub()
+  silent! edit XDiagsPastEndAle.c
+  var bnr = bufnr()
+  var clangd = MakeDiagServer('clangd')
+  buf.BufLspServerSet(bnr, clangd)
+  for deleteFirst in [false, true]
+    PublishDiagsPastEnd(clangd, deleteFirst)
+    g:LspTestAleCalls = []
+    diag.AleHook(bnr)
+    g:WaitForAssert(() => assert_equal(2, g:LspTestAleCalls->len()))
+    assert_equal([[2, 3, 3, 11], [3, 1, 3, 2], [3, 12, 3, 12]],
+		 g:LspTestAleCalls[-1][4]->mapnew((_, v) =>
+		   [v.lnum, v.col, v.end_lnum, v.end_col]),
+		 PastEndMsg(deleteFirst))
+  endfor
+  diag.DiagRemoveFile(bnr)
+  buf.BufLspServerRemove(bnr, clangd)
+  RemoveAleStub(aleStub)
+  :%bw!
+enddef
+
 # The ranges of the code lens and the document link that are resolved are in
 # the position encoding of the language server.  A range that ends past the
 # end of a line with multibyte, composing and astral plane characters ends at
