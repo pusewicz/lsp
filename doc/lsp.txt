@@ -1710,6 +1710,19 @@ diagVirtualTextAlign	|String| option.   Alignment of diagnostics messages
 			Allowed values are 'above', 'below' or 'after'
 			By default this is set to 'above',
 
+					*lsp-opt-diagVirtualTextMostSevere*
+diagVirtualTextMostSevere |Boolean| option.  If true, show the virtual text
+			only for the most severe diagnostic on each line
+			(across all the language servers attached to the
+			buffer) instead of for every diagnostic, if
+			|lsp-opt-showDiagWithVirtualText| is set to true.
+			Of equally severe diagnostics, the one starting in the
+			leftmost column is shown, and of those starting in
+			the same column, the one listed first by
+			|:LspDiag-show|.  Signs and inline highlights are
+			still placed for every diagnostic.
+			By default this is set to false.
+
 						*lsp-opt-diagVirtualTextWrap*
 diagVirtualTextWrap	|String| option.   Wrapping of diagnostics messages
 			if |lsp-opt-showDiagWithVirtualText| is set to true.
@@ -2489,6 +2502,16 @@ value of "diagVirtualTextAlign". If 'truncate' is used while
 "diagVirtualTextAlign" is set to 'after', and a diagnostic message has already
 been truncated for the affected line, then further diagnostics will be placed
 below the affected line.
+
+By default, virtual text is shown for every diagnostic, so a line with several
+diagnostics gets several virtual text messages.  When "diagVirtualTextAlign"
+is 'above' or 'below', each of them takes up a screen line of its own.  To
+show only the message of the most severe diagnostic on each line, set the
+"diagVirtualTextMostSevere" option to |v:true|.  If a line has several equally
+severe diagnostics, the one starting in the leftmost column is shown.  This
+affects only the virtual text: a sign and an inline highlight are still placed
+for every diagnostic.  When a line has signs for several diagnostics, the sign
+of the most severe one is displayed.
 
 The LSP plugin offers convenient ways to highlight diagnostic messages, making
 it easier to spot errors, warnings, hints, or informational notices within

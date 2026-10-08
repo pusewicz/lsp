@@ -658,6 +658,114 @@ def g:Test_AleSupport_InsertModeFollowsAleLintOnTextChanged()
   :%bw!
 enddef
 
+# Define the diagnostic signs and text property types, which are otherwise
+# defined only when the first language server is started.
+def DiagInitOnce()
+  if prop_type_get('LspDiagVirtualTextError')->empty()
+    diag.InitOnce()
+  endif
+enddef
+
+# Return a diagnostic for "message" starting at the zero-based "startLine" and
+# "startChar" with "severity", or without a severity if it is 0.
+def MakeDiag(startLine: number, startChar: number, severity: number,
+	message: string): dict<any>
+  var d: dict<any> = {
+    range: {
+      start: {line: startLine, character: startChar},
+      end: {line: startLine, character: startChar + 3}
+    },
+    message: message
+  }
+  if severity > 0
+    d.severity = severity
+  endif
+  return d
+enddef
+
+# Return the [lnum, type, text, align] of the diagnostic virtual text placed in
+# the current buffer.
+def DiagVirtualTexts(): list<list<any>>
+  return prop_list(1, {end_lnum: line('$')})
+    ->filter((_, p) => p.type =~ '^LspDiagVirtualText')
+    ->mapnew((_, p) => [p.lnum, p.type, p.text, p->get('text_align', 'after')])
+enddef
+
+# Return the number of text properties of the types matching "pattern" placed
+# in the current buffer.
+def PropCount(pattern: string): number
+  return prop_list(1, {end_lnum: line('$')})
+    ->filter((_, p) => p.type =~ pattern)
+    ->len()
+enddef
+
+# With "diagVirtualTextMostSevere" set, only the most severe diagnostic on
+# each line, across all the servers, gets virtual text.  Signs and inline
+# highlights are still placed for every diagnostic.
+def g:Test_DiagVirtualTextMostSevere()
+  if !has('patch-9.0.1157')
+    # Doesn't support virtual text
+    return
+  endif
+  DiagInitOnce()
+  silent! edit XDiagVirtualTextMostSevere.txt
+  setline(1, ['int alpha = beta + gamma;', 'int delta = epsilon;',
+	      'int zeta;', 'int eta;'])
+  var bnr = bufnr()
+  var uri = util.LspBufnrToUri(bnr)
+  g:LspOptionsSet({showDiagWithVirtualText: true,
+		   diagVirtualTextMostSevere: true})
+
+  var srvA = MakeDiagServer('srvA')
+  var srvB = MakeDiagServer('srvB')
+  var diagsA = [
+    MakeDiag(0, 0, 4, 'hint on line 1'),
+    MakeDiag(0, 12, 2, 'warning on line 1'),
+    MakeDiag(1, 12, 2, 'right warning on line 2'),
+    MakeDiag(2, 4, 3, 'info on line 3'),
+    MakeDiag(3, 0, 4, 'hint on line 4')
+  ]
+  var diagsB = [
+    MakeDiag(0, 19, 1, 'error on line 1'),
+    MakeDiag(1, 4, 2, 'left warning on line 2'),
+    MakeDiag(3, 4, 0, 'no severity on line 4')
+  ]
+  diag.DiagNotification(srvA, uri, diagsA, 'push')
+  diag.DiagNotification(srvB, uri, diagsB, 'push')
+
+  for [align, sym] in [['above', ['┌─', '┌─', '┌─']],
+		       ['below', ['└─', '└─', '└─']],
+		       ['after', ['E>', 'W>', 'I>']]]
+    g:LspOptionsSet({diagVirtualTextAlign: align})
+    diag.DiagsRefresh(bnr)
+    assert_equal([
+	[1, 'LspDiagVirtualTextError', $'{sym[0]} error on line 1', align],
+	[2, 'LspDiagVirtualTextWarning', $'{sym[1]} left warning on line 2',
+	  align],
+	[3, 'LspDiagVirtualTextInfo', $'{sym[2]} info on line 3', align],
+	[4, 'LspDiagVirtualTextError', $'{sym[0]} no severity on line 4', align]
+      ], DiagVirtualTexts(), $'diagVirtualTextAlign: {align}')
+    assert_equal(8, sign_getplaced(bnr, {group: 'LSPDiag'})[0].signs->len())
+    assert_equal(8, PropCount('^LspDiagInline'))
+  endfor
+
+  # Changing the option takes effect without waiting for new diagnostics
+  g:LspOptionsSet({diagVirtualTextMostSevere: false})
+  assert_equal([1, 1, 1, 2, 2, 3, 4, 4],
+	       DiagVirtualTexts()->mapnew((_, v) => v[0])->sort('n'))
+  assert_equal(8, sign_getplaced(bnr, {group: 'LSPDiag'})[0].signs->len())
+  assert_equal(8, PropCount('^LspDiagInline'))
+  g:LspOptionsSet({diagVirtualTextMostSevere: true})
+  assert_equal([1, 2, 3, 4], DiagVirtualTexts()->mapnew((_, v) => v[0]))
+
+  g:LspOptionsSet({showDiagWithVirtualText: false,
+		   diagVirtualTextMostSevere: false,
+		   diagVirtualTextAlign: 'above'})
+  assert_equal([], DiagVirtualTexts())
+  diag.DiagRemoveFile(bnr)
+  :%bw!
+enddef
+
 def g:Test_ProcessMessages_InvalidRequest_NonStringMethod_WithId()
   var lspserver = MakeTestLspServer([])
   var outMessages: list<dict<any>> = []
