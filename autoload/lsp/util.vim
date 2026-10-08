@@ -91,64 +91,34 @@ export def LspLocationParse(lsploc: dict<any>): list<any>
   endif
 enddef
 
-# convert a normal string to a url encoded string
+# The text in a URI path for each octet value: an unreserved character (RFC
+# 3986), ":" and "/" stand for themselves, any other octet is percent-encoded.
+# str2blob() turns a NL into a NUL, which a Vim string cannot hold, so the
+# octet 0 is a NL.
+const URI_PATH_OCTETS: list<string> = range(256)->mapnew((_, b) =>
+  b != 0 && nr2char(b) =~# '^[A-Za-z0-9._~:/-]$' ? nr2char(b)
+  : printf('%%%02X', b == 0 ? 10 : b))
+
+# Returns "str" with each octet of its UTF-8 encoding percent-encoded, except
+# for an unreserved character (RFC 3986), ":" and "/".  The string is encoded
+# octet by octet, as a regexp sees a composing character as a part of the
+# character before it, which may be one that is not encoded.
 def UriEncode(str: string): string
-  var parts: list<string> = []
-  for ch in str
-    if ch =~# '[A-Za-z0-9-._~:/]'
-      parts->add(ch)
-    else
-      # Get UTF-8 bytes for the character and encode each byte
-      var byte_len = strlen(ch)
-      for i in range(byte_len)
-        var byte = char2nr(strpart(ch, i, 1))
-        parts->add(printf('%%%02X', byte))
-      endfor
-    endif
-  endfor
-  return parts->join('')
+  return [str]->str2blob()->blob2list()
+    ->mapnew((_, b) => URI_PATH_OCTETS[b])->join('')
 enddef
 
-# convert an url encoded string to a normal string
+# Returns "str" with each percent-encoded octet, "%" followed by two
+# hexadecimal digits of either case, replaced by the octet, so that the octets
+# of a multibyte character form the character again.  Octets that are not
+# valid UTF-8 are kept as they are.  A "%" that is not followed by two
+# hexadecimal digits is kept, and so is "%00": a Vim string cannot hold a NUL.
+# A "+" is not a space in a URI path and is kept too.  A regexp sees a
+# composing character after the second digit as a part of the digit, so the
+# match is the digits and any composing characters after them.
 def UriDecode(str: string): string
-  var parts: list<string> = []
-  var i: number = 0
-  var byte_array: list<number> = []
-  var str_len = strlen(str)
-
-  while i < str_len
-    # Use byte-level operations since we're dealing with percent-encoded bytes
-    var ch = strpart(str, i, 1)
-    if ch == '%' && i + 2 < str_len
-      var hex = strpart(str, i + 1, 2)
-      # Check if the next two characters are valid hex digits
-      if hex =~# '^[0-9A-Fa-f]\{2}$'
-        byte_array->add(str2nr(hex, 16))
-        i += 3
-        continue
-      endif
-    endif
-
-    # If we have accumulated bytes, convert them to a UTF-8 string
-    if !byte_array->empty()
-      for byte in byte_array
-        parts->add(printf('%c', byte))
-      endfor
-      byte_array = []
-    endif
-
-    parts->add(ch)
-    i += 1
-  endwhile
-
-  # Handle any remaining bytes at the end
-  if !byte_array->empty()
-    for byte in byte_array
-      parts->add(printf('%c', byte))
-    endfor
-  endif
-
-  return parts->join('')
+  return str->substitute('%\%(00\)\@!\(\x\x\)',
+    '\=printf("%c", str2nr(submatch(1), 16)) .. submatch(1)->strpart(2)', 'g')
 enddef
 
 # Convert the LSP URI "uri" to a Vim file name.  A "file:" URI (RFC 8089) of a
