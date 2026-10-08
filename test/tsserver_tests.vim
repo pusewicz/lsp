@@ -32,7 +32,6 @@ echomsg systemlist($'{lspServers[0].path} --version')
 # keyword before the cursor are shown.
 def g:Test_LspCompletion1()
   :silent! edit Xcompletion1.ts
-  sleep 200m
   var lines =<< trim END
     const http = {
       createServer() {},
@@ -68,7 +67,6 @@ enddef
 def g:Test_LspGoto()
   :silent! edit Xtest.ts
   var bnr = bufnr()
-  sleep 200m
 
   var lines: list<string> = [
     'function B(val: number): void;',
@@ -152,7 +150,6 @@ enddef
 # TypeScript always uses UTF-16 positions.
 def g:Test_LspUtf16Positions()
   :silent! edit XLspUtf16Positions.ts
-  sleep 200m
   var lines =<< trim END
     const smile = '😀😀'; const total = 1;
     const n: number = smile + total;
@@ -192,7 +189,6 @@ enddef
 # were requested.
 def g:Test_LspCodeActionDocumentVersion()
   :silent! edit XLspCodeActionVersion.ts
-  sleep 200m
   var line = "const smile = '😀😀'; consol.log(smile);"
   setline(1, line)
   g:WaitForServerFileLoad(1)

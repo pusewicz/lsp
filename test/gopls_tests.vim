@@ -27,8 +27,6 @@ def g:Test_LspGoto()
   :silent! edit Xtest.go
   var bnr = bufnr()
 
-  sleep 200m
-
   var lines =<< trim END
     package main
 
@@ -124,7 +122,6 @@ enddef
 # Test for :LspFold command
 def g:Test_LspFold()
   :silent! edit XLspFold1.go
-  sleep 200m
   var lines =<< trim END
     package main
 
@@ -161,7 +158,6 @@ enddef
 # TODO: Manually running this test passes.  Need to debug why this fails.
 def g:DISABLED_Test_LspFixAll()
   :silent! edit XLspFixAll.go
-  sleep 200m
   var lines =<< trim END
     package main
 
@@ -188,7 +184,6 @@ enddef
 # should merge them into one grouped import block sorted alphabetically.
 def g:Test_LspOrganizeImports()
   :silent! edit XLspOrganizeImports.go
-  sleep 200m
   var lines =<< trim END
     package main
 
