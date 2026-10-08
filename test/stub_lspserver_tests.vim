@@ -13,6 +13,8 @@ import '../autoload/lsp/util.vim' as util
 import '../autoload/lsp/buffer.vim' as buf
 import '../autoload/lsp/ontypeformat.vim' as ontypeformat
 import '../autoload/lsp/textedit.vim' as textedit
+import '../autoload/lsp/inlayhints.vim' as inlayhints
+import '../autoload/lsp/capabilities.vim' as capabilities
 import '../autoload/lsp/hover.vim' as hover
 import '../autoload/lsp/options.vim' as opt
 
@@ -1062,6 +1064,40 @@ def g:Test_DiagNotification_DeduplicatesAcrossPushAndPull()
   :%bw!
 enddef
 
+# Diagnostics published for an unloaded buffer are ignored and must not load
+# it, as loading it attaches it to the language servers again.  So a buffer
+# drops its diagnostics when it is unloaded, as they would go stale.
+def g:Test_DiagNotification_IgnoresUnloadedBuffer()
+  g:LspOptionsSet({autoHighlightDiags: false})
+  silent! edit XDiagUnloadedBuffer.txt
+  var bnr = bufnr()
+  var uri = util.LspBufnrToUri(bnr)
+  var lspserver = MakeTestLspServer([])
+  lspserver.featureEnabled = (_) => true
+  var errDiag = {
+    range: {
+      start: {line: 0, character: 0},
+      end: {line: 0, character: 1}
+    },
+    severity: 1,
+    message: 'error'
+  }
+
+  # A loaded buffer gets the diagnostics without being attached, and loses
+  # them when it is unloaded
+  diag.DiagNotification(lspserver, uri, [errDiag], 'push')
+  assert_equal(1, diag.DiagsGetErrorCount(bnr).Error)
+  :enew
+  assert_false(bufloaded(bnr))
+  assert_equal(0, diag.DiagsGetErrorCount(bnr).Error)
+
+  diag.DiagNotification(lspserver, uri, [errDiag], 'push')
+  assert_false(bufloaded(bnr))
+  assert_equal(0, diag.DiagsGetErrorCount(bnr).Error)
+  g:LspOptionsSet({autoHighlightDiags: true})
+  :%bw!
+enddef
+
 def g:Test_ProcessNotif_PublishDiagnostics_NotIgnoredForPullCapableServer()
   g:LspOptionsSet({autoHighlightDiags: false})
   silent! edit XPushDiagnosticsForPullServer.rs
@@ -1154,7 +1190,9 @@ def g:Test_PublishDiagnostics_UnopenedDocumentFoundByFileName()
     PublishDiagsNotif(notOpenedUri, ['not opened']))
   assert_equal(['not opened'], DiagMsgs(diag.GetDiagsForBuf(notOpened)))
 
-  silent! edit XDiagClosed.c
+  # The buffers are kept loaded: the diagnostics published for an unloaded
+  # buffer are ignored
+  silent! hide edit XDiagClosed.c
   var closed = bufnr()
   var closedUri = util.LspBufnrToUri(closed)
   lspserver.textdocDidOpen(closed, 'c')
@@ -1165,7 +1203,7 @@ def g:Test_PublishDiagnostics_UnopenedDocumentFoundByFileName()
   handlers.ProcessNotif(lspserver, PublishDiagsNotif(closedUri, []))
   assert_equal([], diag.GetDiagsForBuf(closed))
 
-  silent! edit XDiagWipedOut.c
+  silent! hide edit XDiagWipedOut.c
   var wipedOut = bufnr()
   :bwipeout!
   lspserver.docBufnrs[notOpenedUri] = wipedOut
@@ -1521,9 +1559,8 @@ def g:Test_AleSupport_DiagsSentPerServer()
   :%bw!
 enddef
 
-# The diagnostics of a buffer that ALE no longer tracks (it drops a deleted
-# buffer before the buffer is detached from the servers) are not cleared in
-# ALE, which would make ALE track the buffer again.
+# The diagnostics of a buffer that ALE doesn't track (e.g. one it dropped on
+# BufDelete) are not cleared in ALE, which would make ALE track the buffer.
 def g:Test_AleSupport_DeletedBufferNotSentToAle()
   var aleStub = InstallAleStub()
   silent! edit XAleSupportDeleted.c
@@ -2464,6 +2501,110 @@ def g:Test_LspDetached_AutocmdNotFiredWithoutAttachedServer()
   :bw!
 enddef
 
+# Test that detaching a buffer from its language servers removes the inlay
+# hint autocmds of the buffer.
+def g:Test_LspDetached_RemovesInlayHintAutocmds()
+  silent! edit XLspDetachedInlayHints.txt
+  var bnr = bufnr()
+  var bufPattern = $'<buffer={bnr}>'
+
+  var srv = MakeTestLspServer([])
+  srv.isInlayHintProvider = true
+  srv.syncInit = true
+  srv.featureEnabled = (_) => true
+  buf.BufLspServerSet(bnr, srv)
+  g:LspOptionsSet({showInlayHints: true})
+  try
+    inlayhints.BufferInit(srv, bnr)
+    assert_notequal([], autocmd_get({group: 'LspInlayHints', pattern: bufPattern}))
+    assert_notequal([], autocmd_get({group: 'LspAttached', pattern: bufPattern}))
+
+    lsp.RemoveFile(bnr)
+    assert_equal([], autocmd_get({group: 'LspInlayHints', pattern: bufPattern}))
+    assert_equal([], autocmd_get({group: 'LspAttached', pattern: bufPattern}))
+  finally
+    g:LspOptionsSet({showInlayHints: false})
+    :bw!
+  endtry
+enddef
+
+# Detaching a buffer cancels its initialization deferred until the language
+# server is ready, but not the one of the other buffers waiting for it.
+def g:Test_RemoveFile_CancelsOnlyItsPendingBufferInit()
+  var notifications: list<dict<any>> = []
+  var srv = MakeTestLspServer(notifications)
+  srv.caps = {textDocumentSync: 2}
+  capabilities.ProcessServerCaps(srv, srv.caps)
+  var readyAcmd = {group: 'LSPBufferAutocmds', event: 'User',
+		   pattern: $'LspServerReady_{srv.id}'}
+  silent! edit XPendingBufferInit1.txt
+  var bnr1 = bufnr()
+  silent! new XPendingBufferInit2.txt
+  var bnr2 = bufnr()
+  for bnr in [bnr1, bnr2]
+    buf.BufLspServerSet(bnr, srv)
+    autocmd_add([readyAcmd->extendnew({once: true,
+				       cmd: $'BufferInit({srv.id}, {bnr})'})])
+  endfor
+
+  lsp.RemoveFile(bnr1)
+  var pending = autocmd_get(readyAcmd)
+  assert_equal([$'BufferInit({srv.id}, {bnr2})'],
+	       pending->mapnew((_, acmd) => acmd.cmd))
+  assert_true(pending[0].once)
+
+  # The kept autocmd still initializes its buffer once the server is ready
+  srv.running = true
+  srv.ready = true
+  exe $'doautocmd <nomodeline> LSPBufferAutocmds User LspServerReady_{srv.id}'
+  assert_equal([['textDocument/didOpen', util.LspBufnrToUri(bnr2)]],
+	       notifications->mapnew((_, n) => [n.method, n.params.textDocument.uri]))
+  assert_equal([], autocmd_get(readyAcmd))
+
+  lsp.RemoveFile(bnr2)
+  :%bw!
+enddef
+
+# Detaching a buffer cancels its pending requests (e.g. document highlight)
+# before closing it, so their late replies are ignored, and keeps the pending
+# requests for the other buffers.
+def g:Test_RemoveFile_CancelsPendingBufferRequests()
+  var notifications: list<dict<any>> = []
+  var srv = MakeTestLspServer(notifications)
+  srv.caps = {textDocumentSync: 2}
+  capabilities.ProcessServerCaps(srv, srv.caps)
+  srv.isDocumentHighlightProvider = true
+  srv.running = true
+  srv.ready = true
+  var lastId = 0
+  srv.rpc_a = (_, _, _) => {
+    lastId += 1
+    return lastId
+  }
+
+  silent! edit XCancelOnDetach1.txt
+  var bnr1 = bufnr()
+  silent! new XCancelOnDetach2.txt
+  var bnr2 = bufnr()
+  buf.BufLspServerSet(bnr1, srv)
+  buf.BufLspServerSet(bnr2, srv)
+  srv.docHighlight(bnr2, 'silent')
+  wincmd p
+  srv.docHighlight(bnr1, 'silent')
+
+  lsp.RemoveFile(bnr1)
+  assert_equal([['$/cancelRequest', {id: 2}],
+		['textDocument/didClose',
+		 {textDocument: {uri: util.LspBufnrToUri(bnr1)}}]],
+	       notifications->mapnew((_, n) => [n.method, n.params]))
+  assert_equal([$'textDocument/documentHighlight {bnr2}'],
+	       srv.supersedableRequests->keys())
+
+  lsp.RemoveFile(bnr2)
+  assert_equal({}, srv.supersedableRequests)
+  :%bw!
+enddef
+
 def g:Test_ProcessApplyEditReq_SuccesssfulEdit()
   var lspserver = MakeTestLspServer([])
   var responses: list<dict<any>> = []
@@ -2723,7 +2864,7 @@ def g:Test_ApplyCodeAction_RoutesToOriginServer_AfterBufferSwitch()
     }
   ]
 
-  silent! edit! XCodeActionRoutingOther.txt
+  silent! hide edit XCodeActionRoutingOther.txt
   setline(1, ['other'])
   assert_notequal(originBnr, bufnr())
 
@@ -4457,6 +4598,8 @@ def g:Test_ApplyWorkspaceEdit_RenameDetachesBuffer()
     var bnr = bufnr()
     var srv = MakeTestLspServer(notifications)
     srv.running = true
+    # The document is open only once the server is ready
+    srv.ready = true
     srv.supportsDidOpenClose = true
     buf.BufLspServerSet(bnr, srv)
     ApplyResourceOp(MakeRename(from, to))
