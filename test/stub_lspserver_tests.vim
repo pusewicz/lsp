@@ -337,7 +337,8 @@ def g:Test_ServerState_StaysTyped()
     workDoneProgressTokens: 'dict<bool>',
     cachedBufferContent: 'dict<list<string>>',
     cachedBufferEol: 'dict<bool>',
-    docVersions: 'dict<number>'
+    docVersions: 'dict<number>',
+    docBufnrs: 'dict<number>'
   }
   # typename() gives the type of an empty dict or list only when it has one.
   var AssertTyped = (lspserver: dict<any>, when: string) => {
@@ -425,77 +426,110 @@ def MakeRecordingLspServer(messages: list<dict<any>>): dict<any>
   return lspserver
 enddef
 
-# Test that a request made right after a change, before Vim passes the change
-# to the listeners (e.g. in a mapping or an autocmd), is sent after the
-# change, so that the formatting is for the new text.
-def g:Test_Rpc_SendsPendingChangesFirst()
-  silent! edit XRpcPendingChanges.txt
-  setline(1, ['old'])
-  var bnr = bufnr()
-  var messages: list<dict<any>> = []
+# Edit two buffers in split windows and open their documents on a recording
+# test language server, with a listener sending the changes of each, as
+# attaching a buffer does.  The server replies to the first synchronous
+# requests with "results".  Returns [lspserver, bufnrs, listenerIds].
+def OpenTwoTestDocuments(messages: list<dict<any>>,
+			 results: list<any>): list<any>
+  silent! edit XPendingChanges1.txt
+  setline(1, ['one'])
+  silent! new XPendingChanges2.txt
+  setline(1, ['two'])
+  var bufnrs = [bufnr('XPendingChanges1.txt'), bufnr('XPendingChanges2.txt')]
   var lspserver = MakeRecordingLspServer(messages)
   lspserver.isDocumentFormattingProvider = true
-  lspserver.job = StartStubServerJob(
-    [{jsonrpc: '2.0', id: lspserver.nextSyncRpcId, result: []}])
-  buf.BufLspServerSet(bnr, lspserver)
-  var listenerId = listener_add((changedBnr, _, _, _, _) => {
-    lspserver.textdocDidChange(changedBnr)
-  }, bnr)
-  try
-    setline(1, 'new')
-    lspserver.textDocFormat(@%, false, 0, 0)
-
-    assert_equal(['textDocument/didChange', 'textDocument/formatting'],
-		 messages->mapnew((_, msg) => msg.method))
-    assert_equal([{text: "new\n"}], messages[0].params.contentChanges)
-  finally
-    listener_remove(listenerId)
-    job_stop(lspserver.job)
-    buf.BufLspServerRemove(bnr, lspserver)
-    :%bw!
-  endtry
-enddef
-
-# Test that an asynchronous request is sent after the pending changes of all
-# the buffers attached to the language server, not only of the buffer it is
-# about: the reply can depend on them, e.g. for the references in other files.
-def g:Test_AsyncRpc_SendsPendingChangesOfAllBuffersFirst()
-  silent! edit XAsyncRpcPendingChanges1.txt
-  setline(1, ['one'])
-  var bnr1 = bufnr()
-  silent! new XAsyncRpcPendingChanges2.txt
-  var bnr2 = bufnr()
-  var messages: list<dict<any>> = []
-  var lspserver = MakeRecordingLspServer(messages)
-  lspserver.job = StartStubServerJob([])
+  lspserver.job = StartStubServerJob(results->mapnew((i, result) => ({
+    jsonrpc: '2.0', id: lspserver.nextSyncRpcId + i, result: result})))
   var listenerIds: list<number> = []
-  for bnr in [bnr1, bnr2]
+  for bnr in bufnrs
     buf.BufLspServerSet(bnr, lspserver)
+    lspserver.textdocDidOpen(bnr, 'text')
     listenerIds->add(listener_add((changedBnr, _, _, _, _) => {
       lspserver.textdocDidChange(changedBnr)
     }, bnr))
   endfor
+  return [lspserver, bufnrs, listenerIds]
+enddef
+
+# Undo OpenTwoTestDocuments().
+def CloseTwoTestDocuments(lspserver: dict<any>, bufnrs: list<number>,
+			  listenerIds: list<number>)
+  for id in listenerIds
+    listener_remove(id)
+  endfor
+  job_stop(lspserver.job)
+  for bnr in bufnrs
+    buf.BufLspServerRemove(bnr, lspserver)
+  endfor
+  :%bw!
+enddef
+
+# Test that a request made right after a change, before Vim passes the change
+# to the listeners (e.g. in a mapping or an autocmd), is sent after the
+# change, so that the formatting is for the new text.  Only the change to the
+# document that the request is about is sent first.
+def g:Test_Rpc_SendsPendingChangesOfItsDocumentFirst()
+  var messages: list<dict<any>> = []
+  var [lspserver, bufnrs, listenerIds] = OpenTwoTestDocuments(messages, [[]])
+  try
+    setbufline(bufnrs[0], 1, 'ONE')
+    setbufline(bufnrs[1], 1, 'TWO')
+    lspserver.textDocFormat(bufnrs[0]->bufname(), false, 0, 0)
+
+    assert_equal(['textDocument/didChange', 'textDocument/formatting'],
+		 messages->mapnew((_, msg) => msg.method))
+    assert_equal(util.LspBufnrToUri(bufnrs[0]),
+		 messages[0].params.textDocument.uri)
+    assert_equal([{text: "ONE\n"}], messages[0].params.contentChanges)
+  finally
+    CloseTwoTestDocuments(lspserver, bufnrs, listenerIds)
+  endtry
+enddef
+
+# Test that a request whose reply can refer to other documents, like the
+# references, is sent after the pending changes of all the open documents.
+def g:Test_Rpc_SendsPendingChangesOfAllDocumentsForReferences()
+  var messages: list<dict<any>> = []
+  var [lspserver, bufnrs, listenerIds] = OpenTwoTestDocuments(messages, [[]])
+  try
+    setbufline(bufnrs[1], 1, 'TWO')
+    lspserver.rpc('textDocument/references', {
+      textDocument: {uri: util.LspBufnrToUri(bufnrs[0])},
+      position: {line: 0, character: 0},
+      context: {includeDeclaration: true}
+    })
+
+    assert_equal(['textDocument/didChange', 'textDocument/references'],
+		 messages->mapnew((_, msg) => msg.method))
+    assert_equal(util.LspBufnrToUri(bufnrs[1]),
+		 messages[0].params.textDocument.uri)
+    assert_equal([{text: "TWO\n"}], messages[0].params.contentChanges)
+  finally
+    CloseTwoTestDocuments(lspserver, bufnrs, listenerIds)
+  endtry
+enddef
+
+# Test that an asynchronous request that doesn't name a document is sent
+# after the pending changes of all the open documents.
+def g:Test_AsyncRpc_SendsPendingChangesOfAllDocumentsForWorkspaceRequest()
+  var messages: list<dict<any>> = []
+  var [lspserver, bufnrs, listenerIds] = OpenTwoTestDocuments(messages, [])
   # Send the request asynchronously, as outside the tests
   g:LSPTest = false
   try
-    setbufline(bnr1, 1, 'ONE')
+    setbufline(bufnrs[0], 1, 'ONE')
     lspserver.rpc_a('workspace/symbol', {query: ''}, (_, _, _) => {
     })
 
     assert_equal(['textDocument/didChange', 'workspace/symbol'],
 		 messages->mapnew((_, msg) => msg.method))
-    assert_equal(util.LspBufnrToUri(bnr1),
+    assert_equal(util.LspBufnrToUri(bufnrs[0]),
 		 messages[0].params.textDocument.uri)
     assert_equal([{text: "ONE\n"}], messages[0].params.contentChanges)
   finally
     g:LSPTest = true
-    for id in listenerIds
-      listener_remove(id)
-    endfor
-    job_stop(lspserver.job)
-    buf.BufLspServerRemove(bnr1, lspserver)
-    buf.BufLspServerRemove(bnr2, lspserver)
-    :%bw!
+    CloseTwoTestDocuments(lspserver, bufnrs, listenerIds)
   endtry
 enddef
 
@@ -833,6 +867,67 @@ def g:Test_PullDiagnostics_RetriesStaleRequest()
   :%bw!
 enddef
 
+# Returns a running test language server providing pull diagnostics, which
+# adds the buffer number of each document it pulls the diagnostics of to
+# "pulled".
+def MakePullDiagnosticsTestLspServer(pulled: list<number>): dict<any>
+  var lspserver = MakeTestLspServer([])
+  lspserver.running = true
+  lspserver.ready = true
+  lspserver.isDiagnosticsProvider = true
+  lspserver.sendResponse = (_, _, _) => {
+  }
+  lspserver.pullDiagnostics = (bnr: number) => {
+    pulled->add(bnr)
+  }
+  return lspserver
+enddef
+
+# Test that a "workspace/diagnostic/refresh" request, and the end of the work
+# of the server, pull the diagnostics of every document open on that server.
+# Not of a buffer attached to it whose document isn't open yet, and not of a
+# document open on another server only.
+def g:Test_DiagnosticRefresh_PullsDocumentsOpenOnTheServer()
+  var bufnrs: list<number> = []
+  for i in range(4)
+    exe $'silent! new XDiagRefresh{i}.txt'
+    bufnrs->add(bufnr())
+  endfor
+  var pulled: list<number> = []
+  var otherPulled: list<number> = []
+  var lspserver = MakePullDiagnosticsTestLspServer(pulled)
+  var otherServer = MakePullDiagnosticsTestLspServer(otherPulled)
+  for bnr in bufnrs[0 : 2]
+    buf.BufLspServerSet(bnr, lspserver)
+  endfor
+  lspserver.textdocDidOpen(bufnrs[0], 'text')
+  lspserver.textdocDidOpen(bufnrs[1], 'text')
+  for bnr in [bufnrs[0], bufnrs[3]]
+    buf.BufLspServerSet(bnr, otherServer)
+    otherServer.textdocDidOpen(bnr, 'text')
+  endfor
+  try
+    lspserver.processRequest({jsonrpc: '2.0', id: 1,
+			      method: 'workspace/diagnostic/refresh'})
+    assert_equal(bufnrs[0 : 1], pulled->sort('n'))
+    assert_equal([], otherPulled)
+
+    lspserver.queuePullDiagnosticsAllBuffers()
+    assert_equal(bufnrs[0 : 1],
+		 lspserver.pendingPullBufnrs->keys()->map((_, k) => str2nr(k))
+		 ->sort('n'))
+  finally
+    if lspserver.diagnosticPullTimer != -1
+      timer_stop(lspserver.diagnosticPullTimer)
+    endif
+    for bnr in bufnrs
+      buf.BufLspServerRemove(bnr, lspserver)
+      buf.BufLspServerRemove(bnr, otherServer)
+    endfor
+    :%bw!
+  endtry
+enddef
+
 def g:Test_DiagNotification_PushAndPull_AreBothRetained()
   g:LspOptionsSet({autoHighlightDiags: false})
   silent! edit XPushPullDiagnosticsRetained.rs
@@ -952,6 +1047,92 @@ def g:Test_ProcessNotif_PublishDiagnostics_NotIgnoredForPullCapableServer()
   assert_equal('publish diagnostics processed', allDiags[0].message)
 
   diag.DiagRemoveFile(bufnr())
+  g:LspOptionsSet({autoHighlightDiags: true})
+  :%bw!
+enddef
+
+# Return a textDocument/publishDiagnostics notification for "uri" with a
+# diagnostic on the first line for each of "messages".
+def PublishDiagsNotif(uri: string, messages: list<string>): dict<any>
+  return {
+    jsonrpc: '2.0',
+    method: 'textDocument/publishDiagnostics',
+    params: {
+      uri: uri,
+      diagnostics: messages->mapnew((_, msg) => MakeLineDiag(0, msg))
+    }
+  }
+enddef
+
+# Test that the diagnostics published for a document open on the language
+# server reach its buffer through the URI it was opened with, also when the
+# server escapes that URI differently, without looking up a buffer by its
+# file name.  The URIs name a file without a buffer, so that only the
+# documents open on the server lead to the buffer.
+def g:Test_PublishDiagnostics_FoundByOpenDocumentUri()
+  g:LspOptionsSet({autoHighlightDiags: false})
+  silent! edit XDiagOpenDocument.c
+  var bnr = bufnr()
+  var lspserver = MakeDiagServer('srv')
+  var fname = '/XDiagNoSuchDir/a+b[1] c.c'
+  var uri = util.LspFileToUri(fname)
+  lspserver.docBufnrs[uri] = bnr
+
+  for publishedUri in [uri, 'file:///XDiagNoSuchDir/a+b%5b1%5d%20c.c']
+    handlers.ProcessNotif(lspserver,
+      PublishDiagsNotif(publishedUri, [publishedUri]))
+    assert_equal([publishedUri], DiagMsgs(diag.GetDiagsForBuf(bnr)))
+  endfor
+  assert_false(fname->bufexists())
+
+  diag.DiagRemoveFile(bnr)
+  g:LspOptionsSet({autoHighlightDiags: true})
+  :%bw!
+enddef
+
+# Test that the diagnostics published for a document that isn't open on the
+# language server reach the buffer with its file name: a document never
+# opened, a closed document (a server clears the diagnostics of a document
+# when it is closed) and one whose buffer in the open documents is gone.  The
+# diagnostics for a file without a buffer are dropped, without adding one.
+def g:Test_PublishDiagnostics_UnopenedDocumentFoundByFileName()
+  g:LspOptionsSet({autoHighlightDiags: false})
+  var lspserver = MakeDiagServer('srv')
+
+  silent! edit XDiagNotOpened.c
+  var notOpened = bufnr()
+  var notOpenedUri = util.LspBufnrToUri(notOpened)
+  handlers.ProcessNotif(lspserver,
+    PublishDiagsNotif(notOpenedUri, ['not opened']))
+  assert_equal(['not opened'], DiagMsgs(diag.GetDiagsForBuf(notOpened)))
+
+  silent! edit XDiagClosed.c
+  var closed = bufnr()
+  var closedUri = util.LspBufnrToUri(closed)
+  lspserver.textdocDidOpen(closed, 'c')
+  handlers.ProcessNotif(lspserver, PublishDiagsNotif(closedUri, ['open']))
+  assert_equal(['open'], DiagMsgs(diag.GetDiagsForBuf(closed)))
+  lspserver.textdocDidClose(closed)
+  assert_false(lspserver.docBufnrs->has_key(closedUri))
+  handlers.ProcessNotif(lspserver, PublishDiagsNotif(closedUri, []))
+  assert_equal([], diag.GetDiagsForBuf(closed))
+
+  silent! edit XDiagWipedOut.c
+  var wipedOut = bufnr()
+  :bwipeout!
+  lspserver.docBufnrs[notOpenedUri] = wipedOut
+  handlers.ProcessNotif(lspserver,
+    PublishDiagsNotif(notOpenedUri, ['stale open document']))
+  assert_equal(['stale open document'],
+    DiagMsgs(diag.GetDiagsForBuf(notOpened)))
+
+  var noBuffer = 'XDiagNoBuffer.c'->fnamemodify(':p')
+  handlers.ProcessNotif(lspserver,
+    PublishDiagsNotif(util.LspFileToUri(noBuffer), ['no buffer']))
+  assert_false(noBuffer->bufexists())
+
+  diag.DiagRemoveFile(notOpened)
+  diag.DiagRemoveFile(closed)
   g:LspOptionsSet({autoHighlightDiags: true})
   :%bw!
 enddef
@@ -3468,6 +3649,143 @@ def g:Test_ApplyWorkspaceEdit_EditsEmptyFile()
   endtry
 enddef
 
+# Returns pairs of a file name and the name of a decoy file.  Used as a file
+# pattern, like bufnr() and bufwinid() use a String, the file name matches the
+# whole decoy file name or a part of it.
+def PatternDecoys(): list<list<string>>
+  return [
+    ['XExactName[1].c', 'XExactName1.c'],
+    ['XExactName*.c', 'XExactNameb.c'],
+    ['XExactName.c', 'XExactName.c.orig']
+  ]
+enddef
+
+# Returns "result" in a reply to a request.  Stands in for lspserver.rpc().
+def StubRpcReply(result: any, method: string, params: any,
+		 opts: dict<any> = {}): dict<any>
+  return {result: result->deepcopy()}
+enddef
+
+# Returns a running and ready language server that replies "result" to every
+# request.
+def MakeReplyingLspServer(result: any): dict<any>
+  var lspserver = MakeTestLspServer([])
+  lspserver.running = true
+  lspserver.ready = true
+  lspserver.rpc = function(StubRpcReply, [result])
+  return lspserver
+enddef
+
+# Test that the diagnostics for a file are stored for the buffer of the file,
+# not for a buffer that the file name matches as a file pattern.
+def g:Test_DiagNotification_FileNameIsNotAPattern()
+  DiagInitOnce()
+  for [target, decoy] in PatternDecoys()
+    writefile(['int target;'], target)
+    writefile(['int decoy;'], decoy)
+    try
+      exe $'edit {decoy->fnameescape()}'
+      var decoyBnr = bufnr()
+      # An unlisted buffer, like the buffer of a file changed by a workspace
+      # edit
+      var targetBnr = target->bufadd()
+      targetBnr->bufload()
+
+      diag.DiagNotification(MakeDiagServer('srv'), util.LspFileToUri(target),
+			    [MakeLineDiag(0, 'target diag')], 'push')
+      var targetMsgs = diag.GetDiagsForBuf(targetBnr)
+	->mapnew((_, d) => d.message)
+      assert_equal(['target diag'], targetMsgs, target)
+      assert_equal([], diag.GetDiagsForBuf(decoyBnr), target)
+      diag.DiagRemoveFile(targetBnr)
+      diag.DiagRemoveFile(decoyBnr)
+    finally
+      :%bw!
+      delete(target)
+      delete(decoy)
+    endtry
+  endfor
+enddef
+
+# Test that ":LspGotoDefinition" jumps to the buffer of the file with the
+# definition, not to a buffer that the file name matches as a file pattern.
+def g:Test_LspGotoDefinition_FileNameIsNotAPattern()
+  var pos = {line: 0, character: 4}
+  for [target, decoy] in PatternDecoys()
+    writefile(['int target;'], target)
+    writefile(['int decoy;'], decoy)
+    var lspserver = MakeReplyingLspServer(
+      {uri: util.LspFileToUri(target), range: {start: pos, end: pos}})
+    lspserver.isDefinitionProvider = true
+    try
+      exe $'edit {decoy->fnameescape()}'
+      edit XGotoSource.c
+      var srcBnr = bufnr()
+      buf.BufLspServerSet(srcBnr, lspserver)
+      :LspGotoDefinition
+      buf.BufLspServerRemove(srcBnr, lspserver)
+      assert_equal([target, 'int target;', [1, 5]],
+		   [expand('%:t'), getline(1), getpos('.')[1 : 2]], target)
+    finally
+      :%bw!
+      delete(target)
+      delete(decoy)
+    endtry
+  endfor
+enddef
+
+# Test that ":LspFormat" changes the current buffer, not a buffer that the name
+# of the current file matches as a file pattern.
+def g:Test_LspFormat_FileNameIsNotAPattern()
+  for [target, decoy] in PatternDecoys()
+    writefile(['int  target;'], target)
+    writefile(['int  decoy;'], decoy)
+    var lspserver = MakeReplyingLspServer([MakeTextEdit(0, 3, 0, 4, '')])
+    lspserver.isDocumentFormattingProvider = true
+    try
+      exe $'edit {decoy->fnameescape()}'
+      var decoyBnr = bufnr()
+      exe $'edit {target->fnameescape()}'
+      buf.BufLspServerSet(bufnr(), lspserver)
+      :LspFormat
+      buf.BufLspServerRemove(bufnr(), lspserver)
+      assert_equal(['int target;'], getline(1, '$'), target)
+      assert_false(decoyBnr->getbufvar('&modified'), target)
+    finally
+      :%bw!
+      delete(target)
+      delete(decoy)
+    endtry
+  endfor
+enddef
+
+# Test that a workspace edit changes the buffer of the file it is for, not a
+# buffer that the file name matches as a file pattern.
+def g:Test_ApplyWorkspaceEdit_FileNameIsNotAPattern()
+  for [target, decoy] in PatternDecoys()
+    writefile(['int target;'], target)
+    writefile(['int decoy;'], decoy)
+    var uri = util.LspFileToUri(target)
+    var changes = {changes: {[uri]: [MakeTextEdit(0, 4, 0, 10, 'edited')]}}
+    var docEdit = {textDocument: {uri: uri, version: v:null},
+		   edits: [MakeTextEdit(0, 0, 0, 3, 'long')]}
+    try
+      exe $'edit {decoy->fnameescape()}'
+      var decoyBnr = bufnr()
+      textedit.ApplyWorkspaceEdit(changes)
+      textedit.ApplyWorkspaceEdit({documentChanges: [docEdit]})
+      assert_equal(['long edited;'], target->bufadd()->getbufline(1, '$'),
+		   target)
+      assert_equal(['int decoy;'], decoyBnr->getbufline(1, '$'), target)
+      assert_false(decoyBnr->getbufvar('&modified'), target)
+    finally
+      :%bw!
+      delete(target)
+      delete(decoy)
+    endtry
+  endfor
+enddef
+
 # Returns a TextDocumentEdit inserting "text" at the start of the document
 # with URI "uri".
 def MakeInsertEdit(uri: string, text: string): dict<any>
@@ -4136,6 +4454,283 @@ def g:Test_DocumentLinkOpen_ExternalUri()
     delete('XDocLinkOpener')
     delete('XDocLinkOpened')
     delete('XDocLinkPwned')
+  endtry
+enddef
+
+# Returns a running language server with the document symbols and the call
+# hierarchy of the function in "XScratchSrc.c".
+def MakeScratchServer(): dict<any>
+  var lspserver = MakeTestLspServer([])
+  lspserver.running = true
+  lspserver.ready = true
+  lspserver.isDocumentSymbolProvider = true
+  lspserver.isCallHierarchyProvider = true
+  var range = {start: {line: 0, character: 5}, end: {line: 0, character: 17}}
+  var item = {name: 'xScratchFunc', kind: 12, range: range,
+	      selectionRange: range, uri: util.LspFileToUri('XScratchSrc.c')}
+  lspserver.rpc_a = (method: string, params: any, Cbfunc: func): number => {
+    Cbfunc(lspserver, [item->deepcopy()], {})
+    return 1
+  }
+  lspserver.rpc = (method: string, params: any): dict<any> => {
+    if method == 'textDocument/prepareCallHierarchy'
+      return {result: [item->deepcopy()]}
+    endif
+    return {result: [{from: item->deepcopy(), fromRanges: []}]}
+  }
+  return lspserver
+enddef
+
+# Edits "XScratchSrc.c" in the current window, with the language server
+# "lspserver" for it.  Returns the buffer number.
+def ScratchSrcEdit(lspserver: dict<any>): number
+  :silent edit XScratchSrc.c
+  setline(1, 'void xScratchFunc(void) {}')
+  :setlocal filetype=text
+  buf.BufLspServerSet(bufnr(), lspserver)
+  cursor(1, 6)
+  return bufnr()
+enddef
+
+# Shows the hover text from "lspserver" in the preview window.
+def ScratchHoverShow(lspserver: dict<any>)
+  g:LspOptionsSet({hoverInPreview: true})
+  try
+    var hoverResult = {contents: {kind: 'plaintext', value: 'xScratchFunc doc'}}
+    hover.HoverReply(lspserver, hoverResult, {})
+  finally
+    g:LspOptionsSet({hoverInPreview: false})
+  endtry
+enddef
+
+# Returns each kind of scratch buffer of the plugin: its name, a line of its
+# text, and a function that shows it when the cursor is in the window of
+# "XScratchSrc.c" with the language server "lspserver".
+def ScratchKinds(lspserver: dict<any>): list<dict<any>>
+  return [
+    {name: 'LSP-Outline', line: 'Function@',
+     Open: () => execute('LspOutline')},
+    {name: 'LSP-CallHierarchy', line: '# Incoming calls to "xScratchFunc"',
+     Open: () => execute('LspIncomingCalls')},
+    {name: 'Language-Servers', line: 'Filetype Information',
+     Open: () => execute('LspShowAllServers')},
+    {name: 'LangServer-Capabilities',
+     line: "'test' Language Server Capabilities",
+     Open: () => execute('LspServer show capabilities')},
+    {name: 'LspHover', line: 'xScratchFunc doc',
+     Open: function(ScratchHoverShow, [lspserver])}
+  ]
+enddef
+
+# Returns the numbers of the buffers with 'buftype' "nofile" in the windows of
+# the current tab page.
+def ScratchBufsInTab(): list<number>
+  return tabpagebuflist()
+    ->filter((_, bnr) => getbufvar(bnr, '&buftype') == 'nofile')
+    ->sort()
+    ->uniq()
+enddef
+
+# Test that the scratch windows of the plugin show buffers of their own, not
+# a buffer of the user with a name like the name of the scratch buffer or the
+# same name, whether a window shows the buffer of the user or not.
+def g:Test_ScratchWindow_KeepsUserBuffer()
+  var lspserver = MakeScratchServer()
+  for kind in ScratchKinds(lspserver)
+    for decoy in [$'my-{kind.name}.txt', kind.name]
+      for shown in [true, false]
+	var ctx = $'{kind.name}, user buffer "{decoy}" shown: {shown}'
+	var srcBnr = -1
+	try
+	  srcBnr = ScratchSrcEdit(lspserver)
+	  var srcWinid = win_getid()
+	  exe $'silent split {decoy->fnameescape()}'
+	  setline(1, ['user text'])
+	  var decoyBnr = bufnr()
+	  if !shown
+	    :hide
+	  endif
+	  srcWinid->win_gotoid()
+
+	  kind.Open()
+
+	  assert_equal([decoy, ['user text'], 1, ''],
+	    [decoyBnr->bufname(), decoyBnr->getbufline(1, '$'),
+	     getbufinfo(decoyBnr)[0].changed, getbufvar(decoyBnr, '&buftype')],
+	    ctx)
+	  var scratch = ScratchBufsInTab()
+	  assert_equal(1, scratch->len(), ctx)
+	  if !scratch->empty()
+	    assert_notequal(-1, scratch[0]->getbufline(1, '$')->index(kind.line),
+			    ctx)
+	    if decoy != kind.name
+	      assert_equal(kind.name, scratch[0]->bufname(), ctx)
+	    endif
+	  endif
+	finally
+	  buf.BufLspServerRemove(srcBnr, lspserver)
+	  :%bw!
+	endtry
+      endfor
+    endfor
+  endfor
+enddef
+
+# Test that the scratch windows of the plugin are reused, and opened again,
+# after a change of the current directory.
+def g:Test_ScratchWindow_AfterCd()
+  var lspserver = MakeScratchServer()
+  var cwd = getcwd()
+  mkdir('XScratchDir')
+  try
+    for kind in ScratchKinds(lspserver)
+      var srcBnr = -1
+      try
+	srcBnr = ScratchSrcEdit(lspserver)
+	var srcWinid = win_getid()
+	kind.Open()
+	var scratch = ScratchBufsInTab()
+	var winCount = winnr('$')
+
+	chdir('XScratchDir')
+	srcWinid->win_gotoid()
+	kind.Open()
+	assert_equal([scratch, winCount], [ScratchBufsInTab(), winnr('$')],
+		     kind.name)
+	assert_notequal(-1, scratch[0]->getbufline(1, '$')->index(kind.line),
+			kind.name)
+
+	win_execute(scratch[0]->bufwinid(), 'close')
+	srcWinid->win_gotoid()
+	kind.Open()
+	var newScratch = ScratchBufsInTab()
+	assert_equal(1, newScratch->len(), kind.name)
+	assert_notequal(scratch, newScratch, kind.name)
+	assert_equal(kind.name, newScratch[0]->bufname(), kind.name)
+	assert_notequal(-1, newScratch[0]->getbufline(1, '$')->index(kind.line),
+			kind.name)
+      finally
+	chdir(cwd)
+	buf.BufLspServerRemove(srcBnr, lspserver)
+	:%bw!
+      endtry
+    endfor
+  finally
+    delete('XScratchDir', 'd')
+  endtry
+enddef
+
+# Test that the scratch windows of the plugin open again after the user wipes
+# out their buffers.
+def g:Test_ScratchWindow_AfterWipeOut()
+  var lspserver = MakeScratchServer()
+  for kind in ScratchKinds(lspserver)
+    var srcBnr = -1
+    try
+      srcBnr = ScratchSrcEdit(lspserver)
+      var srcWinid = win_getid()
+      kind.Open()
+      var scratch = ScratchBufsInTab()
+      exe $'bwipeout! {scratch[0]}'
+
+      srcWinid->win_gotoid()
+      kind.Open()
+      var newScratch = ScratchBufsInTab()
+      assert_equal(1, newScratch->len(), kind.name)
+      assert_notequal(scratch, newScratch, kind.name)
+      assert_equal(kind.name, newScratch[0]->bufname(), kind.name)
+      assert_notequal(-1, newScratch[0]->getbufline(1, '$')->index(kind.line),
+		      kind.name)
+    finally
+      buf.BufLspServerRemove(srcBnr, lspserver)
+      :%bw!
+    endtry
+  endfor
+enddef
+
+# Test that a scratch window of the plugin opens in a second tab page and
+# shows the same buffer there.
+def g:Test_ScratchWindow_InTwoTabPages()
+  var lspserver = MakeScratchServer()
+  for kind in ScratchKinds(lspserver)
+    var srcBnr = -1
+    try
+      srcBnr = ScratchSrcEdit(lspserver)
+      var srcWinid = win_getid()
+      kind.Open()
+      var scratch = ScratchBufsInTab()
+
+      srcWinid->win_gotoid()
+      :tab split
+      kind.Open()
+      assert_equal([2, scratch], [tabpagenr(), ScratchBufsInTab()], kind.name)
+      assert_notequal(-1, scratch[0]->getbufline(1, '$')->index(kind.line),
+		      kind.name)
+    finally
+      buf.BufLspServerRemove(srcBnr, lspserver)
+      :%bw!
+    endtry
+  endfor
+enddef
+
+# Test that ":LspOutline close" and ":LspOutline toggle" close the outline
+# window, not the window of a buffer with a name like "LSP-Outline", and that
+# unloading such a buffer keeps the outline autocmds.
+def g:Test_LspOutline_KeepsBufferWithSimilarName()
+  var lspserver = MakeScratchServer()
+  var srcBnr = -1
+  try
+    srcBnr = ScratchSrcEdit(lspserver)
+    var srcWinid = win_getid()
+    :silent split my-LSP-Outline.txt
+    var decoyWinid = win_getid()
+    srcWinid->win_gotoid()
+    :LspOutline
+    assert_equal(1, ScratchBufsInTab()->len())
+
+    :silent split XScratchDir/LSP-Outline
+    :bwipeout
+    assert_true(exists('#LSPOutline#BufEnter'))
+
+    srcWinid->win_gotoid()
+    :LspOutline close
+    assert_equal([], ScratchBufsInTab())
+    :LspOutline toggle
+    assert_equal(1, ScratchBufsInTab()->len())
+    :LspOutline toggle
+    assert_equal([], ScratchBufsInTab())
+    assert_notequal(0, decoyWinid->win_id2win())
+  finally
+    buf.BufLspServerRemove(srcBnr, lspserver)
+    :%bw!
+  endtry
+enddef
+
+# Test that the hover text doesn't replace the text of a modified buffer of the
+# user in the preview window, which the preview window can't leave.
+def g:Test_HoverInPreview_KeepsModifiedPreviewBuffer()
+  var lspserver = MakeScratchServer()
+  var srcBnr = -1
+  try
+    srcBnr = ScratchSrcEdit(lspserver)
+    :silent pedit XScratchNotes.txt
+    :wincmd P
+    setline(1, ['user text'])
+    var notesBnr = bufnr()
+    :wincmd p
+
+    var exception = ''
+    try
+      ScratchHoverShow(lspserver)
+    catch
+      exception = v:exception
+    endtry
+    assert_match('E37:', exception)
+    assert_equal([['user text'], ''],
+		 [notesBnr->getbufline(1, '$'), getbufvar(notesBnr, '&buftype')])
+  finally
+    buf.BufLspServerRemove(srcBnr, lspserver)
+    :%bw!
   endtry
 enddef
 

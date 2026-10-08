@@ -7,6 +7,7 @@ var lspServers = [{
       filetype: ['go'],
       path: exepath('gopls'),
       args: ['serve'],
+      debug: g:LspServerDebug(),
       initializationOptions: {
         analyses: {
           unusedparams: true,

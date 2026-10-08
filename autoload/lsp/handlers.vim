@@ -7,7 +7,6 @@ vim9script
 import './util.vim'
 import './diag.vim'
 import './textedit.vim'
-import './buffer.vim' as buf
 
 # process a diagnostic notification message from the LSP server
 # Notification: textDocument/publishDiagnostics
@@ -385,7 +384,7 @@ def ProcessDiagnosticRefreshReq(lspserver: dict<any>, request: dict<any>)
   endif
 
   lspserver.sendResponse(request, null, {})
-  for bnr in buf.BufGetServerBufnrs(lspserver)
+  for bnr in lspserver.docBufnrs->values()
     lspserver.pullDiagnostics(bnr)
   endfor
 enddef
