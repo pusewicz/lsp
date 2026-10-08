@@ -5881,9 +5881,10 @@ def MakeDocSymbolsServer(hierarchical: bool): dict<any>
 enddef
 
 # Test the outline for both kinds of reply to a "textDocument/documentSymbol"
-# request: the symbols that it shows, the symbol that it highlights for a line
-# of the document, the detail that "K" shows for a symbol, and the location
-# that selecting a symbol jumps to.
+# request: the symbols that it shows, grouped by kind in the order of the LSP
+# SymbolKind numbers, the symbol that it highlights for a line of the
+# document, the detail that "K" shows for a symbol, and the location that
+# selecting a symbol jumps to.
 def g:Test_LspOutline_DocumentSymbolAndSymbolInformation()
   var cases = [
     {hierarchical: true, ctx: 'DocumentSymbol[]',
@@ -5893,7 +5894,7 @@ def g:Test_LspOutline_DocumentSymbolAndSymbolInformation()
 	       ['      aField', 'aField: int', 2, 7],
 	       ['  bFunc', 'bFunc: void (void)', 4, 6]]},
     {hierarchical: false, ctx: 'SymbolInformation[]',
-     text: ['', 'Function@', '  bFunc', '', 'Field@', '  aField [aStruct]', '',
+     text: ['', 'Field@', '  aField [aStruct]', '', 'Function@', '  bFunc', '',
 	    'Struct@', '  aStruct'],
      symbols: [['  aStruct', 'aStruct', 1, 1],
 	       ['  aField [aStruct]', 'aField [aStruct]', 2, 3],

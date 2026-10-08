@@ -370,34 +370,39 @@ def g:Test_Outline_multibyte()
   cursor(1, 1)
   :LspOutline
   assert_equal(2, winnr('$'))
-
-  :wincmd w
-  cursor(5, 1)
-  feedkeys("\<CR>", 'xt')
-  assert_equal([2, 5, 18], [winnr(), line('.'), col('.')])
-
-  :wincmd w
-  cursor(6, 1)
-  feedkeys("\<CR>", 'xt')
-  assert_equal([2, 9, 14], [winnr(), line('.'), col('.')])
-
-  :wincmd w
-  cursor(7, 1)
-  feedkeys("\<CR>", 'xt')
-  assert_equal([2, 13, 22], [winnr(), line('.'), col('.')])
+  assert_equal(['Class@', '  😊😊😊😊',
+		"  a\u0301b\u0301a\u0301b\u0301",
+		"  " .. repeat("a\u0328\u0301", 4), '',
+		'Function@', '  Func1', '  Func2', '  Func3'],
+	       getbufline('LSP-Outline', 4, '$'))
 
   :wincmd w
   cursor(10, 1)
   feedkeys("\<CR>", 'xt')
-  assert_equal([2, 1, 14], [winnr(), line('.'), col('.')])
+  assert_equal([2, 5, 18], [winnr(), line('.'), col('.')])
 
   :wincmd w
   cursor(11, 1)
   feedkeys("\<CR>", 'xt')
-  assert_equal([2, 2, 14], [winnr(), line('.'), col('.')])
+  assert_equal([2, 9, 14], [winnr(), line('.'), col('.')])
 
   :wincmd w
   cursor(12, 1)
+  feedkeys("\<CR>", 'xt')
+  assert_equal([2, 13, 22], [winnr(), line('.'), col('.')])
+
+  :wincmd w
+  cursor(5, 1)
+  feedkeys("\<CR>", 'xt')
+  assert_equal([2, 1, 14], [winnr(), line('.'), col('.')])
+
+  :wincmd w
+  cursor(6, 1)
+  feedkeys("\<CR>", 'xt')
+  assert_equal([2, 2, 14], [winnr(), line('.'), col('.')])
+
+  :wincmd w
+  cursor(7, 1)
   feedkeys("\<CR>", 'xt')
   assert_equal([2, 3, 14], [winnr(), line('.'), col('.')])
 

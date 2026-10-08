@@ -602,6 +602,7 @@ def ProcessSymbolInfoTable(lspserver: dict<any>,
     endif
     symInfo = {
       name: name,
+      kind: syminfo.kind,
       range: r,
       selectionRange: r,
       detail: '',
@@ -644,6 +645,7 @@ def ProcessDocSymbolTable(lspserver: dict<any>,
     endif
     symInfo = {
       name: name,
+      kind: syminfo.kind,
       range: range,
       selectionRange: selectionRange,
       detail: symbolDetail,
