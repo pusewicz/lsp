@@ -836,6 +836,14 @@ def CheckCompletionItemSel(label: string): bool
   return userData->get('label', '') ==# label
 enddef
 
+# Return true when Vim shows the documentation of the selected completion item
+# in the info popup.  The "popup" and "popuphidden" values of 'completeopt'
+# override "preview".  The info popup is kept (hidden) when the completion menu
+# closes, so popup_findinfo() alone doesn't tell where the documentation goes.
+def CompletionInfoInPopup(): bool
+  return &completeopt =~ '\<popup\%(hidden\)\=\>'
+enddef
+
 # Clear the preview window contents.  This is needed only when 'completeopt'
 # contains 'preview'.
 def ClearCompletionPreviewContents()
@@ -921,7 +929,7 @@ def ShowCompletionDocumentation(cItem: any)
   endif
 
   # autoComplete or &omnifunc with &completeopt =~ 'popup'
-  var id = popup_findinfo()
+  var id = CompletionInfoInPopup() ? popup_findinfo() : 0
   if id > 0
     var bufnr = id->winbufnr()
     id->popup_settext(infoText)
@@ -1147,17 +1155,14 @@ def LspResolve()
 	ShowCompletionDocumentation(item.user_data)
       endif
   endif
-
-  LspSetPopupFileType()
 enddef
 
 # Configure the non-lazy documentation popup
 def LspCompleteConfigurePopup()
   var id = popup_findinfo()
-  if id == 0
-    return
+  if id > 0
+    id->popup_setoptions(opt.PopupConfigure('Completion', {}))
   endif
-  id->popup_setoptions(opt.PopupConfigure('Completion', {}))
 
   LspSetPopupFileType()
 enddef
@@ -1172,8 +1177,9 @@ def LspSetPreviewFileType(timer_id: number)
   endtry
 enddef
 
-# If the completion popup documentation window displays "markdown" content,
-# then set the 'filetype' to "lspgfm".
+# If the documentation of the selected completion item is "markdown" content,
+# then set the 'filetype' of the info popup or preview window displaying it to
+# "lspgfm".
 def LspSetPopupFileType()
   var item = v:event.completed_item
   var cItem = item->get('user_data', {})
@@ -1187,14 +1193,14 @@ def LspSetPopupFileType()
     return
   endif
 
-  if opt.lspOptions.completionInPreview
-    timer_start(0, 'LspSetPreviewFileType')
-  else
+  if CompletionInfoInPopup()
     var id = popup_findinfo()
     if id > 0
-      var bnum = id->winbufnr()
-      setbufvar(bnum, '&ft', 'lspgfm')
+      setbufvar(id->winbufnr(), '&ft', 'lspgfm')
     endif
+  elseif &completeopt =~ '\<preview\>'
+    # Changing windows is not allowed while handling CompleteChanged
+    timer_start(0, 'LspSetPreviewFileType')
   endif
 enddef
 

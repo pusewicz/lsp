@@ -1774,7 +1774,10 @@ hoverDelay		|Number| option. Debounce delay in milliseconds used
 completionInPreview	|Boolean| option. Show completion documentation
 			in the |preview-window| instead of a popup. When
 			enabled, the buffer 'completeopt' is set to include
-			'preview' (and not 'popup'). By default this is set
+			'preview' (and not 'popup'). This is done only when
+			|lsp-opt-autoComplete| is enabled; otherwise the
+			documentation is shown where 'completeopt' puts it
+			("popup" overrides "preview"). By default this is set
 			to false.
 
 						*lsp-opt-closePreviewOnComplete*
