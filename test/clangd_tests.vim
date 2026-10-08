@@ -302,7 +302,6 @@ def g:Test_LspFormat_PlugMappings()
   # Note: clangd range formatting sometimes appies beyond the specified range,
   # which is why there is a dummy function between the indented sets of ints
   edit! XLspFormat.c
-  sleep 200m
   nmap gq <plug>(LspFormat)
   setline(1, ['  int i;', '  int j;'])
   setline(3, ['', 'void foo() {}', ''])
