@@ -330,31 +330,6 @@ def DirBuffers(dir: string): list<number>
     ->map((_, b) => b.bufnr)
 enddef
 
-# Executes Ex command "cmd" with loaded buffer "bnr" as the current buffer and
-# returns its output.  The command runs in a window that shows the buffer, or
-# else in a hidden popup window that leaves no trace: opening and closing it
-# triggers no autocommands, and closing it does not unload the buffer
-# whatever its 'bufhidden' is.
-def ExecuteInBuffer(bnr: number, cmd: string): string
-  var winids: list<number> = bnr->win_findbuf()
-  if !winids->empty()
-    return win_execute(winids[0], cmd)
-  endif
-
-  var bufhidden: string = bnr->getbufvar('&bufhidden')
-  noautocmd setbufvar(bnr, '&bufhidden', '')
-  var winid: number
-  noautocmd winid = popup_create(bnr, {hidden: true})
-  var output: string
-  try
-    output = win_execute(winid, cmd)
-  finally
-    noautocmd popup_close(winid)
-    noautocmd setbufvar(bnr, '&bufhidden', bufhidden)
-  endtry
-  return output
-enddef
-
 # Names loaded buffer "bnr" "fname" after its file was renamed to "fname".
 # The buffer keeps its text, its undo history and its unsaved changes.  When
 # buffer "tbnr" was for the file the renamed file replaced, the windows that
@@ -371,7 +346,7 @@ def FollowRename(bnr: number, tbnr: number, fname: string)
 
   # ":file" keeps the old name in a new unlisted buffer.
   var oldName: string = bnr->getbufinfo()[0].name
-  ExecuteInBuffer(bnr, $'keepalt file {fname->fnameescape()}')
+  util.ExecuteInBuffer(bnr, $'keepalt file {fname->fnameescape()}')
   for b in getbufinfo()
     if b.bufnr != bnr && b.name ==# oldName
       exe $'bwipe {b.bufnr}'
@@ -384,7 +359,7 @@ def FollowRename(bnr: number, tbnr: number, fname: string)
   if !bnr->getbufvar('&modified') && !bnr->getbufvar('&readonly')
       && bnr->getbufvar('&buftype')->empty()
     try
-      ExecuteInBuffer(bnr, 'noautocmd write!')
+      util.ExecuteInBuffer(bnr, 'noautocmd write!')
     catch
     endtry
   endif
