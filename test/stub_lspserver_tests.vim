@@ -3558,6 +3558,139 @@ def g:Test_LspAutoFix_Range_MultiServer_WaitsForAllReplies()
   :bw!
 enddef
 
+# Returns a preferred quick fix code action resolving the diagnostic "d",
+# which runs the command "fix.{message}".
+def AutoFixAction(d: dict<any>): dict<any>
+  return {
+    title: $'Fix {d.message}',
+    kind: 'quickfix',
+    isPreferred: true,
+    diagnostics: [d],
+    command: {title: $'Fix {d.message}', command: $'fix.{d.message}'}
+  }
+enddef
+
+# Returns a running stub language server for the current buffer with the
+# position encoding "posEncoding", that published the diagnostics "diags".
+# The server replies to a code action request with an AutoFixAction() for
+# each diagnostic in the context of the request if "echo" is true, and for
+# each diagnostic in "diags" otherwise.  The commands run are added to
+# "execCmds".
+def MakeAutoFixServer(posEncoding: number, diags: list<dict<any>>,
+		      echo: bool, execCmds: list<string>): dict<any>
+  var lspserver = MakeDiagCodeActionServer(posEncoding, diags, [])
+  lspserver.name = 'autofix'
+  lspserver.running = true
+  lspserver.ready = true
+  lspserver.rpc_a = (_, params, Cbfunc) => {
+    Cbfunc({}, (echo ? params.context.diagnostics : diags)
+      ->mapnew((_, d) => AutoFixAction(d)), {})
+    return 1
+  }
+  lspserver.executeCommand = (cmd: dict<any>) => {
+    execCmds->add(cmd.command)
+  }
+  buf.BufLspServerSet(bufnr(), lspserver)
+  return lspserver
+enddef
+
+# A line with multibyte text before "foo" and "bar", which are at bytes 8 and
+# 12, UTF-16 code units 5 and 9 and characters 4 and 8.
+const AUTOFIX_LINE: string = '😊 é foo bar'
+const AUTOFIX_FOO_IDX: dict<number> = {8: 8, 16: 5, 32: 4}
+const AUTOFIX_BAR_IDX: dict<number> = {8: 12, 16: 9, 32: 8}
+
+# Returns a diagnostic with "message" for the three characters at "character"
+# in the first line.
+def AutoFixDiag(character: number, message: string): dict<any>
+  return {
+    range: {
+      start: {line: 0, character: character},
+      end: {line: 0, character: character + 3}
+    },
+    severity: 1,
+    message: message
+  }
+enddef
+
+# :LspAutoFix applies the code action resolving each diagnostic on a line
+# with multibyte text before the diagnostics, for a language server using any
+# position encoding.  The server can list in the code actions the diagnostics
+# that it got in the request or the ones that it published.
+def g:Test_LspAutoFix_MultibyteDiagRange()
+  silent! edit XLspAutoFixMultibyte.txt
+  set filetype=text
+  setline(1, [AUTOFIX_LINE])
+  for posEncoding in [8, 16, 32]
+    for echo in [true, false]
+      var diags = [AutoFixDiag(AUTOFIX_FOO_IDX[posEncoding], 'foo'),
+		   AutoFixDiag(AUTOFIX_BAR_IDX[posEncoding], 'bar')]
+      var execCmds: list<string> = []
+      var lspserver = MakeAutoFixServer(posEncoding, diags, echo, execCmds)
+
+      lsp.AutoFix()
+      assert_equal(['fix.foo', 'fix.bar'], execCmds,
+		   $'UTF-{posEncoding}, echo: {echo}')
+
+      ClearBufferDiagnostics()
+      buf.BufLspServerRemove(bufnr(), lspserver)
+    endfor
+  endfor
+  :%bw!
+enddef
+
+# :LspAutoFix applies to each of the diagnostics with the same range the code
+# action resolving it, which lists a diagnostic with its message, and not the
+# code actions resolving the other diagnostics.
+def g:Test_LspAutoFix_SameRangeDiags()
+  silent! edit XLspAutoFixSameRange.txt
+  set filetype=text
+  setline(1, [AUTOFIX_LINE])
+  g:LspOptionsSet({usePopupInCodeAction: true})
+  for posEncoding in [8, 16, 32]
+    var diags = [AutoFixDiag(AUTOFIX_FOO_IDX[posEncoding], 'first'),
+		 AutoFixDiag(AUTOFIX_FOO_IDX[posEncoding], 'second')]
+    var execCmds: list<string> = []
+    var lspserver = MakeAutoFixServer(posEncoding, diags, true, execCmds)
+
+    lsp.AutoFix()
+    var msg = $'UTF-{posEncoding}'
+    assert_equal(['fix.first', 'fix.second'], execCmds, msg)
+    assert_equal([], popup_list(), msg)
+
+    popup_clear()
+    ClearBufferDiagnostics()
+    buf.BufLspServerRemove(bufnr(), lspserver)
+  endfor
+  g:LspOptionsSet({usePopupInCodeAction: false})
+  :%bw!
+enddef
+
+# :LspAutoFix applies the code action resolving a diagnostic whose message
+# the "processDiagHandler" of the language server changed, when the server
+# lists in the code action the diagnostic as it published it.
+def g:Test_LspAutoFix_ProcessDiagHandlerMessage()
+  silent! edit XLspAutoFixDiagHandler.txt
+  set filetype=text
+  setline(1, [AUTOFIX_LINE])
+  for posEncoding in [8, 16, 32]
+    var diags = [AutoFixDiag(AUTOFIX_BAR_IDX[posEncoding], 'bar')]
+    var execCmds: list<string> = []
+    var lspserver = MakeAutoFixServer(posEncoding, diags, false, execCmds)
+    lspserver.processDiagHandler = (pdiags: list<dict<any>>) =>
+      pdiags->map((_, d) => d->extend({message: $'srv: {d.message}'}))
+    diag.DiagNotification(lspserver, util.LspBufnrToUri(bufnr()),
+			  diags->deepcopy(), 'push')
+
+    lsp.AutoFix()
+    assert_equal(['fix.bar'], execCmds, $'UTF-{posEncoding}')
+
+    ClearBufferDiagnostics()
+    buf.BufLspServerRemove(bufnr(), lspserver)
+  endfor
+  :%bw!
+enddef
+
 def g:Test_TextdocDidChange_IncrementalSync_MultiHunkDeleteAppliesBottomUp()
   # Regression test for #836: deleting all the lines but an empty one
   # produces two diff hunks; emitting them top-down sends the second hunk's

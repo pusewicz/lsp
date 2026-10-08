@@ -2233,13 +2233,8 @@ def GetCodeActionParams(lspserver: dict<any>, fname_arg: string, line1: number,
   # Diagnostics are scoped per-server so each provider gets context that
   # matches its own diagnostic namespace and offset encoding.
   var d: list<dict<any>> =
-    diag.GetDiagsInLineRange(bnr, line1, line2, lspserver)->deepcopy()
-  if lspserver.needOffsetEncoding
-    d->map((_, di) => {
-	lspserver.encodeRange(bnr, di.range)
-	return di
-      })
-  endif
+    diag.GetDiagsInLineRange(bnr, line1, line2, lspserver)
+      ->mapnew((_, di) => codeaction.ContextDiag(lspserver, bnr, di))
   params->extend({context: {diagnostics: d, triggerKind: 1}})
 
   var queryInfo = ParseCodeActionQuery(query)
