@@ -1567,6 +1567,13 @@ aleSupport		|Boolean| option. If true, diagnostics will be sent to
 			Ale, instead of being displayed by this plugin.
 			This is useful to combine all LSP and linter
 			diagnostics. By default this is set to false.
+			Ale shows the diagnostics of each language server
+			under the server name (|lsp-cfg-name|) as the linter
+			name, e.g. "%linter%" in |g:ale_echo_msg_format|.
+			In insert mode, the diagnostics are sent to Ale only
+			when Ale lints while text is changed in insert mode
+			(|g:ale_lint_on_text_changed| is "always" or
+			"insert"), otherwise when insert mode is left.
 
 						*lsp-opt-autoComplete*
 autoComplete		|Boolean| option. In insert mode, automatically

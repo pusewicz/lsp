@@ -25,6 +25,10 @@ import './util.vim'
 # }
 var diagsMap: dict<dict<any>> = {}
 
+# The ALE linter names that diagnostics were sent to ALE under, for each
+# buffer: [bnr] = [linterName, ...]
+var aleLinterNames: dict<list<string>> = {}
+
 # Initialize the signs and the text property type used for diagnostics.
 export def InitOnce()
   # Signs and their highlight groups used for LSP diagnostics
@@ -186,6 +190,7 @@ export def DiagRemoveFile(bnr: number)
   if diagsMap->has_key(bnr)
     diagsMap->remove(bnr)
   endif
+  ClearAleDiags(bnr)
 enddef
 
 def DiagSevToSignName(severity: number): string
@@ -374,29 +379,91 @@ export def DiagsRefresh(bnr: number, all: bool = false)
   endif
 enddef
 
-# Sends diagnostics to Ale
-def SendAleDiags(bnr: number, timerid: number)
-  if !diagsMap->has_key(bnr)
-    return
-  endif
-
-  # Convert to Ale's diagnostics format (:h ale-loclist-format)
-  ale#other_source#ShowResults(bnr, 'lsp',
-    diagsMap[bnr].sortedDiagnostics->mapnew((_, v) => {
-     return {text: v.message,
-             lnum: v.range.start.line + 1,
-             col: util.GetLineByteFromPos(bnr, v.range.start) + 1,
-             end_lnum: v.range.end.line + 1,
-             end_col: util.GetLineByteFromPos(bnr, v.range.end) + 1,
-             type: "EWIH"[get(v, "severity", 1) - 1]}
-    })
-  )
+# Returns the names of the language servers attached to buffer "bnr", used as
+# the ALE linter names for their diagnostics.
+def AleLinterNamesGet(bnr: number): list<string>
+  return buf.BufLspServersGet(bnr)
+    ->mapnew((_, lspserver) => lspserver.name)
+    ->sort()
+    ->uniq()
 enddef
 
-# Hook called when Ale wants to retrieve new diagnostics
-def AleHook(bnr: number)
-  ale#other_source#StartChecking(bnr, 'lsp')
+# Sends the diagnostics of every language server attached to buffer "bnr" to
+# ALE, using the server name as the ALE linter name.  A server without
+# diagnostics gets an empty list, which ends ALE's check for it.
+def SendAleDiags(bnr: number, timerid: number)
+  var serverDiags: dict<dict<list<any>>> = diagsMap->has_key(bnr)
+    ? diagsMap[bnr].serverDiagnostics : {}
+  var loclists: dict<list<dict<any>>> = {}
+  for lspserver in buf.BufLspServersGet(bnr)
+    var diags: list<dict<any>> = []
+    for kindDiags in serverDiags->get(lspserver.id->string(), {})->values()
+      diags->extend(kindDiags)
+    endfor
+    # Convert to Ale's diagnostics format (:h ale-loclist-format)
+    var loclist = SortDiags(DeduplicateDiags(diags))->mapnew((_, v) => {
+      return {text: v.message,
+              lnum: v.range.start.line + 1,
+              col: util.GetLineByteFromPos(bnr, v.range.start) + 1,
+              end_lnum: v.range.end.line + 1,
+              end_col: util.GetLineByteFromPos(bnr, v.range.end) + 1,
+              type: "EWIH"[get(v, "severity", 1) - 1]}
+    })
+    loclists[lspserver.name] = loclists->get(lspserver.name, [])
+      ->extend(loclist)
+  endfor
+
+  for [linterName, loclist] in loclists->items()
+    ale#other_source#ShowResults(bnr, linterName, loclist)
+  endfor
+  if !loclists->empty()
+    aleLinterNames[bnr] = loclists->keys()
+  endif
+enddef
+
+# Clears the diagnostics sent to ALE for buffer "bnr".
+def ClearAleDiags(bnr: number)
+  if !aleLinterNames->has_key(bnr)
+    return
+  endif
+  var linterNames = aleLinterNames->remove(bnr)
+
+  # ALE drops a deleted buffer on BufDelete, before the BufWipeout that
+  # detaches it from the language servers.  Clearing its results then would
+  # make ALE track the deleted buffer again.
+  if !get(g:, 'ale_buffer_info', {})->has_key(bnr)
+    return
+  endif
+  for linterName in linterNames
+    ale#other_source#ShowResults(bnr, linterName, [])
+  endfor
+enddef
+
+# Hook called when ALE wants to retrieve new diagnostics for buffer "bnr".
+export def AleHook(bnr: number)
+  var linterNames = AleLinterNamesGet(bnr)
+  if linterNames->empty()
+    return
+  endif
+  for linterName in linterNames
+    ale#other_source#StartChecking(bnr, linterName)
+  endfor
   timer_start(0, function('SendAleDiags', [bnr]))
+enddef
+
+# Returns true if ALE lints a buffer when its text is changed in insert mode,
+# following ALE's handling of "g:ale_lint_on_text_changed".
+def AleLintsInInsertMode(): bool
+  var lintOnTextChanged: any = get(g:, 'ale_lint_on_text_changed', 'normal')
+  var valueType = lintOnTextChanged->type()
+  if valueType == v:t_bool
+    return lintOnTextChanged
+  endif
+  if valueType != v:t_number && valueType != v:t_string
+    return false
+  endif
+  var value: string = $'{lintOnTextChanged}'
+  return value ==? 'always' || value ==? 'insert' || value == '1'
 enddef
 
 # New LSP diagnostic messages received from the server for a file.
@@ -408,12 +475,8 @@ export def ProcessNewDiags(bnr: number)
   var textChangedMode: bool = (curmode == 'i' || curmode == 'R' || curmode == 'Rv')
 
   var lspOpts = opt.lspOptions
-  if lspOpts.aleSupport
-    if textChangedMode && !get(g:, 'ale_lint_on_text_changed', 0)
-      # do nothing
-    else
-      SendAleDiags(bnr, -1)
-    endif
+  if lspOpts.aleSupport && (!textChangedMode || AleLintsInInsertMode())
+    SendAleDiags(bnr, -1)
   endif
 
   if bnr == -1 || !diagsMap->has_key(bnr)
