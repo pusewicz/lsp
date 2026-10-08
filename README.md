@@ -251,7 +251,7 @@ The tests run with the Vim of MacVim against real language servers, as the GitHu
 
 ```sh
 brew install --cask macvim-app
-brew install llvm@15 gopls rustup node
+brew install llvm@15 go gopls rustup node
 rustup default stable && rustup component add rust-src
 (cd test && npm ci)
 ```
