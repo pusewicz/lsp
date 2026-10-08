@@ -100,6 +100,8 @@ def StartServer(lspserver: dict<any>, bnr: number): number
   ClearMap(lspserver.pendingPullBufnrs)
   lspserver.diagnosticPullTimer = -1
   ClearMap(lspserver.supersedableRequests)
+  # A new server process has no open documents
+  ClearMap(lspserver.docBufnrs)
 
   var job = cmd->job_start(opts)
   if job->job_status() == 'fail'
@@ -947,7 +949,7 @@ def QueuePullDiagnosticsAllBuffers(lspserver: dict<any>)
     return
   endif
 
-  for bnr in buf.BufGetServerBufnrs(lspserver)
+  for bnr in lspserver.docBufnrs->values()
     if bnr->bufloaded() == 1
       lspserver.pendingPullBufnrs[bnr] = true
     endif

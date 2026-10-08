@@ -337,7 +337,8 @@ def g:Test_ServerState_StaysTyped()
     workDoneProgressTokens: 'dict<bool>',
     cachedBufferContent: 'dict<list<string>>',
     cachedBufferEol: 'dict<bool>',
-    docVersions: 'dict<number>'
+    docVersions: 'dict<number>',
+    docBufnrs: 'dict<number>'
   }
   # typename() gives the type of an empty dict or list only when it has one.
   var AssertTyped = (lspserver: dict<any>, when: string) => {
@@ -864,6 +865,67 @@ def g:Test_PullDiagnostics_RetriesStaleRequest()
     'Error: request textDocument/diagnostic failed (failed, error = InternalError)',
     LastMessage())
   :%bw!
+enddef
+
+# Returns a running test language server providing pull diagnostics, which
+# adds the buffer number of each document it pulls the diagnostics of to
+# "pulled".
+def MakePullDiagnosticsTestLspServer(pulled: list<number>): dict<any>
+  var lspserver = MakeTestLspServer([])
+  lspserver.running = true
+  lspserver.ready = true
+  lspserver.isDiagnosticsProvider = true
+  lspserver.sendResponse = (_, _, _) => {
+  }
+  lspserver.pullDiagnostics = (bnr: number) => {
+    pulled->add(bnr)
+  }
+  return lspserver
+enddef
+
+# Test that a "workspace/diagnostic/refresh" request, and the end of the work
+# of the server, pull the diagnostics of every document open on that server.
+# Not of a buffer attached to it whose document isn't open yet, and not of a
+# document open on another server only.
+def g:Test_DiagnosticRefresh_PullsDocumentsOpenOnTheServer()
+  var bufnrs: list<number> = []
+  for i in range(4)
+    exe $'silent! new XDiagRefresh{i}.txt'
+    bufnrs->add(bufnr())
+  endfor
+  var pulled: list<number> = []
+  var otherPulled: list<number> = []
+  var lspserver = MakePullDiagnosticsTestLspServer(pulled)
+  var otherServer = MakePullDiagnosticsTestLspServer(otherPulled)
+  for bnr in bufnrs[0 : 2]
+    buf.BufLspServerSet(bnr, lspserver)
+  endfor
+  lspserver.textdocDidOpen(bufnrs[0], 'text')
+  lspserver.textdocDidOpen(bufnrs[1], 'text')
+  for bnr in [bufnrs[0], bufnrs[3]]
+    buf.BufLspServerSet(bnr, otherServer)
+    otherServer.textdocDidOpen(bnr, 'text')
+  endfor
+  try
+    lspserver.processRequest({jsonrpc: '2.0', id: 1,
+			      method: 'workspace/diagnostic/refresh'})
+    assert_equal(bufnrs[0 : 1], pulled->sort('n'))
+    assert_equal([], otherPulled)
+
+    lspserver.queuePullDiagnosticsAllBuffers()
+    assert_equal(bufnrs[0 : 1],
+		 lspserver.pendingPullBufnrs->keys()->map((_, k) => str2nr(k))
+		 ->sort('n'))
+  finally
+    if lspserver.diagnosticPullTimer != -1
+      timer_stop(lspserver.diagnosticPullTimer)
+    endif
+    for bnr in bufnrs
+      buf.BufLspServerRemove(bnr, lspserver)
+      buf.BufLspServerRemove(bnr, otherServer)
+    endfor
+    :%bw!
+  endtry
 enddef
 
 def g:Test_DiagNotification_PushAndPull_AreBothRetained()
