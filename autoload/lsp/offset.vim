@@ -7,11 +7,44 @@ import './util.vim'
 # character related Vim functions use the UTF-32 position offset.  The
 # encoding used is negotiated during the language server initialization.
 
+# Return the length of "text" in the position encoding negotiated with the
+# language server: in bytes for UTF-8, in code units for UTF-16 and in
+# characters, counting the composing characters separately, for UTF-32.
+export def EncodedLineLen(lspserver: dict<any>, text: string): number
+  if lspserver.posEncoding == 8
+    return text->strlen()
+  elseif lspserver.posEncoding == 16
+    return text->strutf16len(true)
+  endif
+  return text->strchars()
+enddef
+
+# Encode the UTF-32 character offset "character" from the start of "text" to
+# the encoding negotiated with the language server.  An offset past the end of
+# "text" is at its end, as the LSP specification requires, so the result is at
+# most the encoded length of "text".
+export def EncodeCharacter(lspserver: dict<any>, text: string,
+			   character: number): number
+  # LSP client plugin also uses utf-32 encoding
+  if lspserver.posEncoding == 32
+    return character
+  endif
+
+  if character >= text->strchars()
+    return EncodedLineLen(lspserver, text)
+  endif
+  return lspserver.posEncoding == 16
+    ? text->utf16idx(character, true, true) : text->byteidxcomp(character)
+enddef
+
 # Encode the UTF-32 character offset in the LSP position "pos" to the encoding
 # negotiated with the language server.
 #
 # Modifies in-place the UTF-32 offset in pos.character to a UTF-8 or UTF-16 or
-# UTF-32 offset.
+# UTF-32 offset.  A position past the end of its line is at the end of the
+# line, as the LSP specification requires.  When the line is not available,
+# because it is past the end of the buffer or the buffer cannot be loaded, the
+# offset is left unchanged.
 export def EncodePosition(lspserver: dict<any>, bnr: number, pos: dict<number>)
   if lspserver.posEncoding == 32 || bnr <= 0
     # LSP client plugin also uses utf-32 encoding
@@ -19,34 +52,26 @@ export def EncodePosition(lspserver: dict<any>, bnr: number, pos: dict<number>)
   endif
 
   :silent! bnr->bufload()
-  var text = bnr->getbufline(pos.line + 1)->get(0, '')
-  if text->empty()
+  var lines: list<string> = bnr->getbufline(pos.line + 1)
+  if lines->empty()
     return
   endif
-
-  if lspserver.posEncoding == 16
-    pos.character = text->utf16idx(pos.character, true, true)
-  else
-    pos.character = text->byteidxcomp(pos.character)
-  endif
+  pos.character = EncodeCharacter(lspserver, lines[0], pos.character)
 enddef
 
 # Decode the character offset "character" from the start of "text" using the
-# encoding negotiated with the language server to a UTF-32 offset.  Returns
-# "character" unchanged when "text" is empty or the offset is past its end.
+# encoding negotiated with the language server to a UTF-32 offset.  An offset
+# past the end of "text" is at its end, as the LSP specification requires, so
+# the result is at most the number of characters in "text", counting the
+# composing characters separately.
 export def DecodeCharacter(lspserver: dict<any>, text: string,
 			   character: number): number
   # LSP client plugin also uses utf-32 encoding
-  if lspserver.posEncoding == 32 || text->empty()
+  if lspserver.posEncoding == 32
     return character
   endif
 
-  var textLen = lspserver.posEncoding == 16
-    ? text->strutf16len(true) : text->strlen()
-  if character > textLen
-    return character
-  endif
-  if character == textLen
+  if character >= EncodedLineLen(lspserver, text)
     return text->strchars()
   endif
   return lspserver.posEncoding == 16
@@ -57,7 +82,10 @@ enddef
 # negotiated with the language server to a UTF-32 offset.
 #
 # Modifies in-place the UTF-8 or UTF-16 or UTF-32 offset in pos.character to a
-# UTF-32 offset.
+# UTF-32 offset.  A position past the end of its line is at the end of the
+# line, as the LSP specification requires.  When the line is not available,
+# because it is past the end of the buffer or the buffer cannot be loaded, the
+# offset is left unchanged.
 export def DecodePosition(lspserver: dict<any>, bnr: number, pos: dict<number>)
   if lspserver.posEncoding == 32 || bnr <= 0
     # LSP client plugin also uses utf-32 encoding
@@ -65,8 +93,11 @@ export def DecodePosition(lspserver: dict<any>, bnr: number, pos: dict<number>)
   endif
 
   :silent! bnr->bufload()
-  var text = bnr->getbufline(pos.line + 1)->get(0, '')
-  pos.character = DecodeCharacter(lspserver, text, pos.character)
+  var lines: list<string> = bnr->getbufline(pos.line + 1)
+  if lines->empty()
+    return
+  endif
+  pos.character = DecodeCharacter(lspserver, lines[0], pos.character)
 enddef
 
 # Encode the start and end UTF-32 character offsets in the LSP range "range"
