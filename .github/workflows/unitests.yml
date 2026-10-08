@@ -44,6 +44,8 @@ jobs:
         working-directory: test
         run: npm ci
       - name: Run Tests
+        env:
+          LSP_DEBUG: 1
         run: |
           set -euo pipefail
           sw_vers
@@ -51,3 +53,13 @@ jobs:
           /Applications/MacVim.app/Contents/MacOS/Vim --version
           cd test
           ./run_tests.sh
+      - name: Upload the language server logs
+        if: failure()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: test-logs
+          path: |
+            /tmp/lsp-*.log
+            /tmp/lsp-*.err
+            test/results_*.txt
+          if-no-files-found: ignore
