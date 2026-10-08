@@ -458,7 +458,11 @@ export def GetClientCaps(): dict<any>
       # which meanas only utf-32 is supported.
       # Adding utf-16 simply for good mesure, as I'm scared some servers will
       # give up if they don't support utf-32 only.
-      positionEncodings: ['utf-32', 'utf-16']
+      positionEncodings: ['utf-32', 'utf-16'],
+      staleRequestSupport: {
+	cancel: true,
+	retryOnContentModified: []
+      }
     },
     textDocument: {
       callHierarchy: {

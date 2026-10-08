@@ -226,6 +226,160 @@ def g:Test_ProcessMessages_PassesBackSyncRpcReply()
   assert_equal([], traceMsgs)
 enddef
 
+# Start a job that stands in for a language server: it sends "messages" and
+# then reads what it is sent without ever replying.
+def StartStubServerJob(messages: list<dict<any>>, jobOpts: dict<any> = {}): job
+  var output = messages->mapnew((_, msg) => {
+    var body = msg->json_encode()
+    return $"Content-Length: {body->len()}\r\n\r\n{body}"
+  })->join('')
+  return job_start(['sh', '-c', 'printf "%s" "$1"; exec cat >/dev/null', 'sh',
+		    output],
+		   {in_mode: 'lsp', out_mode: 'lsp', noblock: 1}->extend(jobOpts))
+enddef
+
+# Test that a synchronous request is cancelled when its reply doesn't arrive
+# in time.
+def g:Test_Rpc_CancelsTimedOutRequest()
+  var notifications: list<dict<any>> = []
+  var lspserver = MakeTestLspServer(notifications)
+  lspserver.job = StartStubServerJob([])
+  try
+    var id = lspserver.nextSyncRpcId
+
+    assert_equal({}, lspserver.rpc('test/noReply', {}, {timeout: 50}))
+    assert_equal([{method: '$/cancelRequest', params: {id: id}}], notifications)
+    assert_equal({}, lspserver.syncRpcReplies)
+  finally
+    job_stop(lspserver.job)
+  endtry
+enddef
+
+# Test that CTRL-C while waiting for the reply to a synchronous request
+# cancels the request and still interrupts the command.
+def g:Test_Rpc_CancelsInterruptedRequest()
+  var notifications: list<dict<any>> = []
+  var lspserver = MakeTestLspServer(notifications)
+  # The channel callback is invoked for the notification while the reply is
+  # waited for, and interrupt() acts like typing CTRL-C.
+  lspserver.job = StartStubServerJob(
+    [{jsonrpc: '2.0', method: 'test/notification', params: {}}],
+    {out_cb: (_, _) => {
+      interrupt()
+    }})
+  try
+    var id = lspserver.nextSyncRpcId
+
+    var interrupted = false
+    try
+      lspserver.rpc('test/noReply', {}, {timeout: 5000})
+    catch /^Vim:Interrupt$/
+      interrupted = true
+    endtry
+    assert_true(interrupted)
+    assert_equal([{method: '$/cancelRequest', params: {id: id}}], notifications)
+    assert_equal({}, lspserver.syncRpcReplies)
+  finally
+    job_stop(lspserver.job)
+  endtry
+enddef
+
+# Test that a reply saying that the request was cancelled, by the client or by
+# the server, is not reported as an error, and that the callback of an
+# asynchronous request then gets no result.
+def g:Test_Rpc_CancelledReplyIsNotAnError()
+  # Send the asynchronous requests asynchronously, as outside the tests.
+  g:LSPTest = false
+  try
+    for code in [-32800, -32802]
+      var notifications: list<dict<any>> = []
+      var lspserver = MakeTestLspServer(notifications)
+      var syncId = lspserver.nextSyncRpcId
+      var cancelled = {code: code, message: 'cancelled'}
+      # Vim numbers the asynchronous requests on a new channel from 1.
+      lspserver.job = StartStubServerJob([
+	{jsonrpc: '2.0', id: 1, error: cancelled},
+	{jsonrpc: '2.0', id: syncId, error: cancelled}
+      ])
+      var beforeMessages = execute('messages')
+
+      var replies: list<list<any>> = []
+      assert_equal(1, lspserver.rpc_a('test/cancelled', {},
+	(_, reply, error) => {
+	  replies->add([reply, error])
+	}))
+      assert_equal({}, lspserver.rpc('test/cancelled', {}))
+      g:WaitForAssert(() => assert_equal([[v:null, {}]], replies))
+      job_stop(lspserver.job)
+
+      assert_equal(beforeMessages, execute('messages'))
+      assert_equal([], notifications)
+    endfor
+  finally
+    g:LSPTest = true
+  endtry
+enddef
+
+# Test that a "$/cancelRequest" notification from the server is accepted
+# quietly.
+def g:Test_ProcessNotif_CancelRequestIsIgnored()
+  var lspserver = MakeTestLspServer([])
+  var traceMsgs: list<string> = []
+  lspserver.traceLog = (msg) => traceMsgs->add(msg)
+
+  handlers.ProcessNotif(lspserver,
+    {jsonrpc: '2.0', method: '$/cancelRequest', params: {id: 3}})
+
+  assert_equal([], traceMsgs)
+enddef
+
+# Test that a document highlight request supersedes only the pending request
+# for the same buffer.
+def g:Test_DocHighlight_CancelsSupersededRequestForSameBuffer()
+  var notifications: list<dict<any>> = []
+  var lspserver = MakeTestLspServer(notifications)
+  lspserver.isDocumentHighlightProvider = true
+  var lastId = 0
+  lspserver.rpc_a = (_, _, _) => {
+    lastId += 1
+    return lastId
+  }
+
+  silent! edit XDocHighlightSuperseded1.txt
+  lspserver.docHighlight(bufnr(), 'silent')
+  silent! edit XDocHighlightSuperseded2.txt
+  lspserver.docHighlight(bufnr(), 'silent')
+  assert_equal([], notifications)
+
+  lspserver.docHighlight(bufnr(), 'silent')
+  assert_equal([{method: '$/cancelRequest', params: {id: 2}}], notifications)
+  :%bw!
+enddef
+
+# Test that a request whose reply was processed before rpc_a() returned, as in
+# tests, is not cancelled by the next request.
+def g:Test_GetCompletion_DoesNotCancelAnsweredRequest()
+  silent! edit XGetCompletionAnswered.txt
+  var notifications: list<dict<any>> = []
+  var lspserver = MakeTestLspServer(notifications)
+  lspserver.isCompletionProvider = true
+  lspserver.completionLazyDoc = false
+  var lastId = 0
+  lspserver.rpc_a = (_, _, Cb) => {
+    lastId += 1
+    Cb(lspserver, [], {})
+    return lastId
+  }
+
+  lspserver.getCompletion(1, '')
+  lspserver.getCompletion(1, '')
+
+  assert_equal(2, lastId)
+  assert_equal([], notifications)
+  assert_equal({}, lspserver.supersedableRequests)
+  :%bw!
+enddef
+
 def g:Test_ProcessMessages_IgnoreUnknownResponseId_Error()
   var lspserver = MakeTestLspServer([])
   var unknownId = 'X-unknown-response-id-error'
@@ -2146,23 +2300,25 @@ def g:Test_ApplyTextEdits_WholeDocumentFollowsWriteRule()
   :%bw!
 enddef
 
-# A completion request supersedes the earlier ones, so a late reply to an
-# earlier request must not be taken as the reply to the latest one.
-def g:Test_GetCompletion_IgnoresSupersededReply()
+# A completion request supersedes the pending one, which is cancelled, so a
+# late reply to it must not be taken as the reply to the latest one.
+def g:Test_GetCompletion_CancelsSupersededRequest()
   silent! edit XGetCompletionSuperseded.txt
-  var lspserver = MakeTestLspServer([])
+  var notifications: list<dict<any>> = []
+  var lspserver = MakeTestLspServer(notifications)
   lspserver.isCompletionProvider = true
   lspserver.completionLazyDoc = false
   var replyCbs: list<func> = []
   lspserver.rpc_a = (_, _, Cb) => {
     replyCbs->add(Cb)
-    return 0
+    return replyCbs->len()
   }
 
   lspserver.omniCompletePending = true
   lspserver.completeItems = []
   lspserver.getCompletion(1, '')
   lspserver.getCompletion(1, '')
+  assert_equal([{method: '$/cancelRequest', params: {id: 1}}], notifications)
 
   replyCbs[0](lspserver, [{label: 'stale'}], {})
   replyCbs[0](lspserver, v:null, {code: -32800, message: 'Request cancelled'})
@@ -2172,6 +2328,10 @@ def g:Test_GetCompletion_IgnoresSupersededReply()
   replyCbs[1](lspserver, [{label: 'latest'}], {})
   assert_false(lspserver.omniCompletePending)
   assert_equal(['latest'], lspserver.completeItems->mapnew((_, v) => v.word))
+
+  # The latest request got its reply, so the next one cancels nothing.
+  lspserver.getCompletion(1, '')
+  assert_equal(1, notifications->len())
   :%bw!
 enddef
 

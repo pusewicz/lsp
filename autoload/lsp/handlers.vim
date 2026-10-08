@@ -146,6 +146,9 @@ const lsp_notif_handlers: dict<func> =
 # particular language server)
 const lsp_ignored_notif_handlers: dict<bool> =
   {
+    # The requests from the LSP server are answered as soon as they are
+    # received, so there is never one left to cancel.
+    '$/cancelRequest': true,
     '$/status/report': true,
     '$/status/show': true,
     # PHP intelephense server sends the "indexingStarted" and
