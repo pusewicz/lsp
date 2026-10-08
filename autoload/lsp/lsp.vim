@@ -4,8 +4,8 @@ vim9script
 #
 # The functions called by plugin/lsp.vim are in this file.
 
-# Needs Vim 9.0 and higher
-if v:version < 900
+# Needs Vim 9.2 and higher
+if v:version < 902
   finish
 endif
 
@@ -155,7 +155,7 @@ enddef
 def LspAddServer(ftype: string, lspsrv: dict<any>)
   var lspsrvlst = ftypeServerMap->has_key(ftype) ? ftypeServerMap[ftype] : []
   # Prevent duplicate registration of the same server name per filetype.
-  if util.Indexof(lspsrvlst, (_, v) => v.name == lspsrv.name) != -1
+  if lspsrvlst->indexof((_, v) => v.name == lspsrv.name) != -1
       # LSP server already added for this file type
       return
   endif
@@ -1230,13 +1230,7 @@ def g:LspDocHighlightClear(bnr: number = bufnr())
   endif
 
   var propNames = ['LspTextRef', 'LspReadRef', 'LspWriteRef']
-  if has('patch-9.0.0233')
-    prop_remove({types: propNames, bufnr: bnr, all: true})
-  else
-    for propName in propNames
-      prop_remove({type: propName, bufnr: bnr, all: true})
-    endfor
-  endif
+  prop_remove({types: propNames, bufnr: bnr, all: true})
 enddef
 
 def g:LspRequestDocSymbols()

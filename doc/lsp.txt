@@ -2,7 +2,7 @@
 
 
 Author: Yegappan Lakshmanan  (yegappan AT yahoo DOT com)
-For Vim version 9.0 and above
+For Vim version 9.2 and above
 Last change: May 31 2026
 
 ==============================================================================
@@ -54,7 +54,7 @@ For background on the language server protocol, see
     https://langserver.org/
 
 Requirements:
-    - Vim version 9.0 and later
+    - Vim version 9.2 and later
     - A language server installed for the programming language(s) you use.
       See the above pages for the list of available servers.
 
@@ -2061,7 +2061,6 @@ showDiagWithVirtualText	|Boolean| option.  Show diagnostic message text from
 			the language server with virtual text.  By default
 			this is set to false.  The "autoHighlightDiags" option
 			should be set to true.
-			Note: Needs Vim version 9.0.1157 or later.
 
 						*lsp-opt-showInlayHints*
 showInlayHints		|Boolean| option.  Show inlay hints from the language
@@ -2076,7 +2075,6 @@ showInlayHints		|Boolean| option.  Show inlay hints from the language
 			Use |:LspInlayHints| to enable, disable, or toggle
 			hints for the current session without permanently
 			changing this option.
-			Note: Needs Vim version 9.0.0178 or later.
 
 						*lsp-opt-showSignature*
 showSignature		|Boolean| option.  In insert mode, automatically show
@@ -2197,10 +2195,9 @@ incrementalSync		|Boolean| option.  Specifies the method used to
 			- If |true|, only the modified portions of the buffer
 			  are sent (incremental sync). This is more efficient
 			  for large files and reduces network/CPU overhead.
-			  Note: This needs the support for the |diff()|
-			  function which was introduced in patch 9.1.0099.
-			  A Vim built without its internal diff library,
-			  like the macOS system Vim, uses full sync.
+			  Note: This needs a working |diff()|
+			  function.  A Vim built without its internal
+			  diff library uses full sync.
 			- If |false|, the entire buffer content is sent on
 			  every change (full sync). This is more robust but
 			  can cause lag in very large documents.
@@ -2493,9 +2490,8 @@ In addition to the default display of the diagnostic messages with signs and
 text highlighting, the LSP plugin offers the option to present the diagnostic
 message as virtual text, located near the relevant location of the
 diagnostics.  To enable this feature, you can set the
-"showDiagWithVirtualText" option to |v:true|.  However, please note that this
-functionality requires Vim version 9.0.1157 or later.  By default, this option
-is set to |v:false|, meaning that virtual text display is not activated.
+"showDiagWithVirtualText" option to |v:true|.  By default, this option is set
+to |v:false|, meaning that virtual text display is not activated.
 
 The position of the virtual text can be controlled using the
 "diagVirtualTextAlign" option, which determines its alignment relative to the
@@ -2658,9 +2654,7 @@ by default, since it edits the buffer while you are typing.
 
 Only a trigger character that you type in Insert mode reformats the code, not
 one that is already before the cursor (for example, after "cw") and not a
-newline started with "o".  Detecting a typed newline (<Enter> or CTRL-J)
-needs the |KeyInputPre| autocmd event, which was added in Vim 9.1.0563.  In
-older versions of Vim, the newline trigger character is ignored.
+newline started with "o".
 
 ==============================================================================
 							*lsp-call-hierarchy*
@@ -2887,8 +2881,7 @@ override them.
 				the kind of a completion item in the popup
 				menu, where {Name} is a kind name from
 				|lsp-custom-kinds|, which also lists the
-				default links.  Requires Vim 9.1.0690 or
-				later.
+				default links.
 *LspDiagSignErrorText*		Used to highlight the sign text for error
 				diags.  By default linked to 'ErrorMsg'.
 *LspDiagSignHintText*		Used to highlight the sign text for hint
@@ -3281,11 +3274,11 @@ kinds:
  TypeParameter          | T       | Type
  Buffer                 | B       | -
 
-In Vim 9.1.0690 and later, the kind of each item is highlighted with the
-"LspCompletionKind{Name}" highlight group, for example
-"LspCompletionKindFunction".  The table above lists the group each one is
-linked to by default; "Text" and "Buffer" are not linked, so they use the
-|hl-PmenuKind| highlight.  To change the color of a kind: >
+The kind of each item is highlighted with the "LspCompletionKind{Name}"
+highlight group, for example "LspCompletionKindFunction".  The table above
+lists the group each one is linked to by default; "Text" and "Buffer" are not
+linked, so they use the |hl-PmenuKind| highlight.  To change the color of a
+kind: >
 
 	highlight LspCompletionKindVariable ctermfg=Blue guifg=#75beff
 <

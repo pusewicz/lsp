@@ -150,11 +150,6 @@ enddef
 # which take two UTF-16 code units, are encoded and decoded correctly.
 # TypeScript always uses UTF-16 positions.
 def g:Test_LspUtf16Positions()
-  # Without this patch the plugin can't convert UTF-16 positions.
-  if !has('patch-9.0.1629')
-    return
-  endif
-
   :silent! edit XLspUtf16Positions.ts
   sleep 200m
   var lines =<< trim END

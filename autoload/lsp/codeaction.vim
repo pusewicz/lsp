@@ -270,9 +270,9 @@ export def ApplyCodeAction(lspserver: dict<any>,
   if query_ =~ '^\d\+$'	# digit
     choice = query_->str2nr()
   elseif query_ =~ '^/'	# regex
-    choice = 1 + util.Indexof(actions, (i, a) => a.title =~ query_[1 : ])
+    choice = 1 + actions->indexof((i, a) => a.title =~ query_[1 : ])
   elseif query_ != ''	# literal string
-    choice = 1 + util.Indexof(actions, (i, a) => a.title[0 : query_->len() - 1] == query_)
+    choice = 1 + actions->indexof((i, a) => a.title[0 : query_->len() - 1] == query_)
   elseif opt.lspOptions.usePopupInCodeAction
     # Use a popup menu to show the code action
     var popupAttrs = opt.PopupConfigure('CodeAction', {
