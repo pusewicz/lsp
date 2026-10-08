@@ -960,9 +960,11 @@ enddef
 # asks Vim to call it again whenever the typed text changes, so that the
 # server can supply the matches it left out.
 def g:LspCompleteSource(findstart: number, base: string): any
-  var lspserver: dict<any> = buf.CurbufGetServerChecked('completion')
-  if lspserver->empty()
-    return -2
+  # 'complete' is used in every buffer, so skip a buffer without a usable
+  # language server instead of reporting an error.
+  var lspserver: dict<any> = buf.CurbufGetServer('completion')
+  if lspserver->empty() || !lspserver.running || !lspserver.ready
+    return findstart ? -2 : []
   endif
 
   if findstart
