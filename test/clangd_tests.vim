@@ -556,15 +556,15 @@ def g:Test_LspShowReferences()
   var loclist: list<dict<any>> = getloclist(0)
   assert_equal(bnr, loclist[0].bufnr)
   assert_equal(3, loclist->len())
-  assert_equal([4, 6], [loclist[0].lnum, loclist[0].col])
-  assert_equal([5, 2], [loclist[1].lnum, loclist[1].col])
-  assert_equal([6, 6], [loclist[2].lnum, loclist[2].col])
+  assert_equal([[4, 6, 4, 11], [5, 2, 5, 7], [6, 6, 6, 11]],
+	       loclist->mapnew((_, v) => [v.lnum, v.col, v.end_lnum, v.end_col]))
   :lclose
   cursor(1, 5)
   :LspShowReferences
   assert_equal(1, getloclist(0)->len())
   loclist = getloclist(0)
-  assert_equal([1, 5], [loclist[0].lnum, loclist[0].col])
+  assert_equal([[1, 5, 1, 10]],
+	       loclist->mapnew((_, v) => [v.lnum, v.col, v.end_lnum, v.end_col]))
   :lclose
 
   # Test for opening in qf list
@@ -577,14 +577,14 @@ def g:Test_LspShowReferences()
   var qfl: list<dict<any>> = getqflist()
   assert_equal(3, qfl->len())
   assert_equal(bufnr(), qfl[0].bufnr)
-  assert_equal([4, 6], [qfl[0].lnum, qfl[0].col])
-  assert_equal([5, 2], [qfl[1].lnum, qfl[1].col])
-  assert_equal([6, 6], [qfl[2].lnum, qfl[2].col])
+  assert_equal([[4, 6, 4, 11], [5, 2, 5, 7], [6, 6, 6, 11]],
+	       qfl->mapnew((_, v) => [v.lnum, v.col, v.end_lnum, v.end_col]))
   cursor(1, 5)
   :LspShowReferences
   assert_equal(1, getqflist()->len())
   qfl = getqflist()
-  assert_equal([1, 5], [qfl[0].lnum, qfl[0].col])
+  assert_equal([[1, 5, 1, 10]],
+	       qfl->mapnew((_, v) => [v.lnum, v.col, v.end_lnum, v.end_col]))
   :cclose
   g:LspOptionsSet({useQuickfixForLocations: false})
 
