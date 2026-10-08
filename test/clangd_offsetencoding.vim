@@ -339,6 +339,52 @@ def g:Test_LspRename_multibyte()
   :%bw!
 enddef
 
+# Test for :LspSelectionExpand and :LspSelectionShrink when using multibyte and
+# composing characters
+def g:Test_LspSelection_multibyte()
+  silent! edit XLspSelection_mb.c
+  sleep 200m
+  var lines: list<string> =<< trim END
+    void fn(void)
+    {
+        char *s = "ééé😊 x";
+        int 😊😊 = 1, áb́áb́ = 2;
+        😊😊 = áb́áb́ + 😊😊;
+    }
+  END
+  setline(1, lines)
+  g:WaitForServerFileLoad(0)
+  xnoremap <silent> le <Cmd>LspSelectionExpand<CR>
+  xnoremap <silent> ls <Cmd>LspSelectionShrink<CR>
+
+  var body: string = join(lines[1 : 5], "\n")
+  var expected: list<string> = ['"ééé😊 x"', 'char *s = "ééé😊 x"',
+				'char *s = "ééé😊 x";', body, join(lines, "\n")]
+  for i in range(expected->len())
+    cursor(3, 18)
+    exe $'normal v{repeat("le", i + 1)}y'
+    assert_equal(expected[i], @")
+  endfor
+  cursor(3, 18)
+  normal vlelelelelslsy
+  assert_equal('char *s = "ééé😊 x"', @")
+  assert_equal([3, 5, 3, 28], [line("'<"), col("'<"), line("'>"), col("'>")])
+
+  expected = ['áb́áb́', 'áb́áb́ + 😊😊', '😊😊 = áb́áb́ + 😊😊', body]
+  for i in range(expected->len())
+    cursor(5, 21)
+    exe $'normal v{repeat("le", i + 1)}y'
+    assert_equal(expected[i], @")
+  endfor
+  cursor(5, 21)
+  normal vleleley
+  assert_equal([5, 5, 5, 33], [line("'<"), col("'<"), line("'>"), col("'>")])
+
+  xunmap le
+  xunmap ls
+  :%bw!
+enddef
+
 # Test for :LspShowReferences when using multibyte and composing characters
 def g:Test_LspShowReferences_multibyte()
   :silent! edit XLspShowReferences_mb.c
