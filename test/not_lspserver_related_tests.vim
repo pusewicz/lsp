@@ -1030,6 +1030,13 @@ def g:Test_DocumentLinkCapability()
   assert_true(capabilities.GetClientCaps().textDocument.documentLink.tooltipSupport)
 enddef
 
+# Test that the client advertises retrying only the requests that it retries
+# when the content was modified
+def g:Test_StaleRequestSupportCapability()
+  assert_equal({cancel: true, retryOnContentModified: ['textDocument/diagnostic']},
+	       capabilities.GetClientCaps().general.staleRequestSupport)
+enddef
+
 # Test for parsing the line and column fragment in a document link file URI
 def g:Test_DocumentLink_ParseFileUri()
   var uri = 'file:///tmp/a%20b.c'

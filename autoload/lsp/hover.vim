@@ -356,7 +356,9 @@ enddef
 # When 'reqctx' is provided the reply is validated against the current editor
 # state: if the cursor has moved or the buffer has changed since the request
 # was sent the reply is silently discarded.  Otherwise the result is stored in
-# the hover cache and rendered via ShowHover.
+# the hover cache and rendered via ShowHover.  A null result is not cached:
+# a request that was cancelled, or that was about modified content, gets one
+# too, and asking again may then give a result.
 export def HoverReply(lspserver: dict<any>, hoverResult: any,
                       hoverError: dict<any>, cmdmods: string = '',
                       reqctx: dict<any> = {}): void
@@ -374,7 +376,7 @@ export def HoverReply(lspserver: dict<any>, hoverResult: any,
 
   var [hoverText, hoverKind] = GetHoverText(lspserver, hoverResult)
 
-  if !reqctx->empty()
+  if !reqctx->empty() && hoverResult->type() != v:t_none
     var cacheKey = reqctx.serverid->string()
     hoverCache[cacheKey] = {
       bnr: reqctx.bnr,
