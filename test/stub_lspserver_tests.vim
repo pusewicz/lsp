@@ -5769,6 +5769,177 @@ def g:Test_LspOutline_InTwoTabPages_OtherFile()
   endtry
 enddef
 
+# Lines of the document "XDocSymbols.c" whose symbols DocSymbolsReply()
+# returns.
+const docSymbolsSrc: list<string> = ['struct aStruct {', '  int aField;', '};',
+				     'void bFunc(void) {}']
+
+# Returns the LSP range from line "sl", character "sc" to line "el",
+# character "ec".
+def SymRange(sl: number, sc: number, el: number, ec: number): dict<any>
+  return {start: {line: sl, character: sc}, end: {line: el, character: ec}}
+enddef
+
+# Returns the reply to a "textDocument/documentSymbol" request for the
+# document "uri" with the lines "docSymbolsSrc": a DocumentSymbol[] when
+# "hierarchical" is true, and a SymbolInformation[] otherwise.
+def DocSymbolsReply(uri: string, hierarchical: bool): list<dict<any>>
+  if hierarchical
+    var field = {name: 'aField', kind: 8, detail: 'int',
+		 range: SymRange(1, 2, 1, 13),
+		 selectionRange: SymRange(1, 6, 1, 12)}
+    return [{name: 'aStruct', kind: 23, detail: 'struct',
+	     range: SymRange(0, 0, 2, 2),
+	     selectionRange: SymRange(0, 7, 0, 14),
+	     children: [field]},
+	    {name: 'bFunc', kind: 12, detail: 'void (void)',
+	     range: SymRange(3, 0, 3, 19),
+	     selectionRange: SymRange(3, 5, 3, 10)}]
+  endif
+  return [{name: 'aStruct', kind: 23,
+	   location: {uri: uri, range: SymRange(0, 0, 2, 2)}},
+	  {name: 'aField', kind: 8, containerName: 'aStruct',
+	   location: {uri: uri, range: SymRange(1, 2, 1, 13)}},
+	  {name: 'bFunc', kind: 12, containerName: '',
+	   location: {uri: uri, range: SymRange(3, 0, 3, 19)}}]
+enddef
+
+# Returns a language server that replies to a "textDocument/documentSymbol"
+# request with DocSymbolsReply().
+def MakeDocSymbolsServer(hierarchical: bool): dict<any>
+  var lspserver = MakeTestLspServer([])
+  lspserver.running = true
+  lspserver.ready = true
+  lspserver.isDocumentSymbolProvider = true
+  lspserver.rpc_a = (method: string, params: any, Cbfunc: func): number => {
+    Cbfunc(lspserver, DocSymbolsReply(params.textDocument.uri, hierarchical),
+	   {})
+    return 1
+  }
+  return lspserver
+enddef
+
+# Test the outline for both kinds of reply to a "textDocument/documentSymbol"
+# request: the symbols that it shows, the symbol that it highlights for a line
+# of the document, the detail that "K" shows for a symbol, and the location
+# that selecting a symbol jumps to.
+def g:Test_LspOutline_DocumentSymbolAndSymbolInformation()
+  var cases = [
+    {hierarchical: true, ctx: 'DocumentSymbol[]',
+     text: ['', 'Function@', '  bFunc', '', 'Struct@', '  aStruct',
+	    '    Field', '      aField'],
+     symbols: [['  aStruct', 'aStruct: struct', 1, 8],
+	       ['      aField', 'aField: int', 2, 7],
+	       ['  bFunc', 'bFunc: void (void)', 4, 6]]},
+    {hierarchical: false, ctx: 'SymbolInformation[]',
+     text: ['', 'Function@', '  bFunc', '', 'Field@', '  aField [aStruct]', '',
+	    'Struct@', '  aStruct'],
+     symbols: [['  aStruct', 'aStruct', 1, 1],
+	       ['  aField [aStruct]', 'aField [aStruct]', 2, 3],
+	       ['  bFunc', 'bFunc', 4, 1]]}
+  ]
+  for c in cases
+    var lspserver = MakeDocSymbolsServer(c.hierarchical)
+    var srcBnr = -1
+    try
+      srcBnr = OutlineSrcEdit(lspserver, 'XDocSymbols.c', docSymbolsSrc)
+      var srcWinid = win_getid()
+      :LspOutline
+      var outlineBnr: number = ScratchBufsInTab()[0]
+      var outlineLines: list<string> = outlineBnr->getbufline(1, '$')
+      assert_equal(c.text, outlineLines[2 :], c.ctx)
+
+      for [srcLnum, sym] in [[1, c.symbols[0]], [2, c.symbols[1]],
+			     [4, c.symbols[2]]]
+	cursor(srcLnum, 1)
+	:doautocmd CursorHold
+	assert_equal([outlineLines->index(sym[0]) + 1],
+		     OutlineHighlightLnums(outlineBnr), $'{c.ctx}: {srcLnum}')
+      endfor
+
+      for [symLine, detail, lnum, col] in c.symbols
+	outlineBnr->bufwinid()->win_gotoid()
+	cursor(outlineLines->index(symLine) + 1, 1)
+	assert_equal($"\n{detail}", execute('normal K'), $'{c.ctx}: {symLine}')
+	exe "normal \<CR>"
+	assert_equal([srcWinid, lnum, col], [win_getid(), line('.'), col('.')],
+		     $'{c.ctx}: {symLine}')
+      endfor
+    finally
+      buf.BufLspServerRemove(srcBnr, lspserver)
+      :%bw!
+    endtry
+  endfor
+enddef
+
+# Returns [type, lnum, col, length] of the text properties highlighting the
+# name and the range of the symbol selected in the :LspDocumentSymbol popup,
+# in this order.
+def DocSymbolHighlightProps(): list<list<any>>
+  return prop_list(1, {end_lnum: -1,
+		       types: ['LspSymbolNameProp', 'LspSymbolRangeProp']})
+    ->map((_, p) => [p.type, p.lnum, p.col, p.length])
+    ->sort()
+enddef
+
+# Define the text property types of the :LspDocumentSymbol popup, which are
+# otherwise defined only when the first language server is started.
+def SymbolInitOnce()
+  if prop_type_get('LspSymbolNameProp')->empty()
+    symbol.InitOnce()
+  endif
+enddef
+
+# Test the :LspDocumentSymbol popup for both kinds of reply to a
+# "textDocument/documentSymbol" request: the symbols that it lists, the range
+# and the name that it highlights for the selected symbol, and the location
+# that selecting a symbol jumps to.
+def g:Test_LspDocumentSymbol_DocumentSymbolAndSymbolInformation()
+  var cases = [
+    {hierarchical: true, ctx: 'DocumentSymbol[]',
+     bFuncProps: [['LspSymbolNameProp', 4, 6, 5],
+		  ['LspSymbolRangeProp', 4, 1, 19]],
+     aFieldProps: [['LspSymbolNameProp', 2, 7, 6],
+		   ['LspSymbolRangeProp', 2, 3, 11]],
+     aFieldPos: [2, 7]},
+    {hierarchical: false, ctx: 'SymbolInformation[]',
+     bFuncProps: [['LspSymbolNameProp', 4, 1, 19],
+		  ['LspSymbolRangeProp', 4, 1, 19]],
+     aFieldProps: [['LspSymbolNameProp', 2, 3, 11],
+		   ['LspSymbolRangeProp', 2, 3, 11]],
+     aFieldPos: [2, 3]}
+  ]
+  SymbolInitOnce()
+  for c in cases
+    var lspserver = MakeDocSymbolsServer(c.hierarchical)
+    var srcBnr = -1
+    try
+      srcBnr = OutlineSrcEdit(lspserver, 'XDocSymbols.c', docSymbolsSrc)
+      cursor(4, 1)
+      :LspDocumentSymbol
+      var menus: list<number> = popup_list()
+	->filter((_, id) => !id->getwinvar('symbolTable', [])->empty())
+      assert_equal(1, menus->len(), c.ctx)
+      assert_equal(['struct : aStruct', 'field : aField [aStruct]',
+		    'function : bFunc'],
+		   menus[0]->winbufnr()->getbufline(1, '$'), c.ctx)
+      assert_equal(c.bFuncProps, DocSymbolHighlightProps(), c.ctx)
+
+      feedkeys("\<Up>", 'xt')
+      assert_equal(c.aFieldProps, DocSymbolHighlightProps(), c.ctx)
+
+      feedkeys("\<CR>", 'xt')
+      assert_equal([], popup_list(), c.ctx)
+      assert_equal(c.aFieldPos, [line('.'), col('.')], c.ctx)
+      assert_equal([], DocSymbolHighlightProps(), c.ctx)
+    finally
+      popup_clear()
+      buf.BufLspServerRemove(srcBnr, lspserver)
+      :%bw!
+    endtry
+  endfor
+enddef
+
 # Test that the hover text doesn't replace the text of a modified buffer of the
 # user in the preview window, which the preview window can't leave.
 def g:Test_HoverInPreview_KeepsModifiedPreviewBuffer()
