@@ -1,1 +1,0 @@
-FAIL: Global exception in stub_lspserver_tests.vim: Vim(eval):E117: Unknown function: g:LspEnable at command line..script /home/runner/work/lsp/lsp/test/runner.vim[102]..function LoadLspPlugin, line 22
