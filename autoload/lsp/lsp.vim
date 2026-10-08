@@ -68,6 +68,9 @@ def RegisterEvents()
     # from the buffer getting wiped out.
     autocmd BufWipeOut * RemoveFile(expand('<abuf>')->str2nr())
     autocmd BufWinEnter * BufferLoadedInWin(expand('<abuf>')->str2nr())
+    # A buffer renamed with ":file" or ":saveas" is another document
+    autocmd BufFilePre * RemoveFile(expand('<abuf>')->str2nr())
+    autocmd BufFilePost * BufferRenamed(expand('<abuf>')->str2nr())
     # Pull fresh diagnostics when a file is modified outside Vim and reloaded
     autocmd FileChangedShellPost * BufferExternallyChanged(expand('<abuf>')->str2nr())
     autocmd OptionSet endofline,fixendofline,binary EolOptionSet(bufnr())
@@ -812,6 +815,15 @@ export def RemoveFile(bnr: number): void
 
   if bufAttachStates->has_key(bnr)
     bufAttachStates->remove(bnr)
+  endif
+enddef
+
+# Buffer "bnr" was renamed, and detached from the language servers for its
+# old name.  Attach it to the language servers for its new name, if it still
+# has a name.
+def BufferRenamed(bnr: number)
+  if !bnr->bufname()->empty()
+    AddFile(bnr)
   endif
 enddef
 
