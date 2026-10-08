@@ -1590,6 +1590,35 @@ def g:Test_TextdocDidChange_IncrementalSync_NoEolAnchorsToLastLineEnd()
   :%bw!
 enddef
 
+# A completion request supersedes the earlier ones, so a late reply to an
+# earlier request must not be taken as the reply to the latest one.
+def g:Test_GetCompletion_IgnoresSupersededReply()
+  silent! edit XGetCompletionSuperseded.txt
+  defer execute(':%bw!')
+  var lspserver = MakeTestLspServer([])
+  lspserver.isCompletionProvider = true
+  lspserver.completionLazyDoc = false
+  var replyCbs: list<func> = []
+  lspserver.rpc_a = (_, _, Cb) => {
+    replyCbs->add(Cb)
+    return 0
+  }
+
+  lspserver.omniCompletePending = true
+  lspserver.completeItems = []
+  lspserver.getCompletion(1, '')
+  lspserver.getCompletion(1, '')
+
+  replyCbs[0](lspserver, [{label: 'stale'}], {})
+  replyCbs[0](lspserver, v:null, {code: -32800, message: 'Request cancelled'})
+  assert_true(lspserver.omniCompletePending)
+  assert_equal([], lspserver.completeItems)
+
+  replyCbs[1](lspserver, [{label: 'latest'}], {})
+  assert_false(lspserver.omniCompletePending)
+  assert_equal(['latest'], lspserver.completeItems->mapnew((_, v) => v.word))
+enddef
+
 # Only here to because the test runner needs it
 def g:StartLangServer(): bool
   return true
