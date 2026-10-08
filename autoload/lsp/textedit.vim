@@ -141,8 +141,8 @@ export def ApplyTextEdits(bnr: number, text_edits: list<dict<any>>): void
   updated_edits->sort('Edit_sort_func')
 
   var lines: list<string> = bnr->getbufline(start_line + 1, finish_line + 1)
-  var fix_eol: bool = bnr->getbufvar('&fixeol')
-  var set_eol = fix_eol && bnr->getbufinfo()[0].linecount <= finish_line + 1
+  var set_eol = util.BufWritesEol(bnr)
+		&& bnr->getbufinfo()[0].linecount <= finish_line + 1
   if !lines->empty() && set_eol && lines[-1]->len() != 0
     lines->add('')
   endif
