@@ -455,20 +455,48 @@ export def SwitchSourceHeader()
   lspserver.switchSourceHeader()
 enddef
 
-# A buffer is saved. Send the "textDocument/didSave" LSP notification
-def LspSavedFile(bnr: number)
-  var lspservers: list<dict<any>> = buf.BufLspServersGet(bnr)->copy()
+# Returns the running language servers that have the document of buffer
+# "bnr" open under the name of the file that the buffer is written to, in a
+# BufWritePre or BufWritePost autocmd.  Writing the buffer to another file
+# (e.g. ":write copy.c") doesn't save the document.
+def SavedDocServers(bnr: number): list<dict<any>>
+  var uri: string = util.LspFileToUri(expand('<afile>'))
 
   # Copy + filter keeps iteration safe and skips detached/non-running entries.
-  lspservers = lspservers->filter(
-    (key, lspsrv) => !lspsrv->empty() && lspsrv.running
+  return buf.BufLspServersGet(bnr)->copy()->filter(
+    (_, lspsrv) => !lspsrv->empty() && lspsrv.running
+      && lspsrv.docBufnrs->get(uri, -1) == bnr
   )
+enddef
 
+# A buffer is about to be saved.  Format it when the "formatOnSave" option is
+# set, then send the "textDocument/willSave" LSP notification and the
+# "textDocument/willSaveWaitUntil" LSP request, in that order, like Visual
+# Studio Code does.
+def LspWillSaveFile(bnr: number)
+  var lspservers: list<dict<any>> = SavedDocServers(bnr)
   if lspservers->empty()
     return
   endif
 
+  if opt.lspOptions.formatOnSave && bnr->getbufvar('&modifiable')
+    var fmtServer: dict<any> = buf.BufLspServerGet(bnr, 'documentFormatting')
+    if !fmtServer->empty()
+	&& lspservers->indexof((_, lspsrv) => lspsrv.id == fmtServer.id) != -1
+      # In a BufWritePre autocmd, the buffer being written is the current
+      # buffer, which textDocFormat() formats.
+      fmtServer.textDocFormat(bnr->bufname(), false, 0, 0)
+    endif
+  endif
+
   for lspserver in lspservers
+    lspserver.willSaveFile(bnr)
+  endfor
+enddef
+
+# A buffer is saved. Send the "textDocument/didSave" LSP notification
+def LspSavedFile(bnr: number)
+  for lspserver in SavedDocServers(bnr)
     lspserver.didSaveFile(bnr)
   endfor
 enddef
@@ -506,16 +534,26 @@ enddef
 def AddBufLocalAutocmds(lspserver: dict<any>, bnr: number): void
   var acmds: list<dict<any>> = []
 
-  # file saved notification handler
+  # The handlers of these autocmds act for all the language servers of the
+  # buffer, so each of them replaces the one added for another server.
+
+  # file save handlers
+  acmds->add({bufnr: bnr,
+	      event: 'BufWritePre',
+	      group: 'LSPBufferAutocmds',
+	      replace: true,
+	      cmd: $'LspWillSaveFile({bnr})'})
   acmds->add({bufnr: bnr,
 	      event: 'BufWritePost',
 	      group: 'LSPBufferAutocmds',
+	      replace: true,
 	      cmd: $'LspSavedFile({bnr})'})
 
   # Update the diagnostics when insert mode is stopped
   acmds->add({bufnr: bnr,
 	      event: 'InsertLeave',
 	      group: 'LSPBufferAutocmds',
+	      replace: true,
 	      cmd: $'LspLeftInsertMode({bnr})'})
 
   # Auto highlight all the occurrences of the current keyword
@@ -607,7 +645,7 @@ enddef
 
 # The LSP server with ID "lspserverId" is ready, initialize the LSP features
 # for buffer "bnr".
-def BufferInit(lspserverId: number, bnr: number): void
+export def BufferInit(lspserverId: number, bnr: number): void
   var lspserver = buf.BufLspServerGetById(bnr, lspserverId)
   if lspserver->empty() || !lspserver.running
     return

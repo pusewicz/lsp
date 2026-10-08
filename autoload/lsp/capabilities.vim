@@ -33,6 +33,8 @@ export def ProcessServerCaps(lspserver: dict<any>, caps: dict<any>)
 
   # textDocumentSync capabilities
   lspserver.supportsDidSave = false
+  lspserver.supportsWillSave = false
+  lspserver.supportsWillSaveWaitUntil = false
   lspserver.supportsDidOpenClose = false
   lspserver.textDocumentSync = protocol.TextDocumentSyncKindNone
   if lspserver.caps->has_key('textDocumentSync')
@@ -58,6 +60,13 @@ export def ProcessServerCaps(lspserver: dict<any>, caps: dict<any>)
 	  lspserver.supportsDidSave = true
 	endif
       endif
+      # "willSave" and "willSaveWaitUntil"
+      var willSave: any = lspserver.caps.textDocumentSync->get('willSave')
+      lspserver.supportsWillSave = willSave->type() == v:t_bool && willSave
+      var willSaveWaitUntil: any =
+	lspserver.caps.textDocumentSync->get('willSaveWaitUntil')
+      lspserver.supportsWillSaveWaitUntil =
+	willSaveWaitUntil->type() == v:t_bool && willSaveWaitUntil
       # "change"
       if lspserver.caps.textDocumentSync->has_key('change')
 	lspserver.textDocumentSync = lspserver.caps.textDocumentSync.change
@@ -629,8 +638,8 @@ export def GetClientCaps(): dict<any>
       synchronization: {
 	dynamicRegistration: false,
 	didSave: true,
-	willSave: false,
-	willSaveWaitUntil: false
+	willSave: true,
+	willSaveWaitUntil: true
       },
       typeDefinition: {
 	dynamicRegistration: false,
