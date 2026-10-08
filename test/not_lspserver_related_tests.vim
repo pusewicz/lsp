@@ -25,6 +25,7 @@ def g:Test_CompletionList_ItemDefaults_EditRange()
     completionLazyDoc: false,
     completeItems: [],
     completeItemsIsIncomplete: false,
+    posEncoding: 32,
   }
 
   var cItems = {
@@ -550,6 +551,11 @@ def TeardownTruncatingServerBuffer(lspserver: dict<any>)
     timer_stop(timer)
   endfor
   test_override('char_avail', 0)
+  # 'autocomplete' is global before patch 9.1.1779, so ":setlocal" sets it for
+  # the following tests too.
+  if exists('+autocomplete')
+    set noautocomplete
+  endif
   buf.BufLspServerRemove(bufnr(), lspserver)
   :%bw!
 enddef
@@ -843,6 +849,26 @@ def g:Test_Completion_MarkdownDoc_LazyDocRenderedOnce()
   endtry
 enddef
 
+# Same without "popup" in 'completeopt': the documentation is shown and
+# rendered in the preview window.
+def g:Test_Completion_MarkdownDoc_LazyDocPreviewWindow()
+  if !exists('+autocomplete')
+    return
+  endif
+  g:LspOptionsSet({autoComplete: false, omniComplete: true,
+		   closePreviewOnComplete: false})
+  try
+    assert_equal({
+	popup: {},
+	preview: {ft: 'lspgfm', text: ['int x;'], codeBlocks: 1},
+      }, SelectMarkdownDocItem(MakeMarkdownDocServer("```c\nint x;\n```", true),
+			       'menuone,preview'))
+  finally
+    g:LspOptionsSet({autoComplete: true, omniComplete: null,
+		     closePreviewOnComplete: true})
+  endtry
+enddef
+
 # Regression test for CompletionItem.preselect ordering.
 def g:Test_Completion_Preselect_ItemFirst()
   silent! edit XCompletionPreselect.vim
@@ -913,6 +939,217 @@ def g:Test_Completion_Preselect_NoopWithoutPreselect()
   assert_equal('gamma', lspserver.completeItems[2].word)
 
   :%bw!
+enddef
+
+# Returns the LSP range from character "start" to "end" on the first line.
+def FirstLineRange(start: number, end: number): dict<any>
+  return {start: {line: 0, character: start}, end: {line: 0, character: end}}
+enddef
+
+# Completions of TypeScript object properties as typescript-language-server
+# (with TypeScript 4.9) and TypeScript 7 ("tsc --lsp") send them.  They
+# complete an optional property ("address?: Address") with optional chaining
+# and a property that isn't an identifier ("'my-key'?: number") with bracket
+# notation, using a text edit that replaces the "." before the keyword.
+# Completing "text" (followed by "after"), accepting the "pick"-th match and
+# typing "|" results in "expected".
+def TextEditCompletionCases(): list<dict<any>>
+  var tsgoOptional = [{
+    label: 'state?', insertText: '?.state', filterText: '.state',
+    textEdit: {range: FirstLineRange(11, 12), newText: '?.state'},
+  }, {
+    label: 'town?', insertText: '?.town', filterText: '.town',
+    textEdit: {range: FirstLineRange(11, 12), newText: '?.town'},
+  }]
+  var ts49Member = [{
+    label: 'address?', filterText: '.address',
+    textEdit: {range: FirstLineRange(3, 4), newText: '.address'},
+  }, {
+    label: 'my-key?', filterText: '.["my-key"]',
+    textEdit: {range: FirstLineRange(3, 4), newText: '["my-key"]'},
+  }]
+  var multibyteItem = {
+    label: 'state?', insertText: '?.state', filterText: '.state',
+    textEdit: {newText: '?.state'},
+  }
+
+  return [{
+    name: 'tsgo optional chaining',
+    text: 'foo.address.',
+    items: tsgoOptional,
+    pick: 2,
+    expected: 'foo.address?.town|',
+  }, {
+    name: 'tsgo optional chaining after a keyword',
+    text: 'foo.address.st',
+    items: [tsgoOptional[0]->deepcopy()->extend({
+      textEdit: {range: FirstLineRange(11, 14), newText: '?.state'}}),
+      tsgoOptional[1]],
+    pick: 1,
+    expected: 'foo.address?.state|',
+  }, {
+    name: 'TS 4.9 optional chaining',
+    text: 'foo.address.',
+    items: [{
+      label: 'state?', filterText: '.?.state',
+      textEdit: {range: FirstLineRange(11, 12), newText: '?.state'},
+    }, {
+      label: 'town?', filterText: '.?.town',
+      textEdit: {range: FirstLineRange(11, 12), newText: '?.town'},
+    }],
+    pick: 1,
+    expected: 'foo.address?.state|',
+  }, {
+    name: 'TS 4.9 optional chaining after a keyword',
+    text: 'foo.address.to',
+    items: [{
+      label: 'state?', filterText: '?.state',
+      textEdit: {range: FirstLineRange(11, 12), newText: '?.state'},
+    }, {
+      label: 'town?', filterText: '?.town',
+      textEdit: {range: FirstLineRange(11, 14), newText: '?.town'},
+    }],
+    pick: 1,
+    expected: 'foo.address?.town|',
+  }, {
+    name: 'TS 4.9 member access',
+    text: 'foo.',
+    items: ts49Member,
+    pick: 1,
+    expected: 'foo.address|',
+  }, {
+    name: 'TS 4.9 bracket notation',
+    text: 'foo.',
+    items: ts49Member,
+    pick: 2,
+    expected: 'foo["my-key"]|',
+  }, {
+    name: 'tsgo bracket notation after a keyword',
+    text: 'foo.my',
+    items: [{
+      label: 'name?', filterText: 'name',
+      textEdit: {insert: FirstLineRange(4, 6), replace: FirstLineRange(4, 6),
+		 newText: 'name'},
+    }, {
+      label: 'my-key?', insertText: '["my-key"]', filterText: '.my-key',
+      textEdit: {range: FirstLineRange(3, 6), newText: '["my-key"]'},
+    }],
+    pick: 1,
+    expected: 'foo["my-key"]|',
+  }, {
+    name: 'UTF-16 position offsets',
+    text: '/* 😀 */ foo.address.',
+    posEncoding: 16,
+    items: [multibyteItem->deepcopy()->extend({
+      textEdit: {range: FirstLineRange(20, 21), newText: '?.state'}})],
+    pick: 1,
+    expected: '/* 😀 */ foo.address?.state|',
+  }, {
+    name: 'UTF-8 position offsets',
+    text: '/* 😀 */ foo.address.',
+    posEncoding: 8,
+    items: [multibyteItem->deepcopy()->extend({
+      textEdit: {range: FirstLineRange(22, 23), newText: '?.state'}})],
+    pick: 1,
+    expected: '/* 😀 */ foo.address?.state|',
+  }, {
+    name: 'InsertReplace edit',
+    text: 'foo.na',
+    after: 'x;',
+    items: [{
+      label: 'name?', filterText: 'name',
+      textEdit: {insert: FirstLineRange(4, 6), replace: FirstLineRange(4, 7),
+		 newText: 'name'},
+    }],
+    pick: 1,
+    expected: 'foo.name|;',
+  }]
+enddef
+
+# Returns a fake completion server, not supporting completionItem/resolve,
+# that replies to every completion request with the items of "testCase" (see
+# TextEditCompletionCases()).
+def MakeTextEditServer(testCase: dict<any>): dict<any>
+  var lspserver: dict<any> = {
+    id: 9004,
+    name: 'test',
+    running: true,
+    ready: true,
+    isCompletionProvider: true,
+    completionLazyDoc: false,
+    completionTriggerChars: ['.'],
+    omniCompletePending: false,
+    completeItems: [],
+    completeItemsIsIncomplete: false,
+    features: {completion: true},
+    featureEnabled: (_) => true,
+    posEncoding: testCase->get('posEncoding', 32),
+  }
+  lspserver.getCompletion = (_, _) => {
+    completion.CompletionReply(lspserver, testCase.items->deepcopy(), {})
+  }
+  lspserver.resolveCompletion = (_, _) => ({})
+  return lspserver
+enddef
+
+# Completes "testCase" (see TextEditCompletionCases()) with omni completion
+# when "omni" is true and with auto-completion otherwise.  Returns the
+# completed line.
+def CompleteTextEditCase(testCase: dict<any>, omni: bool): string
+  silent! edit XCompletionTextEdit.ts
+  setline(1, testCase.text .. testCase->get('after', ''))
+  var lspserver = MakeTextEditServer(testCase)
+  buf.BufLspServerSet(bufnr(), lspserver)
+  completion.OmniComplSet(&filetype, omni)
+  var completedLine = ''
+  try
+    completion.BufferInit(lspserver, bufnr(), &filetype)
+    setlocal completeopt=menuone,noinsert,noselect
+    inoremap <buffer> <F5> <ScriptCmd>completion.LspComplete(true)<CR>
+    cursor(1, testCase.text->len())
+    feedkeys('a' .. (omni ? "\<C-X>\<C-O>" : "\<F5>")
+	     .. repeat("\<C-N>", testCase.pick) .. "\<C-Y>|\<Esc>", 'xt')
+    completedLine = getline(1)
+  finally
+    completion.OmniComplSet(&filetype, false)
+    buf.BufLspServerRemove(bufnr(), lspserver)
+    :%bw!
+  endtry
+  return completedLine
+enddef
+
+# Completes "TextEditCompletionCases()" with every completion matcher, with
+# omni completion when "omni" is true and with auto-completion otherwise.
+def CheckTextEditCompletion(omni: bool)
+  var saveAutoComplete = g:LspOptionsGet().autoComplete
+  var saveCompleteopt = &g:completeopt
+  g:LspOptionsSet({autoComplete: !omni})
+  try
+    for matcher in ['case', 'icase', 'fuzzy']
+      g:LspOptionsSet({completionMatcher: matcher})
+      for testCase in TextEditCompletionCases()
+	if testCase->get('posEncoding', 32) != 32 && !has('patch-9.0.1629')
+	  continue
+	endif
+	assert_equal(testCase.expected, CompleteTextEditCase(testCase, omni),
+		     $'{testCase.name} with the "{matcher}" matcher')
+      endfor
+    endfor
+  finally
+    g:LspOptionsSet({completionMatcher: 'case',
+		     autoComplete: saveAutoComplete})
+    &g:completeopt = saveCompleteopt
+  endtry
+enddef
+
+# A completion item's text edit, including one that replaces text before the
+# keyword being completed, is applied with every completion matcher.
+def g:Test_Completion_TextEdit_OmniComplete()
+  CheckTextEditCompletion(true)
+enddef
+
+def g:Test_Completion_TextEdit_AutoComplete()
+  CheckTextEditCompletion(false)
 enddef
 
 # Regression test for documentOnTypeFormattingProvider trigger char capture.
@@ -1083,6 +1320,63 @@ def g:Test_WorkspaceIgnoredPaths_NormalRoot()
   var ignored: list<string> = [$"{$HOME}"]
   var root: string = $"{$HOME}/project"
   assert_false(util.IsIgnoredRoot(root, ignored))
+enddef
+
+# Test for util.JumpToLspLocation() with file names that have characters that
+# are special in the file name argument of an Ex command.  Each file is opened
+# with ":edit", ":belowright split" and ":{cmdmods} split".
+def g:Test_JumpToLspLocation_SpecialFileName()
+  var names: list<string> = ['Xjump%#.txt', 'Xjump [1].txt']
+  if !has('win32')
+    names->extend(['Xjump$HOME.txt', 'Xjump|echo.txt', 'Xjump\1.txt'])
+  endif
+  # "Xjump [1].txt" expanded as a wildcard matches this file
+  writefile(['decoy'], 'Xjump 1.txt')
+  for name in names
+    writefile([name], name)
+  endfor
+  var pos = {line: 0, character: 0}
+
+  try
+    for name in names
+      var loc = {uri: util.LspFileToUri(name), range: {start: pos, end: pos}}
+
+      util.JumpToLspLocation(loc, '')
+      assert_equal([name, name, 1], [expand('%:t'), getline(1), winnr('$')])
+      :%bw!
+
+      :setlocal buftype=nofile
+      util.JumpToLspLocation(loc, '')
+      assert_equal([name, name, 2, 2],
+		   [expand('%:t'), getline(1), winnr(), winnr('$')])
+      :%bw!
+
+      util.JumpToLspLocation(loc, 'topleft')
+      assert_equal([name, name, 1, 2],
+		   [expand('%:t'), getline(1), winnr(), winnr('$')])
+      :%bw!
+    endfor
+  finally
+    delete('Xjump 1.txt')
+    for name in names
+      delete(name)
+    endfor
+    :%bw!
+  endtry
+enddef
+
+# Test for util.ServerMessagesShow() with a log file name that has characters
+# that are special in the file name argument of an Ex command.
+def g:Test_ServerMessagesShow_SpecialFileName()
+  var fname: string = 'lsp-Xmsgs [1]%#.log'
+  util.ClearTraceLogs(fname)
+  util.ServerMessagesShow(fname)
+  var logfile: string = expand('%:p')
+  assert_equal([fname, 2], [logfile->fnamemodify(':t'), winnr('$')])
+  :%bw!
+  if logfile->fnamemodify(':t') == fname
+    delete(logfile)
+  endif
 enddef
 
 # vim: tabstop=8 shiftwidth=2 softtabstop=2 noexpandtab

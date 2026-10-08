@@ -69,7 +69,7 @@ export def ServerMessagesShow(fname: string)
   endif
   var wid = fullname->bufwinid()
   if wid == -1
-    exe $'split {fullname}'
+    exe $'split {fullname->fnameescape()}'
   else
     win_gotoid(wid)
   endif
@@ -379,16 +379,16 @@ export def JumpToLspLocation(location: dict<any>, cmdmods: string)
             # if the current buffer has unsaved changes and 'hidden' is not set,
             # or if the current buffer is a special buffer, then open the file
             # in a new window
-            exe $'belowright split {fname}'
+            exe $'belowright split {fname->fnameescape()}'
           else
-            exe $'edit {fname}'
+            exe $'edit {fname->fnameescape()}'
           endif
         endif
       endif
     endif
   else
     if bnr == -1
-      exe $'{cmdmods} split {fname}'
+      exe $'{cmdmods} split {fname->fnameescape()}'
     else
       # Use "sbuffer" so that the 'switchbuf' option settings are used.
       exe $'{cmdmods} sbuffer {bnr}'

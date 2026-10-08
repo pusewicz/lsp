@@ -6,3 +6,4 @@ test/X*.cpp
 # test/Xtest.c
 # test/Xtest.cpp
 test/results.txt
+test/node_modules

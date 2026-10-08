@@ -1327,9 +1327,9 @@ def SwitchSourceHeader(lspserver: dict<any>)
   if (&modified && !&hidden) || &buftype != ''
     # if the current buffer has unsaved changes and 'hidden' is not set,
     # or if the current buffer is a special buffer, then ask to save changes
-    exe $'confirm edit {fname}'
+    exe $'confirm edit {fname->fnameescape()}'
   else
-    exe $'edit {fname}'
+    exe $'edit {fname->fnameescape()}'
   endif
 enddef
 
@@ -2164,18 +2164,14 @@ def GetCodeActionParams(lspserver: dict<any>, fname_arg: string, line1: number,
 
   # Diagnostics are scoped per-server so each provider gets context that
   # matches its own diagnostic namespace and offset encoding.
-  var d: list<dict<any>> = []
-  var needOffsetEncoding = lspserver.needOffsetEncoding
-  for lnum in range(line1, line2)
-    var diagsInfo: list<dict<any>> = diag.GetDiagsByLine(bnr, lnum, lspserver)->deepcopy()
-    if needOffsetEncoding
-      diagsInfo->map((_, di) => {
-	  lspserver.encodeRange(bnr, di.range)
-	  return di
-	})
-    endif
-    d->extend(diagsInfo)
-  endfor
+  var d: list<dict<any>> =
+    diag.GetDiagsInLineRange(bnr, line1, line2, lspserver)->deepcopy()
+  if lspserver.needOffsetEncoding
+    d->map((_, di) => {
+	lspserver.encodeRange(bnr, di.range)
+	return di
+      })
+  endif
   params->extend({context: {diagnostics: d, triggerKind: 1}})
 
   var queryInfo = ParseCodeActionQuery(query)
