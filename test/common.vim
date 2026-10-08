@@ -158,11 +158,6 @@ def g:StartLangServerWithFile(fname: string): bool
   var serverStatus: bool = g:LspServerReady()
   :bw!
 
-  if !serverStatus
-    writefile(['FAIL: Not able to start the language server'], 'results.txt')
-    qall!
-  endif
-
   return serverStatus
 enddef
 

@@ -32,8 +32,17 @@ ALL_TESTS=(
   "not_lspserver_related_tests.vim"
   "markdown_tests.vim"
 )
-TESTS_TO_RUN="${@:-${ALL_TESTS[@]}}"
+if (( $# > 0 )); then
+  TESTS_TO_RUN=("$@")
+else
+  TESTS_TO_RUN=("${ALL_TESTS[@]}")
+fi
 
+TOTAL_PASSED=0
+
+# Run the tests in one file and check its results.  Returns 0 when the file's
+# tests all passed or the file was skipped on purpose, 2 when Vim did not
+# finish or no tests ran, and 3 when a test failed.
 RunTestsInFile() {
   local testfile=$1
   local encoding=${2:-"utf-8"}
@@ -67,7 +76,7 @@ RunTestsInFile() {
   # stopped before running all the tests.
   if [[ $vim_status -ne 0 ]]; then
     echo "RESULT: Vim exited with status $vim_status while running $testfile."
-    return 4
+    return 2
   fi
 
   if grep -qw "FAIL" "$res_file"; then
@@ -75,15 +84,30 @@ RunTestsInFile() {
     return 3
   fi
 
-  echo "RESULT: All tests in $testfile PASSED."
+  if grep -q "^SKIP:" "$res_file"; then
+    echo "RESULT: $testfile SKIPPED."
+    echo ""
+    rm "$res_file"
+    return 0
+  fi
+
+  local passed
+  passed=$(grep -c "^Test_[[:alnum:]_]*: pass$" "$res_file")
+  if (( passed == 0 )); then
+    echo "ERROR: No tests ran in $testfile."
+    return 2
+  fi
+
+  echo "RESULT: All $passed tests in $testfile PASSED."
   echo ""
   rm "$res_file"
+  TOTAL_PASSED=$((TOTAL_PASSED + passed))
 }
 
 # --- Main Execution ---
 
 # 1. Standard Suite
-for testfile in $TESTS_TO_RUN; do
+for testfile in "${TESTS_TO_RUN[@]}"; do
   RunTestsInFile "$testfile" || exit $?
 done
 
@@ -96,7 +120,12 @@ if [[ "$*" == "" || "$*" == *"clangd"* ]]; then
 fi
 
 echo "---------------------------------------"
-echo "SUCCESS: All specified tests passed."
+if (( TOTAL_PASSED == 0 )); then
+  echo "ERROR: No tests ran."
+  exit 2
+fi
+
+echo "SUCCESS: All $TOTAL_PASSED specified tests passed."
 exit 0
 
 # vim: tabstop=2 shiftwidth=2 softtabstop=2 expandtab
