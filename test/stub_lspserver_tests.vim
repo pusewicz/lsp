@@ -243,12 +243,15 @@ def g:Test_Rpc_CancelsTimedOutRequest()
   var notifications: list<dict<any>> = []
   var lspserver = MakeTestLspServer(notifications)
   lspserver.job = StartStubServerJob([])
-  defer job_stop(lspserver.job)
-  var id = lspserver.nextSyncRpcId
+  try
+    var id = lspserver.nextSyncRpcId
 
-  assert_equal({}, lspserver.rpc('test/noReply', {}, {timeout: 50}))
-  assert_equal([{method: '$/cancelRequest', params: {id: id}}], notifications)
-  assert_equal({}, lspserver.syncRpcReplies)
+    assert_equal({}, lspserver.rpc('test/noReply', {}, {timeout: 50}))
+    assert_equal([{method: '$/cancelRequest', params: {id: id}}], notifications)
+    assert_equal({}, lspserver.syncRpcReplies)
+  finally
+    job_stop(lspserver.job)
+  endtry
 enddef
 
 # Test that CTRL-C while waiting for the reply to a synchronous request
@@ -263,18 +266,21 @@ def g:Test_Rpc_CancelsInterruptedRequest()
     {out_cb: (_, _) => {
       interrupt()
     }})
-  defer job_stop(lspserver.job)
-  var id = lspserver.nextSyncRpcId
-
-  var interrupted = false
   try
-    lspserver.rpc('test/noReply', {}, {timeout: 5000})
-  catch /^Vim:Interrupt$/
-    interrupted = true
+    var id = lspserver.nextSyncRpcId
+
+    var interrupted = false
+    try
+      lspserver.rpc('test/noReply', {}, {timeout: 5000})
+    catch /^Vim:Interrupt$/
+      interrupted = true
+    endtry
+    assert_true(interrupted)
+    assert_equal([{method: '$/cancelRequest', params: {id: id}}], notifications)
+    assert_equal({}, lspserver.syncRpcReplies)
+  finally
+    job_stop(lspserver.job)
   endtry
-  assert_true(interrupted)
-  assert_equal([{method: '$/cancelRequest', params: {id: id}}], notifications)
-  assert_equal({}, lspserver.syncRpcReplies)
 enddef
 
 # Test that a reply saying that the request was cancelled, by the client or by
