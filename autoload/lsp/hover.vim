@@ -103,16 +103,6 @@ export def HoverAutoSchedule(bnr: number)
   endif
 enddef
 
-# Return true when 'reqctx' still matches the current editor state (buffer,
-# cursor line/column, and changedtick).  Used to discard stale async replies
-# that arrived after the user moved the cursor or edited the buffer.
-def HoverRequestContextMatches(reqctx: dict<any>): bool
-  return reqctx.bnr == bufnr()
-      && reqctx.changedtick == reqctx.bnr->getbufvar('changedtick', -1)
-      && reqctx.lnum == line('.')
-      && reqctx.col == charcol('.')
-enddef
-
 # When no hover text is available, emit a warning.  When 'hoverFallback' is
 # enabled and 'keywordprg' points to something other than ':LspHover', the
 # built-in 'K' command is invoked as a fallback instead.  A silent request,
@@ -198,19 +188,12 @@ def ShowHover(lspserver: dict<any>, hoverText: list<any>, hoverKind: string,
   endif
 enddef
 
-# Snapshot the current editor state (server id, buffer, cursor line/column,
-# and changedtick) into a context dict.  The context is recorded with async
-# hover requests so that stale replies can be detected on arrival, and stored
+# Snapshot the current editor state (see util.RequestContextGet()) and the
+# server id into a context dict.  The context is recorded with async hover
+# requests so that stale replies can be detected on arrival, and stored
 # alongside cache entries so that invalidation is automatic.
-export def HoverRequestContextGet(lspserver: dict<any>): dict<any>
-  var bnr = bufnr()
-  return {
-    serverid: lspserver.id,
-    bnr: bnr,
-    changedtick: bnr->getbufvar('changedtick', -1),
-    lnum: line('.'),
-    col: charcol('.')
-  }
+export def HoverRequestContextGet(lspserver: dict<any>): dict<number>
+  return util.RequestContextGet('cursor')->extend({serverid: lspserver.id})
 enddef
 
 # Try to show hover information from the cache for 'reqctx'.  Returns true
@@ -379,7 +362,7 @@ export def HoverReply(lspserver: dict<any>, hoverResult: any,
     return
   endif
 
-  if !reqctx->empty() && !HoverRequestContextMatches(reqctx)
+  if !reqctx->empty() && !util.RequestContextMatches(reqctx)
     return
   endif
 
