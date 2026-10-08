@@ -56,7 +56,7 @@ export def HandleCodeAction(lspserver: dict<any>, selAction: dict<any>)
     # codeAction is a CodeAction instance, apply edit and command
     if codeAction->has_key('edit')
       # apply edit first
-      textedit.ApplyWorkspaceEdit(codeAction.edit)
+      textedit.ApplyWorkspaceEdit(codeAction.edit, lspserver)
     endif
     if codeAction->has_key('command')
       DoCommand(lspserver, codeAction.command)
