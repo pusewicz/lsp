@@ -689,6 +689,159 @@ def g:Test_CompleteSource_Autocomplete_SlowFirstReply()
   endtry
 enddef
 
+# Returns a fake completion server whose single item is documented in markdown
+# by "doc", sent in the completion reply.  Without "lazyDoc" it is like clangd,
+# which doesn't support completionItem/resolve.
+def MakeMarkdownDocServer(doc: string, lazyDoc: bool = false): dict<any>
+  var lspserver: dict<any> = {
+    id: 9004,
+    name: 'test',
+    running: true,
+    ready: true,
+    isCompletionProvider: true,
+    completionLazyDoc: lazyDoc,
+    completionTriggerChars: [],
+    omniCompletePending: false,
+    completeItems: [],
+    completeItemsIsIncomplete: false,
+    features: {completion: true},
+    featureEnabled: (_) => true,
+    resolveCompletion: (item, _) => item,
+  }
+  var items = [{
+    label: 'SDL_Log',
+    documentation: {kind: 'markdown', value: doc},
+  }]
+  lspserver.getCompletion = (_, _) => {
+    completion.CompletionReply(lspserver, items->deepcopy(), {})
+  }
+  return lspserver
+enddef
+
+# Returns the 'filetype', the lines and the number of syntax highlighted code
+# blocks of buffer "bnr" showing completion documentation.
+def DocBufferState(bnr: number): dict<any>
+  return {
+    ft: bnr->getbufvar('&ft'),
+    text: bnr->getbufline(1, '$'),
+    codeBlocks: bnr->getbufvar('lsp_syntax', [])->len(),
+  }
+enddef
+
+# Returns the DocBufferState() of the info popup when it is visible.
+def VisibleInfoPopupState(): dict<any>
+  var id = popup_findinfo()
+  if id == 0 || !id->popup_getpos().visible
+    return {}
+  endif
+  return id->winbufnr()->DocBufferState()
+enddef
+
+# Selects the completion item of "lspserver", a MakeMarkdownDocServer(), with
+# 'completeopt' set to "completeopt".  Returns the DocBufferState() of the info
+# popup ("popup") and of the preview window ("preview") showing its
+# documentation, or an empty dict for one that doesn't.
+def SelectMarkdownDocItem(lspserver: dict<any>,
+			  completeopt: string): dict<dict<any>>
+  # Find the lspgfm ftplugin and syntax files that render markdown
+  var rtp = &rtp
+  &rtp = $"{fnamemodify('..', ':p')},{&rtp}"
+  silent! edit XCompletionMarkdownDoc.c
+  buf.BufLspServerSet(bufnr(), lspserver)
+  completion.BufferInit(lspserver, bufnr(), 'c')
+  &l:complete = 'Fg:LspCompleteSource'
+  &l:completeopt = completeopt
+  test_override('char_avail', 1)
+  # Vim reuses the info popup of an earlier completion, 'filetype' included
+  popup_findinfo()->popup_close()
+  b:popupState = {}
+  # The preview window 'filetype' is set from a timer, which runs in the wait
+  inoremap <buffer> <F2> <ScriptCmd>sleep 20m<CR>
+  inoremap <buffer> <F3> <ScriptCmd>b:popupState = VisibleInfoPopupState()<CR>
+  var state: dict<dict<any>> = {popup: {}, preview: {}}
+  try
+    feedkeys("SSDL_Lo\<C-N>\<F2>\<F3>\<Esc>", 'tx!')
+    state.popup = b:popupState
+    for w in range(1, winnr('$'))
+      if getwinvar(w, '&previewwindow')
+	state.preview = w->winbufnr()->DocBufferState()
+      endif
+    endfor
+  finally
+    test_override('char_avail', 0)
+    buf.BufLspServerRemove(bufnr(), lspserver)
+    :pclose
+    :%bw!
+    &rtp = rtp
+  endtry
+  return state
+enddef
+
+const sdlLogDoc = "Log a message with SDL\\_LOG\\_PRIORITY\\_INFO.\n\n\\\\param fmt"
+const sdlLogDocRendered = {
+  ft: 'lspgfm',
+  text: ['Log a message with SDL_LOG_PRIORITY_INFO.', '', '\param fmt'],
+  codeBlocks: 0,
+}
+
+# The documentation of an item that is not resolved lazily is rendered as
+# markdown in the info popup, which overrides the preview window even with
+# completionInPreview (that sets 'completeopt' only for autoComplete).
+def g:Test_Completion_MarkdownDoc_InfoPopup()
+  if !exists('+autocomplete')
+    return
+  endif
+  g:LspOptionsSet({autoComplete: false, omniComplete: true})
+  try
+    for inPreview in [false, true]
+      g:LspOptionsSet({completionInPreview: inPreview})
+      assert_equal({popup: sdlLogDocRendered, preview: {}},
+		   SelectMarkdownDocItem(MakeMarkdownDocServer(sdlLogDoc),
+					 'menuone,popup,preview'))
+    endfor
+  finally
+    g:LspOptionsSet({autoComplete: true, omniComplete: null,
+		     completionInPreview: false})
+  endtry
+enddef
+
+# Without "popup" in 'completeopt' the documentation is shown and rendered as
+# markdown in the preview window.
+def g:Test_Completion_MarkdownDoc_PreviewWindow()
+  if !exists('+autocomplete')
+    return
+  endif
+  g:LspOptionsSet({autoComplete: false, omniComplete: true,
+		   closePreviewOnComplete: false})
+  try
+    assert_equal({popup: {}, preview: sdlLogDocRendered},
+		 SelectMarkdownDocItem(MakeMarkdownDocServer(sdlLogDoc),
+				       'menuone,preview'))
+  finally
+    g:LspOptionsSet({autoComplete: true, omniComplete: null,
+		     closePreviewOnComplete: true})
+  endtry
+enddef
+
+# Documentation that a server supporting completionItem/resolve sent in the
+# completion reply is rendered as markdown only once, which keeps the syntax
+# highlighting of its code blocks.
+def g:Test_Completion_MarkdownDoc_LazyDocRenderedOnce()
+  if !exists('+autocomplete')
+    return
+  endif
+  g:LspOptionsSet({autoComplete: false, omniComplete: true})
+  try
+    assert_equal({
+	popup: {ft: 'lspgfm', text: ['int x;'], codeBlocks: 1},
+	preview: {},
+      }, SelectMarkdownDocItem(MakeMarkdownDocServer("```c\nint x;\n```", true),
+			       'menuone,popup'))
+  finally
+    g:LspOptionsSet({autoComplete: true, omniComplete: null})
+  endtry
+enddef
+
 # Regression test for CompletionItem.preselect ordering.
 def g:Test_Completion_Preselect_ItemFirst()
   silent! edit XCompletionPreselect.vim
