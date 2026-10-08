@@ -860,20 +860,6 @@ def HunkText(newBufLines: list<string>, hunk: dict<number>, hasEol: bool): strin
   return text
 enddef
 
-# Length of "line" in the position encoding negotiated with the server
-# ("posEncoding": 8, 16 or 32).  Used to anchor a range to the end of a line
-# that only exists in a cached (old-document) snapshot, so
-# offset.EncodePosition() (which reads the live buffer) doesn't apply.
-def EncodedLineLen(lspserver: dict<any>, line: string): number
-  if lspserver.posEncoding == 8
-    return line->strlen()
-  elseif lspserver.posEncoding == 16
-    return line->strutf16len(true)
-  else
-    return line->strchars()
-  endif
-enddef
-
 # Send a file/document opened notification to the language server.
 def TextdocDidOpen(lspserver: dict<any>, bnr: number, ftype: string): void
   # Notification: 'textDocument/didOpen'
@@ -1131,10 +1117,10 @@ def TextdocDidChange(lspserver: dict<any>, bnr: number): void
 	  # doesn't start at the first line, pull the start back over the
 	  # newline that precedes it too, so that line's break is removed.
 	  endLine = oldLineCount - 1
-	  endChar = EncodedLineLen(lspserver, oldBufLines[endLine])
+	  endChar = offset.EncodedLineLen(lspserver, oldBufLines[endLine])
 	  if startLine > 0
 	    startLine -= 1
-	    startChar = EncodedLineLen(lspserver, oldBufLines[startLine])
+	    startChar = offset.EncodedLineLen(lspserver, oldBufLines[startLine])
 	    if hunk.to_count > 0
 	      text = "\n" .. text
 	    endif
@@ -2217,6 +2203,11 @@ def ParseCodeActionQuery(query: string): dict<any>
   return result
 enddef
 
+# Return the "params" of the "textDocument/codeAction" request to "lspserver"
+# for lines "line1" to "line2" of the file "fname_arg", with the diagnostics of
+# the server on them and the code action kinds in "query", and the
+# "selectorQuery" in "query" that picks from the code actions.  When the lines
+# are just the cursor line, the range starts at the cursor.
 def GetCodeActionParams(lspserver: dict<any>, fname_arg: string, line1: number,
 			line2: number, query: string): dict<any>
   # Keep request construction in one place so sync/async code action paths
@@ -2227,7 +2218,7 @@ def GetCodeActionParams(lspserver: dict<any>, fname_arg: string, line1: number,
   var r: dict<dict<number>> = {
     start: {
       line: line1 - 1,
-      character: line1 == line2
+      character: line1 == line2 && line1 == line('.')
 	? util.GetCharIdxWithCompChar(getline('.'), charcol('.') - 1)
 	: 0
     },
