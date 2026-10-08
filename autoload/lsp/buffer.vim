@@ -152,7 +152,7 @@ export def BufGetServerBufnrs(lspserver: dict<any>): list<number>
   return bufnrToServers->keys()
     ->map((_, k) => str2nr(k))
     ->filter((_, bnr) => bufnrToServers[bnr]
-      ->util.Indexof((_, srv) => srv.id == lspserver.id) >= 0)
+      ->indexof((_, srv) => srv.id == lspserver.id) >= 0)
 enddef
 
 # Returns the LSP server for the current buffer with the optionally "feature".

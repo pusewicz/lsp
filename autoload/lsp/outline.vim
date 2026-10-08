@@ -270,7 +270,7 @@ def OutlineShowSymbolDetail(lnum: number)
     return
   endif
 
-  var idx = util.Indexof(symbolTable, (_, v) => v.outlineLine == lnum)
+  var idx = symbolTable->indexof((_, v) => v.outlineLine == lnum)
   if idx != -1
     echo $'{symbolTable[idx].name}: {symbolTable[idx].detail}'
   else

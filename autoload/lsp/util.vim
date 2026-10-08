@@ -400,19 +400,6 @@ export def JumpToLspLocation(location: dict<any>, cmdmods: string)
   :normal! zv
 enddef
 
-# indexof() function is not present in older Vim 9 versions.  So use this
-# function.
-export def Indexof(list: list<any>, CallbackFn: func(number, any): bool): number
-  var ix = 0
-  for val in list
-    if CallbackFn(ix, val)
-      return ix
-    endif
-    ix += 1
-  endfor
-  return -1
-enddef
-
 # Find the nearest root directory containing a file or directory name from the
 # list of names in "files" starting with the directory "startDir".
 # Based on a similar implementation in the vim-lsp plugin.

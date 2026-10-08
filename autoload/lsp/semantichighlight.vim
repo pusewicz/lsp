@@ -199,13 +199,7 @@ def ProcessSemanticTokens(lspserver: dict<any>, bnr: number, tokens: list<number
 enddef
 
 def ClearSemanticHighlightProps(bnr: number)
-  if has('patch-9.0.0233')
-    prop_remove({types: TokenPropTypes, bufnr: bnr, all: true})
-  else
-    for propName in TokenPropTypes
-      prop_remove({type: propName, bufnr: bnr, all: true})
-    endfor
-  endif
+  prop_remove({types: TokenPropTypes, bufnr: bnr, all: true})
 enddef
 
 def SemanticHighlightTimerCb(lspserver: dict<any>, bnr: number, _: number)
