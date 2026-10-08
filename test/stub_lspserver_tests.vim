@@ -527,9 +527,9 @@ def g:Test_AsyncRpc_SendsPendingChangesOfAllBuffersFirst()
     assert_equal([{text: "ONE\n"}], messages[0].params.contentChanges)
   finally
     g:LSPTest = true
-    listenerIds->foreach((_, id) => {
+    for id in listenerIds
       listener_remove(id)
-    })
+    endfor
     job_stop(lspserver.job)
     buf.BufLspServerRemove(bnr1, lspserver)
     buf.BufLspServerRemove(bnr2, lspserver)
