@@ -1453,6 +1453,56 @@ def g:Test_LspFileToUri_RoundTrip()
   endfor
 enddef
 
+# Test for decoding the percent-encoded octets in the path of a "file:" URI.
+# The octets of a multibyte character form the character, whatever the case
+# of the hexadecimal digits.  "%25" is a "%" that is not decoded again.  A "%"
+# that is not followed by two hexadecimal digits, "%00" and a "+" are kept, and
+# so are octets that are not valid UTF-8 and a composing character after an
+# encoded octet.
+def g:Test_LspUriToFile_PercentDecoding()
+  var cases: list<list<string>> = [
+    ['file:///x/%C3%A9%E2%82%AC%F0%9F%98%80.c', '/x/é€😀.c'],
+    ['file:///x/e%CC%81.c', "/x/é.c"],
+    ["file:///x/%2B́%41́.c", "/x/+́Á.c"],
+    ['file:///x/%c3%a9%C3%a9%c3%A9.c', '/x/ééé.c'],
+    ['file:///x/%2b%2B%41%61%7e.c', '/x/++Aa~.c'],
+    ['file:///x/%25.c', '/x/%.c'],
+    ['file:///x/%2541.c', '/x/%41.c'],
+    ['file:///x/%25%34%31.c', '/x/%41.c'],
+    ['file:///x/a+b.c', '/x/a+b.c'],
+    ['file:///x/%', '/x/%'],
+    ['file:///x/%4', '/x/%4'],
+    ['file:///x/%G1%1G.c', '/x/%G1%1G.c'],
+    ['file:///x/%%41.c', '/x/%A.c'],
+    ['file:///x/100%.c', '/x/100%.c'],
+    ['file:///x/a%00b.c', '/x/a%00b.c'],
+    ['file:///x/%FF%E2%82.c', "/x/\xff\xe2\x82.c"]
+  ]
+  for [uri, fname] in cases
+    assert_equal(fname, util.LspUriToFile(uri), uri)
+  endfor
+enddef
+
+# Test for encoding a file name in a "file:" URI: each character other than an
+# unreserved character, ":" and "/" is replaced by the percent-encoded octets
+# of its UTF-8 encoding.  That includes a composing character after an
+# unreserved character, as in a file name in Unicode normalization form D.
+def g:Test_LspFileToUri_PercentEncoding()
+  var cases: list<list<string>> = [
+    ['/AZaz09-._~:/x.c', 'file:///AZaz09-._~:/x.c'],
+    ['/x/é€😀.c', 'file:///x/%C3%A9%E2%82%AC%F0%9F%98%80.c'],
+    ["/x/café.c", 'file:///x/cafe%CC%81.c'],
+    ["/x/+́.c", 'file:///x/%2B%CC%81.c'],
+    ['/x/ +%#?[]@!$&''()*,;=.c',
+     'file:///x/%20%2B%25%23%3F%5B%5D%40%21%24%26%27%28%29%2A%2C%3B%3D.c'],
+    ["/x/a\tb\nc.c", 'file:///x/a%09b%0Ac.c'],
+    ["/x/\xff.c", 'file:///x/%FF.c']
+  ]
+  for [fname, uri] in cases
+    assert_equal(uri, util.LspFileToUri(fname), fname)
+  endfor
+enddef
+
 # Returns what checking buffer "bnr" in a hidden popup window could change.
 def BufCheckState(bnr: number): dict<any>
   var info: dict<any> = getbufinfo(bnr)->get(0, {})
