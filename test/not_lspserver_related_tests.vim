@@ -285,7 +285,10 @@ def SetupTruncatingServerBuffer(text: string, limit: number,
 enddef
 
 def TeardownTruncatingServerBuffer(lspserver: dict<any>)
-  lspserver.timers->foreach((_, timer) => timer_stop(timer))
+  for timer in lspserver.timers
+    timer_stop(timer)
+  endfor
+  test_override('char_avail', 0)
   buf.BufLspServerRemove(bufnr(), lspserver)
   :%bw!
 enddef
@@ -300,8 +303,8 @@ def WordsOf(result: any): any
 enddef
 
 # Lets feedkeys() drive keyword completion in the current buffer with
-# g:LspCompleteSource() as the only source.  The caller must undo the
-# test_override().
+# g:LspCompleteSource() as the only source, until
+# TeardownTruncatingServerBuffer().
 def SetupFeedkeysCompletion()
   setlocal complete=Fg:LspCompleteSource completeopt=menuone,noselect
   # Let the source wait for replies although keys are in the typeahead.
@@ -312,22 +315,49 @@ enddef
 # call it again whenever the typed text changes.
 def g:Test_CompleteSource_IncompleteList_RequestsRefresh()
   var lspserver = SetupTruncatingServerBuffer('SDL_C', 2)
-  defer TeardownTruncatingServerBuffer(lspserver)
-
-  assert_equal(0, g:LspCompleteSource(1, ''))
-  assert_equal({
-      words: ['SDL_ClaimWindowForGPUDevice', 'SDL_CreateGPUDevice'],
-      refresh: 'always',
-    }, g:LspCompleteSource(0, 'SDL_C')->WordsOf())
+  try
+    assert_equal(0, g:LspCompleteSource(1, ''))
+    assert_equal({
+	words: ['SDL_ClaimWindowForGPUDevice', 'SDL_CreateGPUDevice'],
+	refresh: 'always',
+      }, g:LspCompleteSource(0, 'SDL_C')->WordsOf())
+  finally
+    TeardownTruncatingServerBuffer(lspserver)
+  endtry
 enddef
 
 def g:Test_CompleteSource_CompleteList_ReturnsList()
   var lspserver = SetupTruncatingServerBuffer('SDL_C', 10)
-  defer TeardownTruncatingServerBuffer(lspserver)
+  try
+    assert_equal(0, g:LspCompleteSource(1, ''))
+    assert_equal(truncatingServerLabels,
+		 g:LspCompleteSource(0, 'SDL_C')->WordsOf())
+  finally
+    TeardownTruncatingServerBuffer(lspserver)
+  endtry
+enddef
 
-  assert_equal(0, g:LspCompleteSource(1, ''))
-  assert_equal(truncatingServerLabels,
-	       g:LspCompleteSource(0, 'SDL_C')->WordsOf())
+# 'complete' sources are used in every buffer, so g:LspCompleteSource() skips
+# a buffer without a usable language server instead of reporting an error.
+def g:Test_CompleteSource_NoServer_SkipsSilently()
+  :messages clear
+  silent! edit XCompleteSourceNoServer.vim
+  assert_equal(-2, g:LspCompleteSource(1, ''))
+  assert_equal([], g:LspCompleteSource(0, ''))
+
+  var lspserver = SetupTruncatingServerBuffer('', 2)
+  try
+    lspserver.ready = false
+    assert_equal(-2, g:LspCompleteSource(1, ''))
+    lspserver.ready = true
+    lspserver.running = false
+    assert_equal(-2, g:LspCompleteSource(1, ''))
+  finally
+    TeardownTruncatingServerBuffer(lspserver)
+  endtry
+
+  assert_equal([], execute('messages')->split("\n")
+			    ->filter((_, msg) => msg =~ '^Error'))
 enddef
 
 # 'complete' sources are used in every buffer, so g:LspCompleteSource() skips
@@ -354,11 +384,13 @@ enddef
 # directly expecting a list of matches, so it never returns the refresh dict.
 def g:Test_OmniFunc_IncompleteList_ReturnsList()
   var lspserver = SetupTruncatingServerBuffer('SDL_C', 2)
-  defer TeardownTruncatingServerBuffer(lspserver)
-
-  assert_equal(0, g:LspOmniFunc(1, ''))
-  assert_equal(['SDL_ClaimWindowForGPUDevice', 'SDL_CreateGPUDevice'],
-	       g:LspOmniFunc(0, 'SDL_C')->WordsOf())
+  try
+    assert_equal(0, g:LspOmniFunc(1, ''))
+    assert_equal(['SDL_ClaimWindowForGPUDevice', 'SDL_CreateGPUDevice'],
+		 g:LspOmniFunc(0, 'SDL_C')->WordsOf())
+  finally
+    TeardownTruncatingServerBuffer(lspserver)
+  endtry
 enddef
 
 # Typing after CTRL-N must reach a match the server left out of its first,
@@ -368,15 +400,16 @@ def g:Test_CompleteSource_CtrlN_IncompleteList()
     return
   endif
   var lspserver = SetupTruncatingServerBuffer('', 2)
-  defer TeardownTruncatingServerBuffer(lspserver)
-  SetupFeedkeysCompletion()
-  defer test_override('char_avail', 0)
-
-  feedkeys("SSDL_C\<C-N>reateGPUTe\<F2>\<Esc>", 'tx!')
-  assert_equal(['SDL_CreateGPUTexture'], b:matches)
-  assert_equal('SDL_C', lspserver.requests[0])
-  # Once a reply is complete, Vim filters it without asking again.
-  assert_equal('SDL_CreateGPUT', lspserver.requests[-1])
+  try
+    SetupFeedkeysCompletion()
+    feedkeys("SSDL_C\<C-N>reateGPUTe\<F2>\<Esc>", 'tx!')
+    assert_equal(['SDL_CreateGPUTexture'], b:matches)
+    assert_equal('SDL_C', lspserver.requests[0])
+    # Once a reply is complete, Vim filters it without asking again.
+    assert_equal('SDL_CreateGPUT', lspserver.requests[-1])
+  finally
+    TeardownTruncatingServerBuffer(lspserver)
+  endtry
 enddef
 
 # Same with Vim's 'autocomplete', which calls the source from the first typed
@@ -386,15 +419,16 @@ def g:Test_CompleteSource_Autocomplete_IncompleteList()
     return
   endif
   var lspserver = SetupTruncatingServerBuffer('', 2)
-  defer TeardownTruncatingServerBuffer(lspserver)
-  SetupFeedkeysCompletion()
-  defer test_override('char_avail', 0)
-  setlocal autocomplete
-
-  feedkeys("SSDL_CreateGPUTe\<F2>\<Esc>", 'tx!')
-  assert_equal(['SDL_CreateGPUTexture'], b:matches)
-  assert_equal('S', lspserver.requests[0])
-  assert_equal('SDL_CreateGPUT', lspserver.requests[-1])
+  try
+    SetupFeedkeysCompletion()
+    setlocal autocomplete
+    feedkeys("SSDL_CreateGPUTe\<F2>\<Esc>", 'tx!')
+    assert_equal(['SDL_CreateGPUTexture'], b:matches)
+    assert_equal('S', lspserver.requests[0])
+    assert_equal('SDL_CreateGPUT', lspserver.requests[-1])
+  finally
+    TeardownTruncatingServerBuffer(lspserver)
+  endtry
 enddef
 
 # 'autocomplete' gives a function source 300 ms.  When the first reply is slower
@@ -405,13 +439,14 @@ def g:Test_CompleteSource_Autocomplete_SlowFirstReply()
     return
   endif
   var lspserver = SetupTruncatingServerBuffer('', 2, [600])
-  defer TeardownTruncatingServerBuffer(lspserver)
-  SetupFeedkeysCompletion()
-  defer test_override('char_avail', 0)
-  setlocal autocomplete
-
-  feedkeys("SSDL_CreateGPUTe\<F2>\<Esc>", 'tx!')
-  assert_equal(['SDL_CreateGPUTexture'], b:matches)
+  try
+    SetupFeedkeysCompletion()
+    setlocal autocomplete
+    feedkeys("SSDL_CreateGPUTe\<F2>\<Esc>", 'tx!')
+    assert_equal(['SDL_CreateGPUTexture'], b:matches)
+  finally
+    TeardownTruncatingServerBuffer(lspserver)
+  endtry
 enddef
 
 # Regression test for CompletionItem.preselect ordering.
