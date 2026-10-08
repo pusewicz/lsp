@@ -2252,9 +2252,10 @@ def g:Test_LspAutoFix_Range_MultiServer_WaitsForAllReplies()
 enddef
 
 def g:Test_TextdocDidChange_IncrementalSync_MultiHunkDeleteAppliesBottomUp()
-  # Regression test for #836: ":%d" produces two diff hunks; emitting them
-  # top-down sends the second hunk's range against a document already
-  # shrunk by the first, desyncing the server.
+  # Regression test for #836: deleting all the lines but an empty one
+  # produces two diff hunks; emitting them top-down sends the second hunk's
+  # range against a document already shrunk by the first, desyncing the
+  # server.  (":%d" leaves no lines, which is sent as a full-text change.)
   if !exists('*diff')
     # incrementalSync needs diff(); options.OptionsSet() forces it back off
     # without it, same as the plugin itself falling back to full sync.
@@ -2272,7 +2273,8 @@ def g:Test_TextdocDidChange_IncrementalSync_MultiHunkDeleteAppliesBottomUp()
   lspserver.cachedBufferContent[bnr] = oldLines
   lspserver.cachedBufferEol[bnr] = true
 
-  :%d
+  :3,$d
+  :1d
   lspserver.textdocDidChange(bnr)
 
   assert_equal(1, notifications->len())
@@ -2573,6 +2575,74 @@ def g:Test_EolOptionSet_SendsChange()
       buf.BufLspServerRemove(bnr, lspserver)
       :%bw!
     endtry
+  endfor
+  g:LspOptionsSet({incrementalSync: false})
+enddef
+
+# A buffer without lines has no text, but getbufline() returns one empty line
+# for it, like for a buffer with one empty line, which Vim writes as a
+# newline.
+def g:Test_TextdocDidOpen_BufferWithoutLines()
+  silent! edit XDidOpenNoLines.txt
+  var bnr = bufnr()
+  var notifications: list<dict<any>> = []
+  var lspserver = MakeTestLspServer(notifications)
+  lspserver.supportsDidOpenClose = true
+
+  lspserver.textdocDidOpen(bnr, 'text')
+  assert_equal('', notifications[-1].params.textDocument.text)
+
+  setline(1, '')
+  lspserver.textdocDidOpen(bnr, 'text')
+  assert_equal("\n", notifications[-1].params.textDocument.text)
+
+  setline(1, 'abc')
+  :%d
+  lspserver.textdocDidOpen(bnr, 'text')
+  assert_equal('', notifications[-1].params.textDocument.text)
+
+  # The buffer in another window
+  new
+  lspserver.textdocDidOpen(bnr, 'text')
+  assert_equal('', notifications[-1].params.textDocument.text)
+  setbufline(bnr, 1, '')
+  lspserver.textdocDidOpen(bnr, 'text')
+  assert_equal("\n", notifications[-1].params.textDocument.text)
+
+  :%bw!
+enddef
+
+def g:Test_TextdocDidChange_BufferWithoutLines()
+  for incrementalSync in (exists('*diff') ? [false, true] : [false])
+    g:LspOptionsSet({incrementalSync: incrementalSync})
+    silent! edit XDidChangeNoLines.txt
+    setline(1, ['abc', 'def'])
+    var bnr = bufnr()
+    var notifications: list<dict<any>> = []
+    var lspserver = MakeTestLspServer(notifications)
+    lspserver.textdocDidOpen(bnr, 'text')
+    var msg = $'incrementalSync: {incrementalSync}'
+
+    :%d
+    lspserver.textdocDidChange(bnr)
+    assert_equal([{text: ''}], notifications[-1].params.contentChanges, msg)
+
+    setline(1, '')
+    lspserver.textdocDidChange(bnr)
+    assert_equal([{text: "\n"}], notifications[-1].params.contentChanges,
+		 msg)
+
+    :%d
+    setlocal noeol nofixeol
+    lspserver.textdocDidChange(bnr)
+    assert_equal([{text: ''}], notifications[-1].params.contentChanges, msg)
+
+    setline(1, 'abc')
+    lspserver.textdocDidChange(bnr)
+    assert_equal([{text: 'abc'}], notifications[-1].params.contentChanges,
+		 msg)
+
+    :%bw!
   endfor
   g:LspOptionsSet({incrementalSync: false})
 enddef

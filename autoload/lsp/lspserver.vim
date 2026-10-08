@@ -745,16 +745,25 @@ def SendWorkspaceConfig(lspserver: dict<any>)
   lspserver.sendNotification('workspace/didChangeConfiguration', params)
 enddef
 
+# Returns the text of a document with "lines", ending with a newline when
+# "hasEol" is true and there are lines.
 def LinesText(lines: list<string>, hasEol: bool): string
   var text = lines->join("\n")
-  if hasEol
+  if hasEol && !lines->empty()
     text ..= "\n"
   endif
   return text
 enddef
 
+# Returns the lines of the document of buffer "bnr", none when the buffer has
+# no text.
+def BufferLines(bnr: number): list<string>
+  return util.BufIsEmpty(bnr) ? [] : bnr->getbufline(1, '$')
+enddef
+
+# Returns the text of the document of buffer "bnr".
 def BufferText(bnr: number): string
-  return LinesText(bnr->getbufline(1, '$'), util.BufWritesEol(bnr))
+  return LinesText(BufferLines(bnr), util.BufWritesEol(bnr))
 enddef
 
 def HunkText(newBufLines: list<string>, hunk: dict<number>, hasEol: bool): string
@@ -801,7 +810,7 @@ def TextdocDidOpen(lspserver: dict<any>, bnr: number, ftype: string): void
     endtry
   endif
 
-  var newBufLines = bnr->getbufline(1, '$')
+  var newBufLines = BufferLines(bnr)
   var hasEol = util.BufWritesEol(bnr)
   lspserver.cachedBufferContent[bnr] = newBufLines
   lspserver.cachedBufferEol[bnr] = hasEol
@@ -996,14 +1005,15 @@ def TextdocDidChange(lspserver: dict<any>, bnr: number): void
 
   if textDocumentSync == 1 || !opt.lspOptions.incrementalSync
     # TextDocumentSyncKind: Full — send the entire buffer on every change.
-    contentChanges = [{text: LinesText(bnr->getbufline(1, '$'), hasEol)}]
+    contentChanges = [{text: LinesText(BufferLines(bnr), hasEol)}]
   elseif exists_compiled('*diff')
     # TextDocumentSyncKind: Incremental — send only the changed lines.
-    var newBufLines = bnr->getbufline(1, '$')
+    var newBufLines = BufferLines(bnr)
     var cachedBufferContent = lspserver.cachedBufferContent
     var cachedBufferEol = lspserver.cachedBufferEol
     if cachedBufferContent->has_key(bnr)
 	&& cachedBufferEol[bnr] == hasEol
+	&& cachedBufferContent[bnr]->empty() == newBufLines->empty()
       # Compute line-level diffs against the last snapshot and convert each
       # hunk into an LSP TextDocumentContentChangeEvent.  Hunks are emitted
       # bottom-up: the LSP spec applies contentChanges entries sequentially,
@@ -1045,8 +1055,9 @@ def TextdocDidChange(lspserver: dict<any>, bnr: number): void
       endfor
     else
       # No cached snapshot available, or its line-ending state doesn't
-      # match the current buffer (the old-document end-of-file math above
-      # would be wrong); fall back to a full-text change.
+      # match the current buffer, or only one of them has no text (the
+      # old-document end-of-file math above would be wrong); fall back to a
+      # full-text change.
       contentChanges = [{text: LinesText(newBufLines, hasEol)}]
     endif
     cachedBufferContent[bnr] = newBufLines
