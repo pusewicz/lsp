@@ -106,6 +106,10 @@ export var lspOptions: dict<any> = {
   # Allowed valuse: 'default' | 'truncate' | 'wrap' (default is 'default')
   diagVirtualTextWrap: 'default',
 
+  # Show virtual text only for the most severe diagnostic on each line, when
+  # showDiagWithVirtualText is true
+  diagVirtualTextMostSevere: false,
+
   # Max number of diagnostics to process when receiving diagnostic notifications
   # from the server, processing many hundreds of diagnostics is slow, especially
   # when offset positions also need to be decoded

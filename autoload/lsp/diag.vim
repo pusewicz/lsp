@@ -268,6 +268,21 @@ def RemoveDiagVisualsForBuffer(bnr: number, all: bool = false)
   endif
 enddef
 
+# Return the most severe diagnostic on each line in "diags", keyed by line
+# number.  Of equally severe diagnostics on a line, the first one in "diags"
+# is returned; as "diags" is sorted by position, that is the leftmost one.
+def MostSevereDiagByLine(diags: list<dict<any>>): dict<dict<any>>
+  var diagByLnum: dict<dict<any>> = {}
+  for diag in diags
+    var lnum: number = diag.range.start.line + 1
+    if !diagByLnum->has_key(lnum)
+	|| diag->get('severity', 1) < diagByLnum[lnum]->get('severity', 1)
+      diagByLnum[lnum] = diag
+    endif
+  endfor
+  return diagByLnum
+enddef
+
 # Refresh the placed diagnostics in buffer "bnr"
 # This inline signs, inline props, and virtual text diagnostics
 export def DiagsRefresh(bnr: number, all: bool = false)
@@ -309,11 +324,14 @@ export def DiagsRefresh(bnr: number, all: bool = false)
     diag_wrap = lspOpts.diagVirtualTextWrap
   endif
 
+  var mostSevereOnly: bool = lspOpts.showDiagWithVirtualText
+	&& lspOpts.diagVirtualTextMostSevere
+  var virtualTextDiags: dict<dict<any>> =
+	mostSevereOnly ? MostSevereDiagByLine(diags) : {}
+
   var signs: list<dict<any>> = []
   var inlineHLprops: list<list<list<number>>> = [[], [], [], [], []]
   for diag in diags
-    # TODO: prioritize most important severity if there are multiple
-    # diagnostics from the same line
     var d_range = diag.range
     var d_start = d_range.start
     var d_end = d_range.end
@@ -335,6 +353,7 @@ export def DiagsRefresh(bnr: number, all: bool = false)
       endif
 
       if lspOpts.showDiagWithVirtualText
+	  && (!mostSevereOnly || virtualTextDiags[lnum] is diag)
         var padding: number
         var symbol: string = diag_symbol
 
@@ -1006,6 +1025,7 @@ var save_autoHighlightDiags = opt.lspOptions.autoHighlightDiags
 var save_highlightDiagInline = opt.lspOptions.highlightDiagInline
 var save_showDiagWithSign = opt.lspOptions.showDiagWithSign
 var save_showDiagWithVirtualText = opt.lspOptions.showDiagWithVirtualText
+var save_diagVirtualTextMostSevere = opt.lspOptions.diagVirtualTextMostSevere
 
 # Enable the LSP diagnostics highlighting
 export def DiagsHighlightEnable()
@@ -1051,9 +1071,11 @@ export def LspDiagsOptionsChanged()
   if save_highlightDiagInline != opt.lspOptions.highlightDiagInline
     || save_showDiagWithSign != opt.lspOptions.showDiagWithSign
     || save_showDiagWithVirtualText != opt.lspOptions.showDiagWithVirtualText
+    || save_diagVirtualTextMostSevere != opt.lspOptions.diagVirtualTextMostSevere
     save_highlightDiagInline = opt.lspOptions.highlightDiagInline
     save_showDiagWithSign = opt.lspOptions.showDiagWithSign
     save_showDiagWithVirtualText = opt.lspOptions.showDiagWithVirtualText
+    save_diagVirtualTextMostSevere = opt.lspOptions.diagVirtualTextMostSevere
     for binfo in getbufinfo({bufloaded: true})
       if diagsMap->has_key(binfo.bufnr)
 	DiagsRefresh(binfo.bufnr, true)
