@@ -5,7 +5,6 @@ import '../autoload/lsp/hover.vim' as hover
 import '../autoload/lsp/buffer.vim' as buf
 import '../autoload/lsp/signature.vim' as signature
 import '../autoload/lsp/codeaction.vim' as codeaction
-import '../autoload/lsp/ontypeformat.vim' as ontypeformat
 import '../autoload/lsp/lsp.vim' as lsp
 
 source common.vim
@@ -373,38 +372,131 @@ def g:Test_LspOnTypeFormatting()
 
   var bnr = bufnr()
 
-  # The on-type-formatting trigger autocmd should be registered for this
-  # buffer, since clangd advertises documentOnTypeFormattingProvider.
-  var acmds = autocmd_get({group: 'LspOnTypeFormatting', bufnr: bnr})
-  assert_equal(1, acmds->len())
-  assert_equal('TextChangedI', acmds[0].event)
+  # The on-type-formatting autocmds should be registered for this buffer,
+  # since clangd advertises documentOnTypeFormattingProvider.
+  var events = autocmd_get({group: 'LspOnTypeFormatting', bufnr: bnr})
+    ->mapnew((_, acmd) => acmd.event)
+  assert_true(events->index('TextChangedI') != -1)
+  assert_true(events->index('InsertCharPre') != -1)
 
-  # Simulate the user positioned at the end of the under-indented "int i;"
-  # line pressing Enter: prime the "previous line" state ontypeformat.vim
-  # tracks to detect a newline, apply the newline the same way Vim would,
-  # and invoke the on-type-formatting handler directly.  (Driving this via
-  # feedkeys() and relying on the real TextChangedI autocmd to fire is not
-  # reliable in this test harness -- the same reason the 24x7 completion
-  # tests above call completion.LspComplete() directly instead of typing.)
-  setbufvar(bnr, 'LspOnTypeFormatPrevLine', 2)
-  append(2, '')
-  cursor(3, 1)
-  :startinsert!
-  ontypeformat.OnTypeFormat(bnr)
-  :stopinsert
+  # Without this, Vim doesn't trigger the Insert mode autocmds for keys
+  # typed by feedkeys().
+  test_override('char_avail', 1)
+  try
+    # Press Enter at the end of the under-indented "int i;" line, then type a
+    # character.  clangd's on-type formatting (triggered on "\n") should
+    # reindent the "int i;" line and the new line to match the surrounding
+    # braces, and the character should land after the inserted indent.
+    feedkeys("2GA\<CR>x\<Esc>", 'xt')
+    assert_equal(['int f1() {', '  int i;', '  x', '}'], getline(1, '$'))
+  finally
+    # Restore defaults to avoid impacting other tests.
+    test_override('ALL', 0)
+    g:LspOptionsSet({onTypeFormatting: false})
+    :%bw!
+  endtry
+enddef
 
-  # clangd's on-type formatting (triggered on "\n") should reindent the
-  # "int i;" line and the newly created blank line to match the
-  # surrounding braces.
-  var expected = ['int f1() {', '  int i;', '  ', '}']
-  g:WaitForAssert(() => assert_equal(expected, getline(1, '$')))
-  # Cursor should land after the auto-inserted indent, ready to continue
-  # typing, not before it.
-  assert_equal([3, 3], [line('.'), col('.')])
+# Regression test: Insert mode text changes that don't insert a newline must
+# not request on-type formatting for "\n".  clangd replaces the text between
+# the previous line and the cursor with the new line's indent, which deleted
+# the text before the cursor.
+def g:Test_LspOnTypeFormatting_NoNewline()
+  g:LspOptionsSet({onTypeFormatting: true})
 
-  # Restore default to avoid impacting other tests.
-  g:LspOptionsSet({onTypeFormatting: false})
-  :%bw!
+  :silent! edit XLspOnTypeFormatNoNewline.c
+  sleep 200m
+  var lines = ['int f1(int a, int b) {', '  return f1(a, b);', '}']
+  setline(1, lines)
+  g:WaitForServerFileLoad(0)
+  :redraw!
+
+  test_override('char_avail', 1)
+  try
+    # Change a word on a line below the line last edited in Insert mode.
+    feedkeys("1GAx\<BS>\<Esc>", 'xt')
+    feedkeys("2G$Fbcwa\<Esc>", 'xt')
+    assert_equal(['int f1(int a, int b) {', '  return f1(a, a);', '}'],
+		 getline(1, '$'))
+
+    # Move to the next line in Insert mode, then type.
+    feedkeys("1GAx\<BS>\<Down>c\<Esc>", 'xt')
+    assert_equal(['int f1(int a, int b) {', '  return f1(a, a);c', '}'],
+		 getline(1, '$'))
+  finally
+    test_override('ALL', 0)
+    g:LspOptionsSet({onTypeFormatting: false})
+    :%bw!
+  endtry
+enddef
+
+# Test that on-type formatting is requested only for a trigger character that
+# was just typed in Insert mode.
+def g:Test_LspOnTypeFormatting_TypedTrigger()
+  g:LspOptionsSet({onTypeFormatting: true})
+
+  :silent! edit XLspOnTypeFormatTrigger.c
+  sleep 200m
+  setline(1, ['int f1(int a) {', '  a = 1;a = 2;', '  return a;', '}'])
+  g:WaitForServerFileLoad(0)
+  :redraw!
+
+  # Record the requests instead of sending them, and add a trigger character
+  # clangd doesn't use.
+  var lspserver = buf.CurbufGetServerChecked('documentOnTypeFormatting')
+  var savedTriggers = lspserver.onTypeFormattingTriggers
+  var SavedOnTypeFormat = lspserver.textDocOnTypeFormat
+  var requests: list<list<any>> = []
+  lspserver.onTypeFormattingTriggers = ["\n", ';', '}']
+  lspserver.textDocOnTypeFormat = (ch: string) => {
+    requests->add([ch, line('.'), col('.')])
+  }
+
+  test_override('char_avail', 1)
+  try
+    # Typed trigger characters.
+    feedkeys("2GA\<BS>;\<Esc>", 'xt')
+    assert_equal([[';', 2, 15]], requests)
+    requests = []
+    feedkeys("3GA\<CR>\<Esc>", 'xt')
+    :4delete
+    feedkeys("3GA\<C-J>\<Esc>", 'xt')
+    :4delete
+    assert_equal([["\n", 4, 3], ["\n", 4, 3]], requests)
+
+    # A typed trigger character for which Vim reindents the line.
+    requests = []
+    setlocal cindent
+    feedkeys("3Go}\<Esc>", 'xt')
+    setlocal cindent<
+    :4delete
+    assert_equal([['}', 4, 2]], requests)
+
+    # A trigger character before the cursor that wasn't just typed.
+    requests = []
+    feedkeys("2G0f;lcwb\<Esc>", 'xt')
+    feedkeys("2G0f;lix\<BS>\<Esc>", 'xt')
+    assert_equal([], requests)
+
+    # A newline that wasn't typed in Insert mode.
+    feedkeys("3Gofoo\<Esc>", 'xt')
+    :4delete
+    assert_equal([], requests)
+
+    # A typed trigger character that an InsertCharPre autocmd replaced.
+    autocmd_add([{group: 'LspTestOnType', event: 'InsertCharPre',
+		  bufnr: bufnr(), cmd: 'v:char = v:char == ";" ? "," : v:char'}])
+    feedkeys("2GA;\<Esc>", 'xt')
+    assert_equal([], requests)
+    assert_equal('  a = 1;b = 2;,', getline(2))
+  finally
+    autocmd_delete([{group: 'LspTestOnType'}])
+    test_override('ALL', 0)
+    lspserver.onTypeFormattingTriggers = savedTriggers
+    lspserver.textDocOnTypeFormat = SavedOnTypeFormat
+    g:LspOptionsSet({onTypeFormatting: false})
+    :%bw!
+  endtry
 enddef
 
 # Test for :LspShowReferences - showing all the references to a symbol in a
