@@ -43,32 +43,7 @@ export def InitOnce()
     {name: 'LspDiagSignInfoText', default: true, linksto: 'Pmenu'},
     {name: 'LspDiagSignHintText', default: true, linksto: 'Question'}
   ])
-  sign_define([
-    {
-      name: 'LspDiagError',
-      text: opt.lspOptions.diagSignErrorText,
-      texthl: 'LspDiagSignErrorText',
-      linehl: 'LspDiagLine'
-    },
-    {
-      name: 'LspDiagWarning',
-      text: opt.lspOptions.diagSignWarningText,
-      texthl: 'LspDiagSignWarningText',
-      linehl: 'LspDiagLine'
-    },
-    {
-      name: 'LspDiagInfo',
-      text: opt.lspOptions.diagSignInfoText,
-      texthl: 'LspDiagSignInfoText',
-      linehl: 'LspDiagLine'
-    },
-    {
-      name: 'LspDiagHint',
-      text: opt.lspOptions.diagSignHintText,
-      texthl: 'LspDiagSignHintText',
-      linehl: 'LspDiagLine'
-    }
-  ])
+  DiagSignsDefine()
 
   # Diag inline highlight groups and text property types
   hlset([
@@ -131,24 +106,79 @@ export def InitOnce()
       }
     ])
   endif
+
+  appliedOptions = DisplayOptionsGet()
+enddef
+
+# Define the signs placed for diagnostics, using the sign texts set in the
+# options.  Redefining a sign updates the signs already placed.
+def DiagSignsDefine()
+  sign_define([
+    {
+      name: 'LspDiagError',
+      text: opt.lspOptions.diagSignErrorText,
+      texthl: 'LspDiagSignErrorText',
+      linehl: 'LspDiagLine'
+    },
+    {
+      name: 'LspDiagWarning',
+      text: opt.lspOptions.diagSignWarningText,
+      texthl: 'LspDiagSignWarningText',
+      linehl: 'LspDiagLine'
+    },
+    {
+      name: 'LspDiagInfo',
+      text: opt.lspOptions.diagSignInfoText,
+      texthl: 'LspDiagSignInfoText',
+      linehl: 'LspDiagLine'
+    },
+    {
+      name: 'LspDiagHint',
+      text: opt.lspOptions.diagSignHintText,
+      texthl: 'LspDiagSignHintText',
+      linehl: 'LspDiagLine'
+    }
+  ])
 enddef
 
 # Initialize the diagnostics features for the buffer 'bnr'
 export def BufferInit(lspserver: dict<any>, bnr: number)
+  BufferFeaturesSet(bnr)
+enddef
+
+# Remove the diagnostics features set up by BufferInit() from buffer "bnr",
+# when it is detached from its language servers.
+export def BufferDeInit(bnr: number)
+  StatusLineDiagDisable(bnr)
+enddef
+
+# Set up the diagnostics balloon and the diagnostic message on the status line
+# for buffer "bnr" as set in the options, and remove the ones that are
+# disabled.
+def BufferFeaturesSet(bnr: number)
   if opt.lspOptions.showDiagInBalloon
     :set ballooneval balloonevalterm
     setbufvar(bnr, '&balloonexpr', 'g:LspDiagExpr()')
+  elseif bnr->getbufvar('&balloonexpr') == 'g:LspDiagExpr()'
+    setbufvar(bnr, '&balloonexpr', '')
   endif
 
-  var acmds: list<dict<any>> = []
-  # Show diagnostics on the status line
   if opt.lspOptions.showDiagOnStatusLine
-    acmds->add({bufnr: bnr,
-		event: 'CursorMoved',
-		group: 'LSPBufferAutocmds',
-		cmd: 'ShowCurrentDiagInStatusLine()'})
+    autocmd_add([{bufnr: bnr,
+		  event: 'CursorMoved',
+		  group: 'LspDiagStatusLine',
+		  replace: true,
+		  cmd: 'ShowCurrentDiagInStatusLine()'}])
+  else
+    StatusLineDiagDisable(bnr)
   endif
-  autocmd_add(acmds)
+enddef
+
+# Stop showing the diagnostic message on the status line for buffer "bnr".
+def StatusLineDiagDisable(bnr: number)
+  if exists('#LspDiagStatusLine')
+    autocmd_delete([{bufnr: bnr, group: 'LspDiagStatusLine'}])
+  endif
 enddef
 
 # Function to sort the diagnostics in ascending order based on the line and
@@ -299,9 +329,46 @@ def MostSevereDiagByLine(diags: list<dict<any>>): dict<dict<any>>
   return diagByLnum
 enddef
 
+# Returns the screen column (0-based) of the first tab stop after column "col",
+# for the 'tabstop' value "tabstop" and the 'vartabstop' values "vartabstop".
+def NextTabStop(col: number, tabstop: number,
+		vartabstop: list<number>): number
+  if vartabstop->empty()
+    return (col / tabstop + 1) * tabstop
+  endif
+  var stop = 0
+  for width in vartabstop
+    stop += width
+    if stop > col
+      return stop
+    endif
+  endfor
+  var lastWidth = vartabstop[-1]
+  return stop + ((col - stop) / lastWidth + 1) * lastWidth
+enddef
+
+# Returns the display width of the text before the character index "charIdx"
+# in line "lnum" of buffer "bnr".  Tabs are expanded with the 'tabstop' and
+# 'vartabstop' of "bnr": strdisplaywidth() uses those of the current buffer.
+def LineTextWidth(bnr: number, lnum: number, charIdx: number): number
+  if charIdx <= 0
+    return 0
+  endif
+  var text: string = bnr->getbufline(lnum)->get(0, '')[ : charIdx - 1]
+  var tabstop: number = bnr->getbufvar('&tabstop')
+  var vartabstop: list<number> = bnr->getbufvar('&vartabstop', '')
+    ->split(',')->mapnew((_, width) => width->str2nr())
+  var parts: list<string> = text->split("\t", true)
+  var width = 0
+  for part in parts[ : -2]
+    width = NextTabStop(width + part->strdisplaywidth(), tabstop, vartabstop)
+  endfor
+  return width + parts[-1]->strdisplaywidth()
+enddef
+
 # Refresh the placed diagnostics in buffer "bnr"
 # This inline signs, inline props, and virtual text diagnostics
-export def DiagsRefresh(bnr: number, all: bool = false)
+export def DiagsRefresh(bnr: number)
   var lspOpts = opt.lspOptions
   if !lspOpts.autoHighlightDiags
     return
@@ -309,7 +376,7 @@ export def DiagsRefresh(bnr: number, all: bool = false)
 
   :silent! bnr->bufload()
 
-  RemoveDiagVisualsForBuffer(bnr, all)
+  RemoveDiagVisualsForBuffer(bnr)
 
   if !diagsMap->has_key(bnr)
     return
@@ -377,11 +444,8 @@ export def DiagsRefresh(bnr: number, all: bool = false)
           padding = 3
           symbol = DiagSevToSymbolText(d_severity)
         else
-	  var charIdx = util.GetCharIdxWithoutCompChar(bnr, d_start)
-          padding = charIdx
-          if padding > 0
-            padding = strdisplaywidth(getline(lnum)[ : charIdx - 1])
-          endif
+	  padding = LineTextWidth(bnr, lnum,
+				  util.GetCharIdxWithoutCompChar(bnr, d_start))
         endif
 
         prop_add(lnum, 0, {bufnr: bnr,
@@ -1078,35 +1142,85 @@ def g:LspDiagExpr(): any
   return diagFound.message->split("\n")
 enddef
 
-# Track the current diagnostics auto highlight enabled/disabled state.  Used
-# when the "autoHighlightDiags" option value is changed.
-var save_autoHighlightDiags = opt.lspOptions.autoHighlightDiags
-var save_highlightDiagInline = opt.lspOptions.highlightDiagInline
-var save_showDiagWithSign = opt.lspOptions.showDiagWithSign
-var save_showDiagWithVirtualText = opt.lspOptions.showDiagWithVirtualText
-var save_diagVirtualTextMostSevere = opt.lspOptions.diagVirtualTextMostSevere
-
-# Enable the LSP diagnostics highlighting
-export def DiagsHighlightEnable()
-  opt.lspOptions.autoHighlightDiags = true
-  save_autoHighlightDiags = true
-  for binfo in getbufinfo({bufloaded: true})
-    if diagsMap->has_key(binfo.bufnr)
+# Redraw the diagnostics in every buffer with the current options, removing
+# the ones drawn with the previous options.  The diagnostics of an unloaded
+# buffer are drawn when it is displayed in a window again.
+def DiagsRedrawAll()
+  for binfo in getbufinfo()
+    if !diagsMap->has_key(binfo.bufnr)
+      continue
+    endif
+    RemoveDiagVisualsForBuffer(binfo.bufnr, true)
+    if binfo.loaded
       DiagsRefresh(binfo.bufnr)
     endif
   endfor
 enddef
 
-# Disable the LSP diagnostics highlighting in all the buffers
-export def DiagsHighlightDisable()
-  # turn off all diags highlight
-  opt.lspOptions.autoHighlightDiags = false
-  save_autoHighlightDiags = false
+# Set up the diagnostics features again in every buffer with a language
+# server, with the current options.
+def BuffersFeaturesSet()
   for binfo in getbufinfo()
-    if diagsMap->has_key(binfo.bufnr)
-      RemoveDiagVisualsForBuffer(binfo.bufnr)
+    if !buf.BufLspServersGet(binfo.bufnr)->empty()
+      BufferFeaturesSet(binfo.bufnr)
     endif
   endfor
+enddef
+
+# The options with the text of the diagnostic signs, also used as the symbol
+# of the virtual text placed after a line.
+const signTextOptions: list<string> = [
+  'diagSignErrorText', 'diagSignWarningText', 'diagSignInfoText',
+  'diagSignHintText'
+]
+
+# The options that change how the diagnostics are displayed, each with the
+# function applying a change in them.  The other diagnostics options are read
+# whenever they are used.
+const displayOptionAppliers: list<dict<any>> = [
+  {Apply: DiagSignsDefine, options: signTextOptions},
+  {
+    Apply: DiagsRedrawAll,
+    options: [
+      'autoHighlightDiags', 'diagVirtualTextAlign',
+      'diagVirtualTextMostSevere', 'diagVirtualTextWrap',
+      'highlightDiagInline', 'showDiagWithSign', 'showDiagWithVirtualText'
+    ] + signTextOptions
+  },
+  {
+    Apply: BuffersFeaturesSet,
+    options: ['showDiagInBalloon', 'showDiagOnStatusLine']
+  }
+]
+
+# The values of the options in "displayOptionAppliers" when they were last
+# applied, as returned by DisplayOptionsGet().  Empty until InitOnce() applies
+# them for the first time.
+var appliedOptions: dict<string> = {}
+
+# Returns the current values of the options in "displayOptionAppliers".  The
+# values are converted to strings, so that a value can be compared with one of
+# another type (e.g. v:true with 1).
+def DisplayOptionsGet(): dict<string>
+  var values: dict<string> = {}
+  for applier in displayOptionAppliers
+    for name in applier.options
+      values[name] = opt.lspOptions[name]->string()
+    endfor
+  endfor
+  return values
+enddef
+
+# Enable the LSP diagnostics highlighting
+export def DiagsHighlightEnable()
+  opt.lspOptions.autoHighlightDiags = true
+  LspDiagsOptionsChanged()
+enddef
+
+# Disable the LSP diagnostics highlighting in all the buffers
+export def DiagsHighlightDisable()
+  opt.lspOptions.autoHighlightDiags = false
+  LspDiagsOptionsChanged()
 enddef
 
 # Toggle the LSP diagnostics highlighting in all the buffers
@@ -1118,29 +1232,23 @@ export def DiagsHighlightToggle()
   endif
 enddef
 
-# Some options are changed.  If 'autoHighlightDiags' option is changed, then
-# either enable or disable diags auto highlight.
+# Some options are changed.  Apply the changes in the options that affect how
+# the diagnostics are displayed.  Before InitOnce(), there is nothing to
+# update: it applies the options then.
 export def LspDiagsOptionsChanged()
-  if save_autoHighlightDiags && !opt.lspOptions.autoHighlightDiags
-    DiagsHighlightDisable()
-  elseif !save_autoHighlightDiags && opt.lspOptions.autoHighlightDiags
-    DiagsHighlightEnable()
+  if appliedOptions->empty()
+    return
   endif
-
-  if save_highlightDiagInline != opt.lspOptions.highlightDiagInline
-    || save_showDiagWithSign != opt.lspOptions.showDiagWithSign
-    || save_showDiagWithVirtualText != opt.lspOptions.showDiagWithVirtualText
-    || save_diagVirtualTextMostSevere != opt.lspOptions.diagVirtualTextMostSevere
-    save_highlightDiagInline = opt.lspOptions.highlightDiagInline
-    save_showDiagWithSign = opt.lspOptions.showDiagWithSign
-    save_showDiagWithVirtualText = opt.lspOptions.showDiagWithVirtualText
-    save_diagVirtualTextMostSevere = opt.lspOptions.diagVirtualTextMostSevere
-    for binfo in getbufinfo({bufloaded: true})
-      if diagsMap->has_key(binfo.bufnr)
-	DiagsRefresh(binfo.bufnr, true)
-      endif
-    endfor
-  endif
+  var options: dict<string> = DisplayOptionsGet()
+  var changed: list<string> = options->keys()
+    ->filter((_, name) => options[name] != appliedOptions[name])
+  appliedOptions = options
+  for applier in displayOptionAppliers
+    if util.Indexof(applier.options,
+		    (_, name) => changed->index(name) != -1) != -1
+      applier.Apply()
+    endif
+  endfor
 enddef
 
 # vim: tabstop=8 shiftwidth=2 softtabstop=2 noexpandtab

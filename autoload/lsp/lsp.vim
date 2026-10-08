@@ -775,6 +775,7 @@ export def RemoveFile(bnr: number): void
     RemoveBufLocalAutocmds(bnr)
     RemoveBufListener(bnr)
     ontypeformat.BufferDeInit(bnr)
+    diag.BufferDeInit(bnr)
   endif
   # Iterate over a copy because BufLspServerRemove mutates the underlying list.
   for lspserver in lspservers->copy()
