@@ -459,6 +459,203 @@ def g:Test_ProcessNotif_PublishDiagnostics_NotIgnoredForPullCapableServer()
   :%bw!
 enddef
 
+# Define stub ALE "other source" functions that record their calls in
+# g:LspTestAleCalls, and send the diagnostics to them.  Returns the directory
+# to pass to RemoveAleStub().
+def InstallAleStub(): string
+  var root = tempname()
+  mkdir($'{root}/autoload/ale', 'p')
+  var fname = $'{root}/autoload/ale/other_source.vim'
+  writefile([
+    'function ale#other_source#StartChecking(buffer, linter_name) abort',
+    '  call add(g:LspTestAleCalls, ["start", a:buffer, a:linter_name])',
+    'endfunction',
+    'function ale#other_source#ShowResults(buffer, linter_name, loclist) abort',
+    '  call add(g:LspTestAleCalls,',
+    '        \ ["show", a:buffer, a:linter_name, map(copy(a:loclist), "v:val.text")])',
+    'endfunction'
+  ], fname)
+  execute 'source' fnameescape(fname)
+  g:LspTestAleCalls = []
+  g:LspOptionsSet({aleSupport: true, autoHighlightDiags: false})
+  return root
+enddef
+
+# Remove the stub ALE functions defined by InstallAleStub() and restore the
+# default diagnostics options.
+def RemoveAleStub(root: string)
+  g:LspOptionsSet({aleSupport: false, autoHighlightDiags: true})
+  unlet g:LspTestAleCalls
+  delfunction ale#other_source#StartChecking
+  delfunction ale#other_source#ShowResults
+  delete(root, 'rf')
+enddef
+
+# Return a test language server named "name" that accepts diagnostics.
+def MakeDiagServer(name: string): dict<any>
+  var lspserver = MakeTestLspServer([])
+  lspserver.name = name
+  lspserver.features = {diagnostics: true}
+  lspserver.featureEnabled = (_) => true
+  return lspserver
+enddef
+
+# Return a diagnostic with "message" at the start of line "lnum" (0-based).
+def MakeLineDiag(lnum: number, message: string): dict<any>
+  return {
+    range: {
+      start: {line: lnum, character: 0},
+      end: {line: lnum, character: 1}
+    },
+    severity: 1,
+    message: message
+  }
+enddef
+
+# Return the most recent diagnostic texts sent to the stub ALE for each
+# linter name.
+def AleResultsByLinter(): dict<list<string>>
+  var results: dict<list<string>> = {}
+  for call in g:LspTestAleCalls
+    if call[0] == 'show'
+      results[call[2]] = call[3]
+    endif
+  endfor
+  return results
+enddef
+
+# Each language server's diagnostics are sent to ALE under the server name,
+# and are cleared when the buffer is detached from the servers.
+def g:Test_AleSupport_DiagsSentPerServer()
+  var aleStub = InstallAleStub()
+  silent! edit XAleSupportPerServer.c
+  setline(1, ['int a;', 'int b;'])
+  var bnr = bufnr()
+  var uri = util.LspBufnrToUri(bnr)
+  var clangd = MakeDiagServer('clangd')
+  var tidy = MakeDiagServer('tidy')
+  var quiet = MakeDiagServer('quiet')
+  buf.BufLspServerSet(bnr, clangd)
+  buf.BufLspServerSet(bnr, tidy)
+  buf.BufLspServerSet(bnr, quiet)
+
+  diag.DiagNotification(clangd, uri, [MakeLineDiag(0, 'clangd diag')], 'push')
+  diag.DiagNotification(tidy, uri, [MakeLineDiag(1, 'tidy diag')], 'push')
+  assert_equal({clangd: ['clangd diag'], tidy: ['tidy diag'], quiet: []},
+	       AleResultsByLinter())
+
+  g:LspTestAleCalls = []
+  g:ale_buffer_info = {[bnr]: {}}
+  lsp.RemoveFile(bnr)
+  assert_equal({clangd: [], tidy: [], quiet: []}, AleResultsByLinter())
+
+  unlet g:ale_buffer_info
+  RemoveAleStub(aleStub)
+  :%bw!
+enddef
+
+# The diagnostics of a buffer that ALE no longer tracks (it drops a deleted
+# buffer before the buffer is detached from the servers) are not cleared in
+# ALE, which would make ALE track the buffer again.
+def g:Test_AleSupport_DeletedBufferNotSentToAle()
+  var aleStub = InstallAleStub()
+  silent! edit XAleSupportDeleted.c
+  setline(1, ['int a;'])
+  var bnr = bufnr()
+  var clangd = MakeDiagServer('clangd')
+  buf.BufLspServerSet(bnr, clangd)
+  diag.DiagNotification(clangd, util.LspBufnrToUri(bnr),
+			[MakeLineDiag(0, 'clangd diag')], 'push')
+
+  g:LspTestAleCalls = []
+  lsp.RemoveFile(bnr)
+  assert_equal([], g:LspTestAleCalls)
+
+  RemoveAleStub(aleStub)
+  :%bw!
+enddef
+
+# When ALE asks for results, a check is started for every attached server
+# name, and the results of servers sharing a name are sent together.  A
+# buffer without a language server is not checked.
+def g:Test_AleSupport_AleHookChecksEveryServer()
+  var aleStub = InstallAleStub()
+  silent! edit XAleSupportNoServer.txt
+  var noServerBnr = bufnr()
+  silent! edit XAleSupportHook.rb
+  setline(1, ['a = 1', 'b = 2'])
+  var bnr = bufnr()
+  var uri = util.LspBufnrToUri(bnr)
+  var rubyLsp = MakeDiagServer('ruby-lsp')
+  var rubyLspTwin = MakeDiagServer('ruby-lsp')
+  var steep = MakeDiagServer('steep')
+  buf.BufLspServerSet(bnr, rubyLsp)
+  buf.BufLspServerSet(bnr, rubyLspTwin)
+  buf.BufLspServerSet(bnr, steep)
+  diag.DiagNotification(rubyLsp, uri, [MakeLineDiag(0, 'first')], 'push')
+  diag.DiagNotification(rubyLspTwin, uri, [MakeLineDiag(1, 'second')], 'push')
+
+  g:LspTestAleCalls = []
+  diag.AleHook(noServerBnr)
+  diag.AleHook(bnr)
+  assert_equal([['start', bnr, 'ruby-lsp'], ['start', bnr, 'steep']],
+	       g:LspTestAleCalls)
+  g:WaitForAssert(() => assert_equal({'ruby-lsp': ['first', 'second'],
+				      steep: []}, AleResultsByLinter()))
+  assert_equal(4, g:LspTestAleCalls->len())
+
+  diag.DiagRemoveFile(bnr)
+  buf.BufLspServerRemove(bnr, rubyLsp)
+  buf.BufLspServerRemove(bnr, rubyLspTwin)
+  buf.BufLspServerRemove(bnr, steep)
+  RemoveAleStub(aleStub)
+  :%bw!
+enddef
+
+# In insert mode, diagnostics are sent to ALE only when ALE lints while text
+# is changed in insert mode ("g:ale_lint_on_text_changed").
+def g:Test_AleSupport_InsertModeFollowsAleLintOnTextChanged()
+  var aleStub = InstallAleStub()
+  silent! edit XAleSupportInsertMode.c
+  setline(1, ['int a;'])
+  var bnr = bufnr()
+  var clangd = MakeDiagServer('clangd')
+  buf.BufLspServerSet(bnr, clangd)
+  var uri = util.LspBufnrToUri(bnr)
+  g:LspTestPublishDiags = () => {
+    diag.DiagNotification(clangd, uri, [MakeLineDiag(0, 'clangd diag')],
+			  'push')
+  }
+
+  var cases: list<list<any>> = [
+    ['never', false], ['normal', false], [0, false], ['0', false],
+    [false, false], ['insert', true], ['Insert', true], ['always', true],
+    ['ALWAYS', true], [1, true], ['1', true], [true, true]
+  ]
+  for [lintOnTextChanged, sent] in cases
+    g:ale_lint_on_text_changed = lintOnTextChanged
+    g:LspTestAleCalls = []
+    feedkeys("i\<Cmd>call g:LspTestPublishDiags()\<CR>\<Esc>", 'xt')
+    assert_equal(sent, !g:LspTestAleCalls->empty(),
+		 $'g:ale_lint_on_text_changed = {string(lintOnTextChanged)}')
+  endfor
+
+  unlet g:ale_lint_on_text_changed
+  g:LspTestAleCalls = []
+  feedkeys("i\<Cmd>call g:LspTestPublishDiags()\<CR>\<Esc>", 'xt')
+  assert_equal([], g:LspTestAleCalls)
+
+  # Outside insert mode the diagnostics are always sent.
+  g:LspTestPublishDiags()
+  assert_equal({clangd: ['clangd diag']}, AleResultsByLinter())
+
+  unlet g:LspTestPublishDiags
+  diag.DiagRemoveFile(bnr)
+  buf.BufLspServerRemove(bnr, clangd)
+  RemoveAleStub(aleStub)
+  :%bw!
+enddef
+
 def g:Test_ProcessMessages_InvalidRequest_NonStringMethod_WithId()
   var lspserver = MakeTestLspServer([])
   var outMessages: list<dict<any>> = []
