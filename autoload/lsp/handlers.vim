@@ -653,12 +653,16 @@ enddef
 
 # process a LSP server message
 export def ProcessMessage(lspserver: dict<any>): void
-  if lspserver.data->type() != v:t_dict
-    lspserver.traceLog($'Dropping malformed non-object message: {lspserver.data->string()}')
+  # Don't keep the message in the server dict, as Vim may go through all of
+  # it whenever the server dict is passed to a function (see NewLspServer()).
+  var data: any = lspserver.data
+  lspserver.data = ''
+  if data->type() != v:t_dict
+    lspserver.traceLog($'Dropping malformed non-object message: {data->string()}')
     return
   endif
 
-  var msg: dict<any> = lspserver.data
+  var msg: dict<any> = data
   var msgKind = ValidateAndClassifyMessage(lspserver, msg)
   if msgKind == 'invalid'
     return

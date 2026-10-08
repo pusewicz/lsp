@@ -58,9 +58,15 @@ def Exit_cb(lspserver: dict<any>, job: job, status: number): void
     timer_stop(lspserver.diagnosticPullTimer)
     lspserver.diagnosticPullTimer = -1
   endif
-  lspserver.pendingPullBufnrs = {}
+  ClearMap(lspserver.pendingPullBufnrs)
   lspserver.running = false
   lspserver.ready = false
+enddef
+
+# Remove all the items of "map", one of the typed maps of the server dict (see
+# NewLspServer()), keeping its type.
+def ClearMap(map: dict<any>)
+  map->filter((_, _) => false)
 enddef
 
 # Start a LSP server
@@ -90,10 +96,10 @@ def StartServer(lspserver: dict<any>, bnr: number): number
   lspserver.signaturePopup = -1
   lspserver.supportsWorkDoneProgress = false
   lspserver.sawWorkDoneProgressEnd = false
-  lspserver.workDoneProgressTokens = {}
-  lspserver.pendingPullBufnrs = {}
+  ClearMap(lspserver.workDoneProgressTokens)
+  ClearMap(lspserver.pendingPullBufnrs)
   lspserver.diagnosticPullTimer = -1
-  lspserver.supersedableRequests = {}
+  ClearMap(lspserver.supersedableRequests)
 
   var job = cmd->job_start(opts)
   if job->job_status() == 'fail'
@@ -302,7 +308,7 @@ def StopServer(lspserver: dict<any>): number
     timer_stop(lspserver.diagnosticPullTimer)
     lspserver.diagnosticPullTimer = -1
   endif
-  lspserver.pendingPullBufnrs = {}
+  ClearMap(lspserver.pendingPullBufnrs)
   lspserver.running = false
   lspserver.ready = false
   return 0
@@ -670,7 +676,7 @@ def AsyncRpcSupersede(lspserver: dict<any>, key: string, method: string,
   # id, because in tests the callback is invoked before AsyncRpc() returns.
   var req: dict<number> = {id: -1}
   lspserver.supersedableRequests[key] = req
-  var id = lspserver.rpc_a(method, params, (_, reply, error) => {
+  var id = lspserver.rpc_a(method, params, (_: dict<any>, reply, error) => {
     if lspserver.supersedableRequests->get(key, {}) isnot req
       return
     endif
@@ -738,7 +744,7 @@ def SemanticHighlightUpdate(lspserver: dict<any>, bnr: number)
   endif
 
   AsyncRpcSupersede(lspserver, $'textDocument/semanticTokens {bnr}', method,
-		    params, (_, reply, error) => {
+		    params, (_: dict<any>, reply, error) => {
     semantichighlight.UpdateTokens(lspserver, reply, error, bnr, requestTick)
   })
 enddef
@@ -913,12 +919,12 @@ enddef
 def FlushQueuedDiagnosticsPull(lspserver: dict<any>, _timerid: number)
   lspserver.diagnosticPullTimer = -1
   if !lspserver.running || !lspserver.ready || !lspserver.isDiagnosticsProvider
-    lspserver.pendingPullBufnrs = {}
+    ClearMap(lspserver.pendingPullBufnrs)
     return
   endif
 
   var bufs = lspserver.pendingPullBufnrs->keys()->map((_, k) => str2nr(k))
-  lspserver.pendingPullBufnrs = {}
+  ClearMap(lspserver.pendingPullBufnrs)
 
   for bnr in bufs
     if bnr->bufloaded() == 0 || buf.BufLspServerGetById(bnr, lspserver.id)->empty()
@@ -1179,7 +1185,7 @@ def GetCompletion(lspserver: dict<any>, triggerKind_arg: number, triggerChar: st
 
   AsyncRpcSupersede(lspserver, 'textDocument/completion',
 		    'textDocument/completion', params,
-		    (_, reply, error) => completion.CompletionReply(lspserver, reply, error))
+		    (_: dict<any>, reply, error) => completion.CompletionReply(lspserver, reply, error))
 enddef
 
 # Get lazy properties for a completion item.
@@ -1200,7 +1206,7 @@ def ResolveCompletion(lspserver: dict<any>, item: dict<any>, sync: bool = false)
   else
     AsyncRpcSupersede(lspserver, 'completionItem/resolve',
 		      'completionItem/resolve', item,
-		      (_, reply, error) => completion.CompletionResolveReply(lspserver, reply, error))
+		      (_: dict<any>, reply, error) => completion.CompletionResolveReply(lspserver, reply, error))
   endif
   return {}
 enddef
@@ -1401,7 +1407,7 @@ def ShowSignature(lspserver: dict<any>, triggerKind_arg: number = 1, triggerChar
 						     triggerKind_arg,
 						     triggerChar)
   AsyncRpcSupersede(lspserver, 'textDocument/signatureHelp',
-		    'textDocument/signatureHelp', params, (_, reply, error) => {
+		    'textDocument/signatureHelp', params, (_: dict<any>, reply, error) => {
 		signature.SignatureHelp(lspserver, reply, error, reqctx)
 	})
 enddef
@@ -1448,7 +1454,7 @@ def ShowHoverInfo(lspserver: dict<any>, cmdmods: string): void
   #   interface TextDocumentPositionParams
   var params = lspserver.getTextDocPosition(false)
   AsyncRpcSupersede(lspserver, 'textDocument/hover', 'textDocument/hover',
-		    params, (_, reply, error) => {
+		    params, (_: dict<any>, reply, error) => {
     hover.HoverReply(lspserver, reply, error, cmdmods, reqctx)
   })
 enddef
@@ -1519,7 +1525,7 @@ def g:LspRequestCustom(name: string, msg: string, params: any): string
     return ''
   endif
 
-  lspserver.rpc_a(msg, params, (_, reply, error) => WorkspaceExecuteReply(lspserver, reply, error))
+  lspserver.rpc_a(msg, params, (_: dict<any>, reply, error) => WorkspaceExecuteReply(lspserver, reply, error))
   return ''
 enddef
 
@@ -1588,7 +1594,7 @@ def DocHighlight(lspserver: dict<any>, bnr: number, cmdmods: string): void
   #   interface TextDocumentPositionParams
   var params = lspserver.getTextDocPosition(false)
   AsyncRpcSupersede(lspserver, $'textDocument/documentHighlight {bnr}',
-		    'textDocument/documentHighlight', params, (_, reply, error) => {
+		    'textDocument/documentHighlight', params, (_: dict<any>, reply, error) => {
     DocHighlightReply(lspserver, reply, error, bnr, cmdmods)
   })
 enddef
@@ -1605,7 +1611,7 @@ def GetDocSymbols(lspserver: dict<any>, fname: string, showOutline: bool): void
   # interface DocumentSymbolParams
   # interface TextDocumentIdentifier
   var params = {textDocument: {uri: util.LspFileToUri(fname)}}
-  lspserver.rpc_a('textDocument/documentSymbol', params, (_, reply, error) => {
+  lspserver.rpc_a('textDocument/documentSymbol', params, (_: dict<any>, reply, error) => {
     if showOutline
       symbol.DocSymbolOutline(lspserver, reply, error, fname)
     else
@@ -1959,7 +1965,7 @@ def InlayHintsShow(lspserver: dict<any>, bnr: number)
     msg = 'textDocument/inlayHint'
   endif
   AsyncRpcSupersede(lspserver, $'textDocument/inlayHint {bnr}', msg, param,
-		    (_, reply, error) => {
+		    (_: dict<any>, reply, error) => {
     inlayhints.InlayHintsReply(lspserver, reply, error, bnr)
   })
 enddef
@@ -2267,7 +2273,7 @@ def CodeActionAsync(lspserver: dict<any>, fname_arg: string, line1: number,
   var params = reqInfo.params
 
   var reqid = lspserver.rpc_a('textDocument/codeAction', params,
-	(_, result, rpcError) => {
+	(_: dict<any>, result, rpcError) => {
 	  var actionList: list<dict<any>> = []
     # Decode edits here so downstream UI/execution uses buffer coordinates.
 	  if rpcError->empty() && result->type() == v:t_list
@@ -2694,7 +2700,7 @@ def ExecuteCommand(lspserver: dict<any>, cmd: dict<any>)
     params.arguments = cmd.arguments
   endif
 
-  lspserver.rpc_a('workspace/executeCommand', params, (_, reply, error) => WorkspaceExecuteReply(lspserver, reply, error))
+  lspserver.rpc_a('workspace/executeCommand', params, (_: dict<any>, reply, error) => WorkspaceExecuteReply(lspserver, reply, error))
 enddef
 
 # Display the LSP server capabilities (received during the initialization
@@ -2733,9 +2739,10 @@ def AddMessage(lspserver: dict<any>, msgType: string, newMsg: string)
   var msgs = newMsg->split("\n")
   lspserver.messages->add($'{strftime("%m/%d/%y %T")}: [{msgType}]: {msgs[0]}')
   lspserver.messages->extend(msgs[1 : ])
-  # Keep only the last 500 messages to reduce the memory usage
+  # Keep only the last 500 messages to reduce the memory usage.  Remove the
+  # others in place, as a slice has no type (see NewLspServer()).
   if lspserver.messages->len() >= 600
-    lspserver.messages = lspserver.messages[-500 : ]
+    lspserver.messages->remove(0, -501)
   endif
 enddef
 
@@ -2827,6 +2834,25 @@ def GetUniqueServerId(): number
 enddef
 
 export def NewLspServer(serverParams: dict<any>): dict<any>
+  # The maps and the list that grow with the number of open documents, pending
+  # requests and messages are created with a type.  When the server dict is
+  # passed to a function, which is on every method call, Vim goes through all
+  # its values and all those of the dicts and lists in it that have no type:
+  # before patch 9.2.1144 always, after it when the argument type is "any".
+  # A "{}" literal or a slice has no type, so change these in place, e.g.
+  # with ClearMap(), instead of assigning a new one.  For the same reason, a
+  # lambda that is passed the server dict declares it as "dict<any>", even
+  # when it doesn't use it.
+  var messages: list<string> = []
+  var syncRpcReplies: dict<dict<any>> = {}
+  var supersedableRequests: dict<dict<number>> = {}
+  var diagnosticResultIds: dict<string> = {}
+  var pendingPullBufnrs: dict<bool> = {}
+  var workDoneProgressTokens: dict<bool> = {}
+  var cachedBufferContent: dict<list<string>> = {}
+  var cachedBufferEol: dict<bool> = {}
+  var docVersions: dict<number> = {}
+
   var lspserver: dict<any> = {
     id: GetUniqueServerId(),
     name: serverParams.name,
@@ -2848,32 +2874,32 @@ export def NewLspServer(serverParams: dict<any>): dict<any>
     forceOffsetEncoding: serverParams.forceOffsetEncoding,
     initializationOptions: serverParams.initializationOptions->deepcopy(),
     languageId: serverParams.languageId,
-    messages: [],
+    messages: messages,
     needOffsetEncoding: false,
     omniCompletePending: false,
     completeItemsIsIncomplete: false,
     nextSyncRpcId: SYNC_RPC_FIRST_ID,
-    syncRpcReplies: {},
-    supersedableRequests: {},
+    syncRpcReplies: syncRpcReplies,
+    supersedableRequests: supersedableRequests,
     peekSymbolFilePopup: -1,
     peekSymbolPopup: -1,
     processDiagHandler: serverParams.processDiagHandler,
-    diagnosticResultIds: {},
+    diagnosticResultIds: diagnosticResultIds,
     diagnosticPullTimer: -1,
-    pendingPullBufnrs: {},
+    pendingPullBufnrs: pendingPullBufnrs,
     supportsDidOpenClose: false,
     supportsDidSave: false,
     supportsWorkDoneProgress: false,
     sawWorkDoneProgressEnd: false,
-    workDoneProgressTokens: {},
+    workDoneProgressTokens: workDoneProgressTokens,
     rootSearchFiles: serverParams.rootSearch->deepcopy(),
     runIfSearchFiles: serverParams.runIfSearch->deepcopy(),
     runUnlessSearchFiles: serverParams.runUnlessSearch->deepcopy(),
     selection: {},
     signaturePopup: -1,
-    cachedBufferContent: {},
-    cachedBufferEol: {},
-    docVersions: {},
+    cachedBufferContent: cachedBufferContent,
+    cachedBufferEol: cachedBufferEol,
+    docVersions: docVersions,
     syncInit: serverParams.syncInit,
     traceLevel: serverParams.traceLevel,
     typeHierFilePopup: -1,
