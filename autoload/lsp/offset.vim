@@ -31,6 +31,28 @@ export def EncodePosition(lspserver: dict<any>, bnr: number, pos: dict<number>)
   endif
 enddef
 
+# Decode the character offset "character" from the start of "text" using the
+# encoding negotiated with the language server to a UTF-32 offset.  Returns
+# "character" unchanged when "text" is empty or the offset is past its end.
+export def DecodeCharacter(lspserver: dict<any>, text: string,
+			   character: number): number
+  # LSP client plugin also uses utf-32 encoding
+  if lspserver.posEncoding == 32 || text->empty()
+    return character
+  endif
+
+  var textLen = lspserver.posEncoding == 16
+    ? text->strutf16len(true) : text->strlen()
+  if character > textLen
+    return character
+  endif
+  if character == textLen
+    return text->strchars()
+  endif
+  return lspserver.posEncoding == 16
+    ? text->charidx(character, true, true) : text->charidx(character, true)
+enddef
+
 # Decode the character offset in the LSP position "pos" using the encoding
 # negotiated with the language server to a UTF-32 offset.
 #
@@ -44,33 +66,7 @@ export def DecodePosition(lspserver: dict<any>, bnr: number, pos: dict<number>)
 
   :silent! bnr->bufload()
   var text = bnr->getbufline(pos.line + 1)->get(0, '')
-  # If the line is empty then don't decode the character position.
-  if text->empty()
-    return
-  endif
-
-  # If the character position is out-of-bounds, then don't decode the
-  # character position.
-  var textLen = 0
-  if lspserver.posEncoding == 16
-    textLen = text->strutf16len(true)
-  else
-    textLen = text->strlen()
-  endif
-
-  if pos.character > textLen
-    return
-  endif
-
-  if pos.character == textLen
-    pos.character = text->strchars()
-  else
-    if lspserver.posEncoding == 16
-      pos.character = text->charidx(pos.character, true, true)
-    else
-      pos.character = text->charidx(pos.character, true)
-    endif
-  endif
+  pos.character = DecodeCharacter(lspserver, text, pos.character)
 enddef
 
 # Encode the start and end UTF-32 character offsets in the LSP range "range"
