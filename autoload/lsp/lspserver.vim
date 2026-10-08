@@ -1249,9 +1249,11 @@ def GetCompletion(lspserver: dict<any>, triggerKind_arg: number, triggerChar: st
     params.context.triggerCharacter = triggerChar
   endif
 
+  # CompletionReply() itself, not a lambda calling it: Vim checks the type of
+  # every value of the reply each time it is passed to a function.
   AsyncRpcSupersede(lspserver, 'textDocument/completion',
 		    'textDocument/completion', params,
-		    (_: dict<any>, reply, error) => completion.CompletionReply(lspserver, reply, error))
+		    completion.CompletionReply)
 enddef
 
 # Cancel the pending completion request, if any, and ignore its reply.
@@ -1278,7 +1280,7 @@ def ResolveCompletion(lspserver: dict<any>, item: dict<any>, sync: bool = false)
   else
     AsyncRpcSupersede(lspserver, 'completionItem/resolve',
 		      'completionItem/resolve', item,
-		      (_: dict<any>, reply, error) => completion.CompletionResolveReply(lspserver, reply, error))
+		      completion.CompletionResolveReply)
   endif
   return {}
 enddef
