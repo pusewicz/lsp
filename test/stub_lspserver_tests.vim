@@ -3867,6 +3867,56 @@ def g:Test_ApplyWorkspaceEdit_CreateOverwritesLoadedBuffer()
   endtry
 enddef
 
+# Runs "Cmd" and returns true when Vim did not ask a question meanwhile.  Vim
+# asks it in a dialog that reads the keys typed by the user and ignores
+# typeahead, and the test runner types no keys, so the question would wait
+# forever.  <CR> is fed as typed first to answer it, and whether it is left
+# unread tells whether a question was asked.
+def AsksNoQuestion(Cmd: func()): bool
+  var unread: bool
+  test_feedinput("\r")
+  try
+    Cmd()
+  finally
+    unread = getcharstr(0) == "\r"
+  endtry
+  return unread
+enddef
+
+# Creating the file of a loaded buffer that has no file yet, as after ":edit"
+# of a new file, makes it the file of the buffer, so that Vim does not ask
+# what to do about a file created after editing started (W13).
+def g:Test_ApplyWorkspaceEdit_CreateFileOfNewBuffer()
+  var fname = 'XWorkspaceEditCreateNew.txt'
+  var uri = util.LspFileToUri(fname)
+  var Create = () => {
+    ApplyResourceOp({kind: 'create', uri: uri})
+  }
+  try
+    exe $'silent edit {fname}'
+    setlocal bomb
+    assert_true(AsksNoQuestion(Create))
+    assert_equal(0, getfsize(fname))
+    assert_notmatch('\[New\]', execute('file'))
+    bwipe!
+    delete(fname)
+
+    var bnr = bufadd(fname)
+    bnr->bufload()
+    assert_true(AsksNoQuestion(Create))
+    assert_equal(0, getfsize(fname))
+    assert_notmatch('\[New\]', util.ExecuteInBuffer(bnr, 'file'))
+    assert_equal([], win_findbuf(bnr))
+    var CheckTime = () => {
+      checktime
+    }
+    assert_true(AsksNoQuestion(CheckTime))
+  finally
+    delete(fname)
+    :%bwipe!
+  endtry
+enddef
+
 # Creating a file over one whose buffer has unsaved changes fails, and leaves
 # both unchanged.
 def g:Test_ApplyWorkspaceEdit_CreateKeepsModifiedBuffer()

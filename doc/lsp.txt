@@ -1329,7 +1329,9 @@ of such a file follows it:
 
 - Creating a file over an existing one, which the language server asks for
   with the "overwrite" option, empties its buffer too.  The buffer keeps its
-  undo history (see 'undoreload').
+  undo history (see 'undoreload').  A file that does not exist yet but has
+  an empty buffer, as after |:edit| of a new file, is created by writing
+  the buffer.
 - Renaming a file gives its buffer the new name.  The buffer keeps its text,
   its undo history and its unsaved changes, and the language servers get it
   as the document with the new name.  When the renamed file replaces a file,
