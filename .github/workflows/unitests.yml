@@ -52,6 +52,7 @@ jobs:
         run: |
           set -euo pipefail
           sw_vers
+          "$(brew --prefix llvm)/bin/clangd" --version
           rust-analyzer --version
           /Applications/MacVim.app/Contents/MacOS/Vim --version
           cd test
@@ -65,4 +66,5 @@ jobs:
             /tmp/lsp-*.log
             /tmp/lsp-*.err
             test/results_*.txt
+            test/screen_*.log
           if-no-files-found: ignore
