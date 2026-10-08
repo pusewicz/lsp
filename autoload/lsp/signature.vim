@@ -257,25 +257,10 @@ def GetCurrentSignatureHelpState(): dict<any>
   }
 enddef
 
-# Return true when an async signature-help reply still matches the editor
-# state that triggered the request.
-def SignatureRequestContextMatches(reqctx: dict<number>): bool
-  return reqctx.bnr == bufnr()
-         && reqctx.changedtick == reqctx.bnr->getbufvar('changedtick', -1)
-         && reqctx.lnum == line('.')
-         && reqctx.col == charcol('.')
-enddef
-
 # Snapshot the current editor state so stale async signature replies can be
 # discarded when the user moves or edits before the server responds.
 export def SignatureRequestContextGet(): dict<number>
-  var bnr = bufnr()
-  return {
-    bnr: bnr,
-    changedtick: bnr->getbufvar('changedtick', -1),
-    lnum: line('.'),
-    col: charcol('.')
-  }
+  return util.RequestContextGet('cursor')
 enddef
 
 # Popup close callback: if the signature popup is closed out-of-band (for
@@ -960,7 +945,7 @@ export def SignatureHelp(lspserver: dict<any>, sighelp: any,
     return
   endif
 
-  if !reqctx->empty() && !SignatureRequestContextMatches(reqctx)
+  if !reqctx->empty() && !util.RequestContextMatches(reqctx)
     return
   endif
 
