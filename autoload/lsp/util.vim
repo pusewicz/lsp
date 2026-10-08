@@ -531,4 +531,32 @@ export def IsIgnoredRoot(rootPath: string, ignoredPaths: list<string>): bool
   return false
 enddef
 
+# Makes the current buffer a scratch buffer named "bname", or without a name
+# when another buffer has that name.  A scratch buffer must be looked up by
+# its number: as a buffer name, "bname" can match another buffer, e.g. a file
+# of the user.
+export def ScratchBufferInit(bname: string)
+  :setlocal buftype=nofile bufhidden=wipe noswapfile
+  if !bname->bufexists()
+    execute $'silent file {bname->fnameescape()}'
+  endif
+enddef
+
+# Opens a new window, with the Ex command modifiers "mods", for the scratch
+# buffer "bnr" and returns "bnr".  When the buffer "bnr" is not loaded, the
+# window gets a new scratch buffer named "bname" instead (see
+# ScratchBufferInit()) and its number is returned.
+export def ScratchWindowOpen(bnr: number, bname: string,
+			     mods: string = ''): number
+  if bnr->bufloaded()
+    silent execute $'{mods} split'
+    silent execute $'buffer {bnr}'
+    return bnr
+  endif
+
+  silent execute $'{mods} new'
+  ScratchBufferInit(bname)
+  return bufnr()
+enddef
+
 # vim: tabstop=8 shiftwidth=2 softtabstop=2 noexpandtab

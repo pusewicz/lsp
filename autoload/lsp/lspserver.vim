@@ -16,6 +16,7 @@ import './offset.vim'
 import './diag.vim'
 import './selection.vim'
 import './symbol.vim'
+import './outline.vim'
 import './textedit.vim'
 import './completion.vim'
 import './hover.vim'
@@ -176,7 +177,7 @@ def ServerInitReply(lspserver: dict<any>, initResult: dict<any>,
 
   # if the outline window is opened, then request the symbols for the current
   # buffer
-  if bufwinid('LSP-Outline') != -1
+  if outline.OutlineBufnr()->bufwinid() != -1
     lspserver.getDocSymbols(@%, true)
   endif
 
