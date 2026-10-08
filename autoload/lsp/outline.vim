@@ -198,34 +198,24 @@ export def UpdateOutlineWindow(fname: string,
   skipRefresh = false
 enddef
 
-# Search for the symbol corresponding to the line 'lnum' in the symbol table.
-# A symbol (e.g. a function) spans multiple lines.
+# Returns the index of the innermost symbol in "symbolTable" whose range
+# contains the line "lnum", the last one of those with the fewest lines, or -1
+# when there is none.  The symbols are sorted by their start line.
 def FindSymbolForLine(symbolTable: list<dict<any>>, lnum: number): number
-  var left = 0
-  var right = symbolTable->len() - 1
-  var mid: number
-
-  # binary search
-  while left <= right
-    mid = (left + right) / 2
-    var r = symbolTable[mid].range
-    if lnum >= (r.start.line + 1) && lnum <= (r.end.line + 1)
-      # symbol found
-      return mid
+  var found: number = -1
+  var foundLineCount: number = 0
+  for idx in range(symbolTable->len())
+    var r: dict<dict<number>> = symbolTable[idx].range
+    if r.start.line + 1 > lnum
+      break
     endif
-    if lnum > (r.start.line + 1)
-      left = mid + 1
-    else
-      right = mid - 1
+    var lineCount: number = r.end.line - r.start.line + 1
+    if lnum <= r.end.line + 1 && (found == -1 || lineCount <= foundLineCount)
+      found = idx
+      foundLineCount = lineCount
     endif
-  endwhile
-
-  # symbol not found
-  if left > right
-    return -1
-  else
-    return mid
-  endif
+  endfor
+  return found
 enddef
 
 def OutlineHighlightCurrentSymbol()
