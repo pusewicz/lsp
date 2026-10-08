@@ -89,6 +89,30 @@ def g:Test_LspDiagShow_multibyte()
 enddef
 
 # Test for :LspFormat when using multibyte and composing characters
+def g:Test_LspDocumentLink_multibyte()
+  writefile(['int xdoclink_mb;'], 'Xdoclink😊.h')
+  :silent! edit XLspDocumentLink_mb.c
+  sleep 200m
+  setline(1, ['#include "Xdoclink😊.h" // 😊', 'int *x = &xdoclink_mb;'])
+  g:WaitForServerFileLoad(0)
+  setlocal nomodified
+  :LspDocumentLink
+  var loclist: list<dict<any>> = getloclist(0)
+  assert_equal(1, loclist->len())
+  assert_equal([1, 10, 1, 26, 'Xdoclink😊.h'],
+	       [loclist[0].lnum, loclist[0].col, loclist[0].end_lnum,
+		loclist[0].end_col, loclist[0].text])
+  :lclose
+
+  # The cursor is on the closing quote, the last character of the link
+  cursor(1, 25)
+  :LspDocumentLinkOpen
+  assert_equal('Xdoclink😊.h', expand('%:t'))
+
+  :%bw!
+  delete('Xdoclink😊.h')
+enddef
+
 def g:Test_LspFormat_multibyte()
   :silent! edit XLspFormat_mb.c
   sleep 200m

@@ -2035,6 +2035,124 @@ def g:Test_GetCompletion_IgnoresSupersededReply()
   :%bw!
 enddef
 
+# Returns a stub language server that replies to "textDocument/documentLink"
+# with "links" and to "documentLink/resolve" with "resolved".  The server is a
+# resolve provider only if "resolved" is not empty.  The requests sent to the
+# server are added to "requests".
+def MakeDocumentLinkServer(links: list<dict<any>>, resolved: dict<any>,
+			   requests: list<dict<any>>): dict<any>
+  var lspserver = MakeTestLspServer([])
+  lspserver.running = true
+  lspserver.ready = true
+  lspserver.isDocumentLinkProvider = true
+  lspserver.isDocumentLinkResolveProvider = !resolved->empty()
+  lspserver.rpc = (method: string, params: any): dict<any> => {
+    requests->add({method: method, params: params->deepcopy()})
+    var result: any = method == 'documentLink/resolve' ? resolved : links
+    return {result: result->deepcopy()}
+  }
+  return lspserver
+enddef
+
+# Test for listing document links with their targets and tooltips
+def g:Test_DocumentLink_ListsTargetsAndTooltips()
+  silent! edit XDocLinkList.txt
+  setline(1, ['first https://example.com/doc', 'second ref'])
+  var links = [
+    {range: {start: {line: 1, character: 7}, end: {line: 1, character: 10}},
+     tooltip: 'Go to ref'},
+    {range: {start: {line: 0, character: 6}, end: {line: 0, character: 29}},
+     target: 'https://example.com/doc', tooltip: 'Open docs'},
+    {range: {start: {line: 0, character: 0}, end: {line: 0, character: 5}}}
+  ]
+  var requests: list<dict<any>> = []
+  var srv = MakeDocumentLinkServer(links, {}, requests)
+  buf.BufLspServerSet(bufnr(), srv)
+
+  :LspDocumentLink
+  assert_equal([[1, 1, 6, '(unresolved)'],
+		[1, 7, 30, 'https://example.com/doc (Open docs)'],
+		[2, 8, 11, 'Go to ref']],
+	       getloclist(0)->mapnew((_, v) => [v.lnum, v.col, v.end_col, v.text]))
+  :lclose
+
+  # A link without a target is not resolved when the server is not a resolve
+  # provider
+  cursor(2, 9)
+  assert_equal('Warn: Document link target is not found',
+	       execute('LspDocumentLinkOpen')->split("\n")[0])
+  assert_equal(['textDocument/documentLink', 'textDocument/documentLink'],
+	       requests->mapnew((_, r) => r.method))
+
+  buf.BufLspServerRemove(bufnr(), srv)
+  :%bw!
+enddef
+
+# Test for resolving the target of the document link under the cursor and
+# opening the file at the position in the target fragment
+def g:Test_DocumentLinkOpen_ResolvesTarget()
+  writefile(['one', 'two', 'three'], 'XDocLinkTarget.txt')
+  silent! edit XDocLinkSource.txt
+  setline(1, ['see the target'])
+  setlocal nomodified
+  var srcBnr = bufnr()
+  var range = {start: {line: 0, character: 8}, end: {line: 0, character: 14}}
+  var target = $'{util.LspFileToUri("XDocLinkTarget.txt")}#L2,3'
+  var requests: list<dict<any>> = []
+  var srv = MakeDocumentLinkServer([{range: range, data: 42}],
+				   {range: range, target: target, data: 42},
+				   requests)
+  buf.BufLspServerSet(srcBnr, srv)
+
+  cursor(1, 14)
+  :LspDocumentLinkOpen
+  assert_equal(['textDocument/documentLink', 'documentLink/resolve'],
+	       requests->mapnew((_, r) => r.method))
+  assert_equal(42, requests[1].params.data)
+  assert_equal('XDocLinkTarget.txt', expand('%:t'))
+  assert_equal([2, 3], [line('.'), col('.')])
+
+  buf.BufLspServerRemove(srcBnr, srv)
+  :%bw!
+  delete('XDocLinkTarget.txt')
+enddef
+
+# Test for opening a document link target that is not a file with the opener
+# from the Vim runtime.  The target must reach the opener unchanged.
+def g:Test_DocumentLinkOpen_ExternalUri()
+  var vim9Lib = globpath(&runtimepath, 'autoload/dist/vim9.vim', false, true)
+  if !has('unix') || vim9Lib->empty()
+      || vim9Lib[0]->readfile()->match('^export def Open(') == -1
+    # The dist#vim9#Open() function is not available
+    return
+  endif
+
+  writefile(['#!/bin/sh', 'printf "%s" "$1" > XDocLinkOpened'],
+	    'XDocLinkOpener')
+  setfperm('XDocLinkOpener', 'rwx------')
+  g:Openprg = './XDocLinkOpener'
+  var uri = "https://example.com/doc?a=1&b='2'$(touch XDocLinkPwned)"
+  silent! edit XDocLinkExternal.txt
+  setline(1, ['docs'])
+  var range = {start: {line: 0, character: 0}, end: {line: 0, character: 4}}
+  var srv = MakeDocumentLinkServer([{range: range, target: uri}], {}, [])
+  buf.BufLspServerSet(bufnr(), srv)
+
+  try
+    :LspDocumentLinkOpen
+    g:WaitFor(() => filereadable('XDocLinkOpened')
+		      && readfile('XDocLinkOpened') == [uri])
+    assert_false(filereadable('XDocLinkPwned'))
+  finally
+    buf.BufLspServerRemove(bufnr(), srv)
+    :%bw!
+    unlet g:Openprg
+    delete('XDocLinkOpener')
+    delete('XDocLinkOpened')
+    delete('XDocLinkPwned')
+  endtry
+enddef
+
 # Only here to because the test runner needs it
 def g:StartLangServer(): bool
   return true
