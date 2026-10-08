@@ -27,6 +27,10 @@ import './util.vim'
 #   },
 #   sortedDiagnostics: [lspServer1.diags, ...lspServer2.diags]->sort()
 # }
+#
+# The diagnostics are stored as the language servers sent them.  The lines of
+# a buffer can be deleted before a server sends the diagnostics again, so the
+# stored diagnostics are used through DiagInBuf().
 var diagsMap: dict<dict<any>> = {}
 
 # The ALE linter names that diagnostics were sent to ALE under, for each
@@ -210,6 +214,27 @@ def DiagLastLnum(diag: dict<any>): number
   return d_end.character == 0 ? d_end.line : d_end.line + 1
 enddef
 
+# Returns "diag", a diagnostic stored for buffer "bnr", as it applies to the
+# current text of the buffer.  Lines may have been deleted since the language
+# server computed the diagnostic, so a position on a line past the end of the
+# buffer is at the end of its last line: a range ending past the end of the
+# buffer ends there, and one starting past it is empty there.  Returns "diag"
+# itself when its range is within the buffer, or else a copy of it.
+def DiagInBuf(bnr: number, diag: dict<any>): dict<any>
+  var range: dict<dict<number>> = diag.range
+  if !bnr->getbufline(max([range.start.line, range.end.line]) + 1)->empty()
+      || !bnr->bufloaded()
+    return diag
+  endif
+  var lastLnum: number = bnr->getbufinfo()[0].linecount
+  var bufEnd: dict<number> = {
+    line: lastLnum - 1,
+    character: bnr->getbufline(lastLnum)[0]->strchars()
+  }
+  return diag->extendnew({range: range->mapnew((_, pos) =>
+    pos.line < lastLnum ? pos : bufEnd->copy())})
+enddef
+
 # Deduplicate diagnostics, if the same diagnostic is sent in
 # both push and pull channels
 def DeduplicateDiags(diags: list<dict<any>>): list<dict<any>>
@@ -381,8 +406,8 @@ export def DiagsRefresh(bnr: number)
   if !diagsMap->has_key(bnr)
     return
   endif
-  var bufferDiags = diagsMap[bnr]
-  var diags: list<dict<any>> = bufferDiags.sortedDiagnostics
+  var diags: list<dict<any>> = diagsMap[bnr].sortedDiagnostics
+    ->mapnew((_, d) => DiagInBuf(bnr, d))
   if diags->empty()
     return
   endif
@@ -487,21 +512,17 @@ def AleLinterNamesGet(bnr: number): list<string>
     ->uniq()
 enddef
 
-# Returns the ALE loclist entry for diagnostic "diag" in buffer "bnr".  ALE
-# highlights up to and including "end_col", so the end of the entry is the
-# last byte in the diagnostic range, kept within the buffer.  An empty range
-# highlights the character at its start.
+# Returns the ALE loclist entry for diagnostic "diag" in buffer "bnr", as
+# returned by DiagInBuf().  ALE highlights up to and including "end_col", so
+# the end of the entry is the last byte in the diagnostic range.  An empty
+# range highlights the character at its start.
 def AleLocListItem(bnr: number, diag: dict<any>): dict<any>
   var range = diag.range
   var lnum = range.start.line + 1
   var col = util.GetLineByteFromPos(bnr, range.start) + 1
   var endLnum = range.end.line + 1
   var endCol: number
-  if bnr->getbufline(endLnum)->empty()
-    # The range ends past the end of the buffer
-    endLnum = bnr->getbufinfo()[0].linecount
-    endCol = bnr->getbufline(endLnum)->get(0, '')->strlen()
-  elseif range.end.character == 0 && endLnum > lnum
+  if range.end.character == 0 && endLnum > lnum
     # The range ends with the newline of the previous line
     endLnum -= 1
     endCol = bnr->getbufline(endLnum)[0]->strlen()
@@ -531,7 +552,7 @@ def SendAleDiags(bnr: number, timerid: number)
     endfor
     # Convert to Ale's diagnostics format (:h ale-loclist-format)
     var loclist = SortDiags(DeduplicateDiags(diags))
-      ->mapnew((_, v) => AleLocListItem(bnr, v))
+      ->mapnew((_, v) => AleLocListItem(bnr, DiagInBuf(bnr, v)))
     loclists[lspserver.name] = loclists->get(lspserver.name, [])
       ->extend(loclist)
   endfor
@@ -681,8 +702,6 @@ export def DiagNotification(lspserver: dict<any>, uri: string, diags_arg: list<d
     newDiags = lspserver.processDiagHandler(newDiags)
   endif
 
-  # TODO: Is the buffer (bnr) always a loaded buffer? Should we load it here?
-  var lastlnum: number = bnr->getbufinfo()[0].linecount
   kindDiags[sync_kind] = newDiags
   serverDiags[serverId] = kindDiags
 
@@ -696,13 +715,7 @@ export def DiagNotification(lspserver: dict<any>, uri: string, diags_arg: list<d
   var diagsByLnum: dict<list<dict<any>>> = {}
   var multiLineDiags: list<dict<any>> = []
   for diag in dedupedDiags
-    var d_start = diag.range.start
-    if d_start.line + 1 > lastlnum
-      # Make sure the line number is a valid buffer line number
-      d_start.line = lastlnum - 1
-    endif
-
-    var lnum = d_start.line + 1
+    var lnum = diag.range.start.line + 1
     if !diagsByLnum->has_key(lnum)
       diagsByLnum[lnum] = []
     endif
@@ -797,21 +810,30 @@ def DiagsLocListId(winid: number): number
   return 0
 enddef
 
+# Returns the location list item for "diag", a diagnostic stored for buffer
+# "bnr", at the position returned by DiagInBuf().  The 'user_data' of the item
+# has the diagnostic as the language server sent it.
+def DiagLocListItem(bnr: number, diag: dict<any>): dict<any>
+  var range = DiagInBuf(bnr, diag).range
+  return {
+    bufnr: bnr,
+    lnum: range.start.line + 1,
+    col: util.GetLineByteFromPos(bnr, range.start) + 1,
+    end_lnum: range.end.line + 1,
+    end_col: util.GetLineByteFromPos(bnr, range.end) + 1,
+    text: diag.message->substitute("\n\\+", "\n", 'g'),
+    type: DiagSevToQfType(diag->get('severity', 1)),
+    user_data: {diagnostic: diag}
+  }
+enddef
+
 # Returns the location list items for the diagnostics in buffer "bnr".
 def DiagsLocListItems(bnr: number): list<dict<any>>
   if !diagsMap->has_key(bnr)
     return []
   endif
-  return diagsMap[bnr].sortedDiagnostics->mapnew((_, diag) => ({
-    bufnr: bnr,
-    lnum: diag.range.start.line + 1,
-    col: util.GetLineByteFromPos(bnr, diag.range.start) + 1,
-    end_lnum: diag.range.end.line + 1,
-    end_col: util.GetLineByteFromPos(bnr, diag.range.end) + 1,
-    text: diag.message->substitute("\n\\+", "\n", 'g'),
-    type: DiagSevToQfType(diag->get('severity', 1)),
-    user_data: {diagnostic: diag}
-  }))
+  return diagsMap[bnr].sortedDiagnostics
+    ->mapnew((_, diag) => DiagLocListItem(bnr, diag))
 enddef
 
 # Set the items of the diagnostics location list of window "winid" to
@@ -888,17 +910,12 @@ export def ShowAllDiags(): void
   endif
 enddef
 
-# Display the message of "diag" in a popup window right below the start of the
-# diagnostic, or below the cursor if the diagnostic starts on another line.
+# Display the message of "diag", a diagnostic of the current buffer as returned
+# by DiagInBuf(), in a popup window right below the start of the diagnostic,
+# or below the cursor if the diagnostic starts on another line.
 def ShowDiagInPopup(diag: dict<any>)
   var d_start = diag.range.start
   var dlnum = d_start.line + 1
-
-  var lastline = line('$')
-  if dlnum > lastline
-    # The line number is outside the last line in the file.
-    dlnum = lastline
-  endif
 
   var d: dict<number> = {row: 0, col: 0}
   if dlnum == line('.')
@@ -1007,10 +1024,10 @@ def DiagRangeHasPos(bnr: number, diag: dict<any>, lnum: number,
 enddef
 
 # Get the diagnostic from the LSP server for a particular line and character
-# offset in a file.  If "atPos" is true, return the innermost diagnostic whose
-# range contains the position.  Otherwise, return the first diagnostic covering
-# the line that starts at or after the position, or the last one starting
-# before it.
+# offset in a file, as returned by DiagInBuf().  If "atPos" is true, return the
+# innermost diagnostic whose range contains the position.  Otherwise, return
+# the first diagnostic covering the line that starts at or after the position,
+# or the last one starting before it.
 export def GetDiagByPos(bnr: number, lnum: number, col: number,
 			atPos: bool = false): dict<any>
   var diags_in_line = GetDiagsByLine(bnr, lnum)
@@ -1040,7 +1057,8 @@ enddef
 
 # Get all the diagnostics from the LSP server "lspserver" (or from all the
 # servers if not specified) covering any of the lines from "startLnum" to
-# "endLnum" in buffer "bnr".  Returns a new list sorted by the start position.
+# "endLnum" in buffer "bnr", as returned by DiagInBuf().  Returns a new list
+# sorted by the start position.
 export def GetDiagsInLineRange(bnr: number, startLnum: number, endLnum: number,
 			       lspserver: dict<any> = null_dict): list<dict<any>>
   if !diagsMap->has_key(bnr)
@@ -1051,6 +1069,7 @@ export def GetDiagsInLineRange(bnr: number, startLnum: number, endLnum: number,
   var serverIds: list<any> = lspserver == null_dict
     ? bufferDiags.serverDiagnosticsByLnum->keys()
     : [lspserver.id]
+  var toBufEnd: bool = bnr->getbufline(endLnum + 1)->empty()
 
   var diags: list<dict<any>> = []
   for serverId in serverIds
@@ -1060,6 +1079,15 @@ export def GetDiagsInLineRange(bnr: number, startLnum: number, endLnum: number,
 	diags->extend(diagsByLnum[lnum])
       endif
     endfor
+
+    if toBufEnd
+      # Diagnostics starting past the end of the buffer start on its last line
+      for [lnum, lnumDiags] in diagsByLnum->items()
+	if lnum->str2nr() > endLnum
+	  diags->extend(lnumDiags)
+	endif
+      endfor
+    endif
 
     # Diagnostics starting before the range but extending into it
     for diag in bufferDiags.serverMultiLineDiagnostics->get(serverId, [])
@@ -1072,7 +1100,11 @@ export def GetDiagsInLineRange(bnr: number, startLnum: number, endLnum: number,
     endfor
   endfor
 
-  return SortDiags(diags)
+  # The diagnostics are found by their stored lines.  Keep the ones that still
+  # cover the range once kept within the buffer.
+  return SortDiags(diags->map((_, d) => DiagInBuf(bnr, d))
+    ->filter((_, d) => d.range.start.line < endLnum
+		       && DiagLastLnum(d) >= startLnum))
 enddef
 
 # Get all diagnostics from the LSP server for a particular line in a file,
@@ -1105,8 +1137,8 @@ export def LspDiagsJump(which: string, a_count: number = 0): void
     util.WarnMsg($'No diagnostic messages found for {fname}')
     return
   endif
-  var bufferDiags = diagsMap[bnr]
-  var diags = bufferDiags.sortedDiagnostics
+  var diags: list<dict<any>> = diagsMap[bnr].sortedDiagnostics
+    ->mapnew((_, d) => DiagInBuf(bnr, d))
   if diags->empty()
     util.WarnMsg($'No diagnostic messages found for {fname}')
     return
@@ -1171,20 +1203,16 @@ export def LspDiagsJump(which: string, a_count: number = 0): void
   endif
 enddef
 
-# Return the sorted diagnostics for buffer "bnr".  Default is the current
-# buffer.  A copy of the diagnostics is returned so that the caller can modify
-# the diagnostics.
+# Return the sorted diagnostics for buffer "bnr", as returned by DiagInBuf().
+# Default is the current buffer.  A copy of the diagnostics is returned so
+# that the caller can modify the diagnostics.
 export def GetDiagsForBuf(bnr: number = bufnr()): list<dict<any>>
   if !diagsMap->has_key(bnr)
     return []
   endif
-  var bufferDiags = diagsMap[bnr]
-  var diags = bufferDiags.sortedDiagnostics
-  if diags->empty()
-    return []
-  endif
-
-  return diags->deepcopy()
+  return diagsMap[bnr].sortedDiagnostics
+    ->mapnew((_, d) => DiagInBuf(bnr, d))
+    ->deepcopy()
 enddef
 
 # Return the diagnostic text from the LSP server for the current mouse line to
