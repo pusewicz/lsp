@@ -18,7 +18,8 @@ var lspServers = [{
       path: g:ClangdPath(),
       args: ['--background-index',
 	     '--clang-tidy',
-	     $'--offset-encoding={$LSP_OFFSET_ENCODING}']
+	     $'--offset-encoding={$LSP_OFFSET_ENCODING}'],
+      debug: g:LspServerDebug()
   }]
 call LspAddServer(lspServers)
 

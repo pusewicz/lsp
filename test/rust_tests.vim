@@ -11,7 +11,8 @@ g:LspOptionsSet(lspOpts)
 var lspServers = [{
       filetype: ['rust'],
       path: exepath('rust-analyzer'),
-      args: []
+      args: [],
+      debug: g:LspServerDebug()
   }]
 call LspAddServer(lspServers)
 echomsg systemlist($'{lspServers[0].path} --version')
