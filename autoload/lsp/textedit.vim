@@ -264,7 +264,8 @@ def FileCreate(createFile: dict<any>): string
   var overwrite: bool = opts->get('overwrite', false)
 
   # LSP Spec: Overwrite wins over `ignoreIfExists`
-  if !fname->getftype()->empty()
+  var fileExists: bool = !fname->getftype()->empty()
+  if fileExists
     if !overwrite
       if ignoreIfExists
 	return ''
@@ -283,6 +284,13 @@ def FileCreate(createFile: dict<any>): string
   endif
 
   fname->fnamemodify(':p:h')->mkdir('p')
+  if bnr > 0 && bnr->bufloaded() && !fileExists && util.BufIsEmpty(bnr)
+    # When Vim finds the file of a buffer that it loaded before the file
+    # existed, it asks what to do (W13), so write the buffer, which has no
+    # text, to create the file.  "++bin" writes no BOM.
+    util.ExecuteInBuffer(bnr, 'noautocmd write! ++bin')
+    return ''
+  endif
   []->writefile(fname)
   if bnr > 0 && bnr->bufloaded()
     ReloadBuffer(bnr)
