@@ -4304,6 +4304,94 @@ def g:Test_ApplyWorkspaceEdit_AbortsAtFailedChange()
   endtry
 enddef
 
+# Returns a test language server that uses UTF-16 positions.
+def MakeUtf16LspServer(): dict<any>
+  var lspserver = MakeTestLspServer([])
+  lspserver.posEncoding = 16
+  lspserver.needOffsetEncoding = true
+  return lspserver
+enddef
+
+# Returns a workspace edit with UTF-16 positions that creates file "fname",
+# inserts in it a line starting with a character that takes two UTF-16 code
+# units, and then inserts "!" after that character.  Only the text of the
+# file after the changes before it tells where that is.
+def Utf16CreateAndEdit(fname: string): dict<any>
+  var uri = util.LspFileToUri(fname)
+  return {documentChanges: [
+    {kind: 'create', uri: uri},
+    MakeInsertEdit(uri, "😀ab\n"),
+    {textDocument: {uri: uri, version: v:null},
+     edits: [MakeTextEdit(0, 2, 0, 2, '!')]}
+  ]}
+enddef
+
+# The positions of the text edits of a rename are decoded for the text that
+# the edits are applied to, after the changes before them.
+def g:Test_RenameSymbol_DecodesEditsAfterPrecedingChanges()
+  var fname = 'XRenameUtf16Created.txt'
+  var lspserver = MakeUtf16LspServer()
+  lspserver.isRenameProvider = true
+  lspserver.rpc = (_: string, _: any): dict<any> => {
+    return {result: Utf16CreateAndEdit(fname)}
+  }
+  try
+    silent! edit XRenameUtf16Source.txt
+    lspserver.renameSymbol('new')
+    assert_equal(['😀!ab'], getbufline(fname, 1, '$'))
+  finally
+    delete(fname)
+    :%bwipe!
+  endtry
+enddef
+
+# The positions of the text edits of a code action, also of one that is
+# resolved, are decoded for the text that the edits are applied to, after the
+# changes before them.
+def g:Test_CodeAction_DecodesEditsAfterPrecedingChanges()
+  var fname = 'XCodeActionUtf16Created.txt'
+  var action = {title: 'Create'}
+  var lspserver = MakeUtf16LspServer()
+  lspserver.isCodeActionProvider = true
+  lspserver.isCodeActionResolveProvider = true
+  lspserver.rpc = (method: string, _: any): dict<any> => {
+    var resolved = action->extendnew({edit: Utf16CreateAndEdit(fname)})
+    return {result: method == 'codeAction/resolve' ? resolved : [resolved]}
+  }
+  try
+    silent! edit XCodeActionUtf16Source.txt
+    lspserver.codeAction(@%, 1, 1, '1')
+    assert_equal(['😀!ab'], getbufline(fname, 1, '$'))
+    exe $'bwipe! {fname}'
+    delete(fname)
+
+    codeaction.HandleCodeAction(lspserver, action)
+    assert_equal(['😀!ab'], getbufline(fname, 1, '$'))
+  finally
+    delete(fname)
+    :%bwipe!
+  endtry
+enddef
+
+# The positions of the text edits of a workspace edit that the language server
+# asks for are decoded for the text that the edits are applied to, after the
+# changes before them.
+def g:Test_ProcessApplyEditReq_DecodesEditsAfterPrecedingChanges()
+  var fname = 'XApplyEditUtf16Created.txt'
+  var responses: list<dict<any>> = []
+  var lspserver = MakeUtf16LspServer()
+  lspserver.sendResponse = function(CaptureResponse, [responses])
+  try
+    lspserver.processRequest({id: 1, method: 'workspace/applyEdit',
+			      params: {edit: Utf16CreateAndEdit(fname)}})
+    assert_equal({applied: true}, responses[0].result)
+    assert_equal(['😀!ab'], getbufline(fname, 1, '$'))
+  finally
+    delete(fname)
+    :%bwipe!
+  endtry
+enddef
+
 # A completion request supersedes the pending one, which is cancelled, so a
 # late reply to it must not be taken as the reply to the latest one.
 def g:Test_GetCompletion_CancelsSupersededRequest()

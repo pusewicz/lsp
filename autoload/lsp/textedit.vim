@@ -208,14 +208,29 @@ export def ApplyTextEdits(bnr: number, text_edits: list<dict<any>>): void
   deletebufline(bnr, start_line + 1 + lines->len(), last_line)
 enddef
 
+# Returns text edits "edits" for buffer "bnr" with their positions decoded
+# from the position encoding of language server "lspserver" for the current
+# text of the buffer.  "edits" is not changed.  Without a language server the
+# positions are taken to be character indexes already.
+def DecodeTextEdits(lspserver: dict<any>, bnr: number,
+		    edits: list<dict<any>>): list<dict<any>>
+  if !lspserver->get('needOffsetEncoding', false)
+    return edits
+  endif
+  return edits->deepcopy()->map((_, e) => {
+    lspserver.decodeRange(bnr, e.range)
+    return e
+  })
+enddef
+
 # interface TextDocumentEdit
 # Returns why the edit failed, or an empty string when it did not.
-def ApplyTextDocumentEdit(textDocEdit: dict<any>): string
+def ApplyTextDocumentEdit(lspserver: dict<any>, textDocEdit: dict<any>): string
   var bnr: number = util.LspUriToBufnr(textDocEdit.textDocument.uri)
   if bnr <= 0
     return $'Text Document edit, buffer {textDocEdit.textDocument.uri} is not found'
   endif
-  ApplyTextEdits(bnr, textDocEdit.edits)
+  ApplyTextEdits(bnr, DecodeTextEdits(lspserver, bnr, textDocEdit.edits))
   return ''
 enddef
 
@@ -450,13 +465,14 @@ def FileRename(renameFile: dict<any>): string
   return ''
 enddef
 
-# Apply "change", one of the "documentChanges" of a workspace edit.  Returns
-# why the change failed, or an empty string when it did not.
-def ApplyDocumentChange(change: dict<any>): string
+# Apply "change", one of the "documentChanges" of a workspace edit from
+# language server "lspserver".  Returns why the change failed, or an empty
+# string when it did not.
+def ApplyDocumentChange(lspserver: dict<any>, change: dict<any>): string
   var kind: string = change->get('kind', '')
   try
     if kind->empty()
-      return ApplyTextDocumentEdit(change)
+      return ApplyTextDocumentEdit(lspserver, change)
     elseif kind == 'create'
       return FileCreate(change)
     elseif kind == 'delete'
@@ -471,14 +487,20 @@ def ApplyDocumentChange(change: dict<any>): string
 enddef
 
 # interface WorkspaceEdit
-# Apply the changes of workspace edit "workspaceEdit" in order, up to the
-# first one that fails, which is reported (the "abort" failure handling).
-# Returns the ApplyWorkspaceEditResult.
-export def ApplyWorkspaceEdit(workspaceEdit: dict<any>): dict<any>
+# Apply the changes of workspace edit "workspaceEdit" from language server
+# "lspserver" in order, up to the first one that fails, which is reported (the
+# "abort" failure handling).  The positions of each text edit are decoded from
+# the position encoding of the language server right before it is applied,
+# for the text that the changes before it made.  Without a language server
+# the positions are taken to be character indexes.  Returns the
+# ApplyWorkspaceEditResult.
+export def ApplyWorkspaceEdit(workspaceEdit: dict<any>,
+			      lspserver: dict<any> = {}): dict<any>
   if workspaceEdit->has_key('documentChanges')
     var documentChanges: list<dict<any>> = workspaceEdit.documentChanges
     for idx in documentChanges->len()->range()
-      var failureReason: string = ApplyDocumentChange(documentChanges[idx])
+      var failureReason: string = ApplyDocumentChange(lspserver,
+						      documentChanges[idx])
       if !failureReason->empty()
 	util.ErrMsg(failureReason)
 	return {applied: false, failureReason: failureReason,
@@ -497,7 +519,7 @@ export def ApplyWorkspaceEdit(workspaceEdit: dict<any>): dict<any>
     endif
 
     # interface TextEdit
-    ApplyTextEdits(bnr, changes)
+    ApplyTextEdits(bnr, DecodeTextEdits(lspserver, bnr, changes))
   endfor
   return {applied: true}
 enddef
