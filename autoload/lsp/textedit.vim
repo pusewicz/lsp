@@ -274,39 +274,41 @@ def FileCreate(createFile: dict<any>)
 enddef
 
 # interface DeleteFile
-# Delete the "deleteFile.uri" file
+# Delete file or directory "deleteFile.uri" and wipe out the buffers of the
+# deleted files, unless one of them has unsaved changes.  A directory that is
+# not empty is deleted only when "recursive" is set.
 def FileDelete(deleteFile: dict<any>)
-  var fname: string = util.LspUriToFile(deleteFile.uri)
+  var path: string = UriToPath(deleteFile.uri)
   var opts: dict<bool> = deleteFile->get('options', {})
   var recursive: bool = opts->get('recursive', false)
-  var ignoreIfNotExists: bool = opts->get('ignoreIfNotExists', true)
-  var fileExists: bool = fname->filereadable() || fname->isdirectory()
+  var ignoreIfNotExists: bool = opts->get('ignoreIfNotExists', false)
 
-  if !fileExists
-    if ignoreIfNotExists
+  var ftype: string = path->getftype()
+  if ftype->empty()
+    if !ignoreIfNotExists
+      util.ErrMsg($'File delete failed, {path} does not exist')
+    endif
+    return
+  endif
+
+  var bnrs: list<number> = [FileBufnr(path)]->filter((_, bnr) => bnr > 0)
+			   + DirBuffers(path)
+  for bnr in bnrs
+    if bnr->getbufvar('&modified')
+      var name: string = bnr->getbufinfo()[0].name
+      util.ErrMsg($'File delete failed, {name} has unsaved changes')
       return
     endif
-    util.ErrMsg($'File delete failed, {fname} does not exist')
+  endfor
+
+  var flags: string = ftype != 'dir' ? '' : recursive ? 'rf' : 'd'
+  if path->delete(flags) != 0
+    util.ErrMsg($'File delete failed for {path}')
     return
   endif
-
-  var flags: string = ''
-  if recursive
-    # # NOTE: is this a dangerous operation?  The LSP server can send a
-    # # DeleteFile message to recursively delete all the files in the disk.
-    # flags = 'rf'
-    util.ErrMsg($'Recursively deleting files is not supported')
-    return
-  elseif fname->isdirectory()
-    flags = 'd'
-  endif
-  var bnr: number = fname->bufadd()
-  var status: number = fname->delete(flags)
-  if status != 0
-    util.ErrMsg($'File delete failed for {fname}')
-  endif
-
-  exe $'{bnr}bwipe!'
+  for bnr in bnrs
+    exe $'bwipe {bnr}'
+  endfor
 enddef
 
 # Returns the name of the file or directory with URI "uri", without a
