@@ -426,7 +426,51 @@ export def CodeActionReply(state: dict<any>, lspserver: dict<any>,
   ApplyCodeAction({}, state.actions, state.selectorQuery)
 enddef
 
-# Helper: Process a single diagnostic from an AutoFix range
+# Returns a copy of "diag", a diagnostic of buffer "bnr", as it is sent to
+# "lspserver" in the context of a "textDocument/codeAction" request: with its
+# range in the position encoding of "lspserver".
+export def ContextDiag(lspserver: dict<any>, bnr: number,
+		       diag: dict<any>): dict<any>
+  var d: dict<any> = diag->deepcopy()
+  lspserver.encodeRange(bnr, d.range)
+  return d
+enddef
+
+# Returns true if the LSP ranges "a" and "b" have the same start and end
+# positions.
+def SameRange(a: dict<any>, b: dict<any>): bool
+  return a.start.line == b.start.line && a.start.character == b.start.character
+    && a.end.line == b.end.line && a.end.character == b.end.character
+enddef
+
+# Returns how the code action "action" from a language server resolves "diag",
+# the diagnostic as ContextDiag() returns it for that server:
+#   "exact"	one of the diagnostics that the action lists has the range and
+#		the message of "diag", the properties that every diagnostic has
+#   "range"	one of them has just the range of "diag"
+#   "unlisted"	the action doesn't list the diagnostics it resolves
+#   ""		the action resolves only other diagnostics
+def ActionResolvesDiag(action: dict<any>, diag: dict<any>): string
+  if !action->has_key('diagnostics')
+    return 'unlisted'
+  endif
+
+  var how: string = ''
+  for ad in action.diagnostics
+    if SameRange(ad.range, diag.range)
+      var message: any = ad->get('message', '')
+      if message->type() == v:t_string && message == diag.message
+	return 'exact'
+      endif
+      how = 'range'
+    endif
+  endfor
+  return how
+enddef
+
+# Request code actions from all the language servers in "state" for the
+# diagnostic "diags[idx]" of an AutoFix range, and apply the one resolving it.
+# Then continue with the next diagnostic.
 export def AutoFixProcessDiag(diags: list<dict<any>>,
 			      idx: number, state: dict<any>): void
   if idx >= diags->len()
@@ -443,39 +487,34 @@ export def AutoFixProcessDiag(diags: list<dict<any>>,
   var fname = state.fname
 
   for lspserver in servers
+    var sentDiag: dict<any> = ContextDiag(lspserver, state.bnr, diag)
     lspserver.codeActionAsync(fname, dline, dline, '',
       (lsp, actions, _, rpcErr) => AutoFixDiagActionReply(lsp, actions,
-					rpcErr, diags, idx, diag, state))
+					rpcErr, diags, idx, sentDiag, state))
   endfor
 enddef
 
-# Helper: Handle code action reply for AutoFix diagnostic
+# Handle the reply of "lspserver" with the code "actions" or the "rpcError"
+# to the code action request for the diagnostic "diags[idx]" of an AutoFix
+# range, which was sent to "lspserver" as "sentDiag".  Once all the servers
+# replied, apply the code action resolving the diagnostic.
 def AutoFixDiagActionReply(lspserver: dict<any>, actions: list<dict<any>>,
 			   rpcError: dict<any>, diags: list<dict<any>>,
-			   idx: number, diag: dict<any>,
+			   idx: number, sentDiag: dict<any>,
 			   state: dict<any>): void
   # Collect matching actions from successful replies.
-  if rpcError->empty() && !actions->empty()
+  if rpcError->empty()
     for act in actions
-      var matches = false
-      if act->has_key('diagnostics')
-        for ad in act.diagnostics
-          if ad.range->string() == diag.range->string()
-            matches = true
-            break
-          endif
-        endfor
-      else
-        matches = true
+      var how: string = ActionResolvesDiag(act, sentDiag)
+      if how->empty()
+	continue
       endif
 
-      if matches
-        var action = act->deepcopy()
-        action.__lsp_server_id = lspserver.id
-        action.__lsp_server_name = lspserver.name
-        action.__lsp_bufnr = state.bnr
-        state.diagActions->add(action)
-      endif
+      var action = act->deepcopy()
+      action.__lsp_server_id = lspserver.id
+      action.__lsp_server_name = lspserver.name
+      action.__lsp_bufnr = state.bnr
+      state.diagActions->add({action: action, how: how})
     endfor
   endif
 
@@ -485,8 +524,16 @@ def AutoFixDiagActionReply(lspserver: dict<any>, actions: list<dict<any>>,
     return
   endif
 
+  # The code actions resolving other diagnostics with the same range list a
+  # diagnostic with that range too.  Their messages tell them apart.
+  var exact: bool = state.diagActions->indexof((_, c) => c.how == 'exact') >= 0
+  var diagActions: list<dict<any>> = state.diagActions
+    ->copy()
+    ->filter((_, c) => !exact || c.how != 'range')
+    ->map((_, c) => c.action)
+
   var preferred: list<dict<any>> = []
-  for action in state.diagActions
+  for action in diagActions
     if action->get('isPreferred', false)
       preferred->add(action)
     endif
@@ -507,9 +554,9 @@ def AutoFixDiagActionReply(lspserver: dict<any>, actions: list<dict<any>>,
       else
         ApplyCodeAction({}, preferred, '', ContinueAutoFix)
       endif
-    elseif state.diagActions->len() == 1
+    elseif diagActions->len() == 1
       # Single non-preferred action: apply it anyway.
-      ApplyCodeAction({}, state.diagActions, '1', ContinueAutoFix)
+      ApplyCodeAction({}, diagActions, '1', ContinueAutoFix)
     else
       # No suitable action for this diagnostic; continue immediately.
       ContinueAutoFix()

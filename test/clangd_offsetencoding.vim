@@ -58,6 +58,29 @@ def g:Test_LspCodeAction_multibyte()
   :%bw!
 enddef
 
+# Test for :LspAutoFix with diagnostics after multibyte and composing
+# characters
+def g:Test_LspAutoFix_multibyte()
+  silent! edit XLspAutoFix_mb.c
+  var lines =<< trim END
+    #include <stdio.h>
+    void fn(int aVar)
+    {
+        printf("aVar = %d\n", aVar);
+        printf("😊😊😊😊 = %d\n", aVar):
+        printf("áb́áb́ = %d\n", aVar):
+        printf("ą́ą́ą́ą́ = %d\n", aVar):
+    }
+  END
+  setline(1, lines)
+  g:WaitForServerFileLoad(3)
+  :5,7LspAutoFix
+  var fixed = lines[4 : 6]->mapnew((_, l) => l->substitute(':$', ';', ''))
+  g:WaitForAssert(() => assert_equal(fixed, getline(5, 7)))
+
+  :%bw!
+enddef
+
 # Test for ":LspDiag show" when using multibyte and composing characters
 def g:Test_LspDiagShow_multibyte()
   :silent! edit XLspDiagShow_mb.c
