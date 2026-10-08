@@ -3195,10 +3195,14 @@ The returned dict has the following methods:
 		"handleError" set to v:false, no error is reported and the
 		reply, with its "error" item, is returned.  When the reply
 		doesn't arrive in time, or CTRL-C interrupts the wait, the
-		request is cancelled.  The changes made to the buffers
-		attached to the LSP server that were not sent to it yet are
-		sent first, so that the reply is for the current text, also
-		right after a change made by a script.
+		request is cancelled.  The buffer changes that were not sent
+		to the LSP server yet are sent first, so that the reply is
+		for the current text, also right after a change made by a
+		script: the changes to the document named by
+		"params.textDocument.uri", or to all the documents open on
+		the server when "params" names no document or when the reply
+		can refer to other documents (e.g. for
+		"textDocument/references").
 
 	rpc_a(method: string, params: any, Cbfunc: func): number
 		Send an async RPC request message to the LSP server with a
