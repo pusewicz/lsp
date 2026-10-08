@@ -24,7 +24,7 @@ jobs:
         run: |
           set -euo pipefail
           brew install --cask macvim-app
-          brew install llvm@15 gopls
+          brew install llvm@15 go gopls
           rustup component add rust-src
           arch=$(uname -m)
           if [[ $arch == arm64 ]]; then
