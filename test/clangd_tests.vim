@@ -262,6 +262,20 @@ def g:Test_LspFormat()
   :%bw!
 enddef
 
+# With 'fixendofline' set, a buffer without 'endofline' is still written with
+# a trailing newline, so the formatter must see it to remove the blank line
+# that precedes it.
+def g:Test_LspFormat_NoEolTrailingBlankLine()
+  :silent! edit XLspFormatNoEol.c
+  sleep 200m
+  setlocal noeol fixeol
+  setline(1, ['int x;', ''])
+  g:WaitForServerFileLoad(0)
+  :LspFormat
+  g:WaitForAssert(() => assert_equal(['int x;'], getline(1, '$')))
+  :%bw!
+enddef
+
 # Test for formatting a file using 'formatexpr'
 def g:Test_LspFormatExpr()
   :silent! edit XLspFormat.c
