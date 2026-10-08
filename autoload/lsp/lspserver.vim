@@ -92,6 +92,7 @@ def StartServer(lspserver: dict<any>, bnr: number): number
   lspserver.workDoneProgressTokens = {}
   lspserver.pendingPullBufnrs = {}
   lspserver.diagnosticPullTimer = -1
+  lspserver.supersedableRequests = {}
 
   var job = cmd->job_start(opts)
   if job->job_status() == 'fail'
@@ -400,6 +401,14 @@ def SendNotification(lspserver: dict<any>, method: string, params: any = {})
   lspserver.sendMessage(notif)
 enddef
 
+# Ask the language server to cancel the request with the ID "id".  The server
+# still replies to the request.
+# Notification: $/cancelRequest
+# Params: CancelParams
+def CancelRequest(lspserver: dict<any>, id: number)
+  lspserver.sendNotification('$/cancelRequest', {id: id})
+enddef
+
 const LSP_ERROR_REQUEST_CANCELLED = -32800
 
 const lsp_errmsg_map: dict<string> = {
@@ -421,12 +430,18 @@ def LspGetErrorMessage(errcode: number): string
   return lsp_errmsg_map->get(errcode, errcode->string())
 enddef
 
-# Process a LSP server response error and display an error message.
-def ProcessLspServerError(method: string, responseError: dict<any>)
-  # request failed
+# Returns true when "responseError" says that the request was cancelled, by
+# the client or by the server.
+def IsRequestCancelledError(responseError: dict<any>): bool
+  var code = responseError->get('code', 0)
+  return code == LSP_ERROR_REQUEST_CANCELLED
+	|| code == LSP_ERROR_SERVER_CANCELLED
+enddef
 
-  if responseError.code == LSP_ERROR_REQUEST_CANCELLED
-    # if the request is canceled, silently return.
+# Process a LSP server response error and display an error message.  A
+# cancelled request is not reported.
+def ProcessLspServerError(method: string, responseError: dict<any>)
+  if IsRequestCancelledError(responseError)
     return
   endif
 
@@ -452,6 +467,9 @@ const SYNC_RPC_FIRST_ID = 1000000000
 # So the request has an ID chosen here, the reply is waited for with
 # ch_read(), and a reply that the channel callback gets is passed back through
 # "lspserver.syncRpcReplies" (see handlers.ProcessMessage()).
+#
+# When the wait ends without a reply, because it timed out or CTRL-C
+# interrupted it, the request is cancelled.  The interrupt is not caught.
 def Rpc(lspserver: dict<any>, method: string, params: any, opts: dict<any> = {}): dict<any>
   var job = lspserver.job
   if job->job_status() != 'run'
@@ -496,6 +514,9 @@ def Rpc(lspserver: dict<any>, method: string, params: any, opts: dict<any> = {})
     endwhile
   finally
     lspserver.syncRpcReplies->remove(id)
+    if reply->empty()
+      lspserver.cancelRequest(id)
+    endif
   endtry
 
   if lspserver.debug
@@ -528,9 +549,11 @@ def AsyncRpcCb(lspserver: dict<any>, method: string, RpcCb: func, chan: channel,
 
   if !reply->empty()
     if reply->has_key('error')
-      # Capture error details
-      error = reply.error
-      ProcessLspServerError(method, error)
+      # A cancelled request has no result, and that is not an error
+      if !IsRequestCancelledError(reply.error)
+	error = reply.error
+	ProcessLspServerError(method, error)
+      endif
     elseif !reply->has_key('result')
       # No result and no error is itself an error
       error = {
@@ -609,6 +632,34 @@ def AsyncRpc(lspserver: dict<any>, method: string, params: any, Cbfunc: func): n
   return reply.id
 enddef
 
+# Send an async RPC request message to the LSP server with a callback
+# function, like AsyncRpc().  The request supersedes the previous request sent
+# with the same "key": when that one is still pending, it is cancelled and its
+# reply is ignored.  Returns the LSP message id, or -1 on error.
+def AsyncRpcSupersede(lspserver: dict<any>, key: string, method: string,
+		      params: any, Cbfunc: func): number
+  var prevReq: dict<number> = lspserver.supersedableRequests->get(key, {})
+  if prevReq->get('id', -1) > 0
+    lspserver.cancelRequest(prevReq.id)
+  endif
+
+  # The callback identifies its request by this Dict and not by the message
+  # id, because in tests the callback is invoked before AsyncRpc() returns.
+  var req: dict<number> = {id: -1}
+  lspserver.supersedableRequests[key] = req
+  var id = lspserver.rpc_a(method, params, (_, reply, error) => {
+    if lspserver.supersedableRequests->get(key, {}) isnot req
+      return
+    endif
+    lspserver.supersedableRequests->remove(key)
+    Cbfunc(lspserver, reply, error)
+  })
+  if lspserver.supersedableRequests->get(key, {}) is req
+    req.id = id
+  endif
+  return id
+enddef
+
 # Returns true when the "lspserver" has "feature" enabled.
 # By default, all the features of a lsp server are enabled.
 def FeatureEnabled(lspserver: dict<any>, feature: string): bool
@@ -666,7 +717,8 @@ def SemanticHighlightUpdate(lspserver: dict<any>, bnr: number)
     endif
   endif
 
-  lspserver.rpc_a(method, params, (_, reply, error) => {
+  AsyncRpcSupersede(lspserver, $'textDocument/semanticTokens {bnr}', method,
+		    params, (_, reply, error) => {
     semantichighlight.UpdateTokens(lspserver, reply, error, bnr, requestTick)
   })
 enddef
@@ -1065,15 +1117,9 @@ def GetCompletion(lspserver: dict<any>, triggerKind_arg: number, triggerChar: st
     params.context.triggerCharacter = triggerChar
   endif
 
-  # Each request supersedes the earlier ones, whose replies are then ignored.
-  lspserver.completionRequestCount += 1
-  var requestCount = lspserver.completionRequestCount
-  lspserver.rpc_a('textDocument/completion', params,
-			(_, reply, error) => {
-			  if requestCount == lspserver.completionRequestCount
-			    completion.CompletionReply(lspserver, reply, error)
-			  endif
-			})
+  AsyncRpcSupersede(lspserver, 'textDocument/completion',
+		    'textDocument/completion', params,
+		    (_, reply, error) => completion.CompletionReply(lspserver, reply, error))
 enddef
 
 # Get lazy properties for a completion item.
@@ -1092,8 +1138,9 @@ def ResolveCompletion(lspserver: dict<any>, item: dict<any>, sync: bool = false)
       return reply.result
     endif
   else
-    lspserver.rpc_a('completionItem/resolve', item,
-			  (_, reply, error) => completion.CompletionResolveReply(lspserver, reply, error))
+    AsyncRpcSupersede(lspserver, 'completionItem/resolve',
+		      'completionItem/resolve', item,
+		      (_, reply, error) => completion.CompletionResolveReply(lspserver, reply, error))
   endif
   return {}
 enddef
@@ -1293,7 +1340,8 @@ def ShowSignature(lspserver: dict<any>, triggerKind_arg: number = 1, triggerChar
   params.context = signature.GetSignatureHelpContext(lspserver,
 						     triggerKind_arg,
 						     triggerChar)
-  lspserver.rpc_a('textDocument/signatureHelp', params, (_, reply, error) => {
+  AsyncRpcSupersede(lspserver, 'textDocument/signatureHelp',
+		    'textDocument/signatureHelp', params, (_, reply, error) => {
 		signature.SignatureHelp(lspserver, reply, error, reqctx)
 	})
 enddef
@@ -1339,7 +1387,8 @@ def ShowHoverInfo(lspserver: dict<any>, cmdmods: string): void
   # interface HoverParams
   #   interface TextDocumentPositionParams
   var params = lspserver.getTextDocPosition(false)
-  lspserver.rpc_a('textDocument/hover', params, (_, reply, error) => {
+  AsyncRpcSupersede(lspserver, 'textDocument/hover', 'textDocument/hover',
+		    params, (_, reply, error) => {
     hover.HoverReply(lspserver, reply, error, cmdmods, reqctx)
   })
 enddef
@@ -1481,7 +1530,8 @@ def DocHighlight(lspserver: dict<any>, bnr: number, cmdmods: string): void
   # interface DocumentHighlightParams
   #   interface TextDocumentPositionParams
   var params = lspserver.getTextDocPosition(false)
-  lspserver.rpc_a('textDocument/documentHighlight', params, (_, reply, error) => {
+  AsyncRpcSupersede(lspserver, $'textDocument/documentHighlight {bnr}',
+		    'textDocument/documentHighlight', params, (_, reply, error) => {
     DocHighlightReply(lspserver, reply, error, bnr, cmdmods)
   })
 enddef
@@ -1857,7 +1907,8 @@ def InlayHintsShow(lspserver: dict<any>, bnr: number)
   else
     msg = 'textDocument/inlayHint'
   endif
-  var reply = lspserver.rpc_a(msg, param, (_, reply, error) => {
+  AsyncRpcSupersede(lspserver, $'textDocument/inlayHint {bnr}', msg, param,
+		    (_, reply, error) => {
     inlayhints.InlayHintsReply(lspserver, reply, error, bnr)
   })
 enddef
@@ -2675,9 +2726,9 @@ export def NewLspServer(serverParams: dict<any>): dict<any>
     needOffsetEncoding: false,
     omniCompletePending: false,
     completeItemsIsIncomplete: false,
-    completionRequestCount: 0,
     nextSyncRpcId: SYNC_RPC_FIRST_ID,
     syncRpcReplies: {},
+    supersedableRequests: {},
     peekSymbolFilePopup: -1,
     peekSymbolPopup: -1,
     processDiagHandler: serverParams.processDiagHandler,
@@ -2721,6 +2772,7 @@ export def NewLspServer(serverParams: dict<any>): dict<any>
     sendResponse: function(SendResponse, [lspserver]),
     sendMessage: function(SendMessage, [lspserver]),
     sendNotification: function(SendNotification, [lspserver]),
+    cancelRequest: function(CancelRequest, [lspserver]),
     rpc: function(Rpc, [lspserver]),
     rpc_a: function(AsyncRpc, [lspserver]),
     processNotif: function(handlers.ProcessNotif, [lspserver]),
