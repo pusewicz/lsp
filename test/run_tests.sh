@@ -26,6 +26,7 @@ rm -r "$STDIN_DIR"
 # Use arguments if provided, otherwise run the full suite
 ALL_TESTS=(
   "clangd_tests.vim"
+  "tsserver_tests.vim"
   "gopls_tests.vim"
   "rust_tests.vim"
   "stub_lspserver_tests.vim"
