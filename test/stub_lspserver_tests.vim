@@ -11,6 +11,7 @@ import '../autoload/lsp/diag.vim' as diag
 import '../autoload/lsp/util.vim' as util
 import '../autoload/lsp/buffer.vim' as buf
 import '../autoload/lsp/ontypeformat.vim' as ontypeformat
+import '../autoload/lsp/textedit.vim' as textedit
 
 def CaptureNotification(notifications: list<dict<any>>, method: string,
 			params: any = {}): void
@@ -1603,7 +1604,7 @@ def g:Test_TextdocDidChange_IncrementalSync_NoEolAnchorsToLastLineEnd()
   silent! edit XIncrementalNoEol.txt
   var oldLines = ['abc', 'def', 'ghi']
   setline(1, oldLines)
-  setlocal noeol
+  setlocal noeol nofixeol
 
   var notifications: list<dict<any>> = []
   var lspserver = MakeTestLspServer(notifications)
@@ -1621,6 +1622,190 @@ def g:Test_TextdocDidChange_IncrementalSync_NoEolAnchorsToLastLineEnd()
   assert_equal('', changes[0].text)
 
   g:LspOptionsSet({incrementalSync: false})
+  :%bw!
+enddef
+
+# Without a trailing newline, a hunk whose new text is a single empty last
+# line still adds a line break, so it must not be sent as an empty change.
+def g:Test_TextdocDidChange_IncrementalSync_NoEolEmptyLastLine()
+  if !exists('*diff')
+    return
+  endif
+  g:LspOptionsSet({incrementalSync: true})
+  silent! edit XIncrementalNoEolEmptyLine.txt
+  setline(1, ['abc', 'def'])
+  setlocal noeol nofixeol
+
+  var notifications: list<dict<any>> = []
+  var lspserver = MakeTestLspServer(notifications)
+  var bnr = bufnr()
+  lspserver.cachedBufferContent[bnr] = ['abc', 'def']
+  lspserver.cachedBufferEol[bnr] = false
+
+  append('$', '')
+  lspserver.textdocDidChange(bnr)
+  assert_equal([{range: {start: {line: 1, character: 3},
+			 end: {line: 1, character: 3}},
+		 text: "\n"}],
+	       notifications[-1].params.contentChanges)
+
+  :$d
+  setline(2, '')
+  lspserver.cachedBufferContent[bnr] = ['abc', 'def']
+  lspserver.textdocDidChange(bnr)
+  assert_equal([{range: {start: {line: 0, character: 3},
+			 end: {line: 1, character: 3}},
+		 text: "\n"}],
+	       notifications[-1].params.contentChanges)
+
+  g:LspOptionsSet({incrementalSync: false})
+  :%bw!
+enddef
+
+# The document sent to the server ends with a newline exactly when Vim ends
+# the written file with one: 'endofline' is set, or 'fixendofline' is set and
+# 'binary' is not.
+def g:Test_TextdocDidOpen_TrailingNewlineFollowsWriteRule()
+  silent! edit XDidOpenTrailingNewline.txt
+  setline(1, ['abc', 'def'])
+  var bnr = bufnr()
+  var cases: list<list<any>> = [
+    ['noeol fixeol nobinary', true],
+    ['noeol nofixeol nobinary', false],
+    ['noeol fixeol binary', false],
+    ['eol nofixeol binary', true],
+  ]
+  for [opts, hasEol] in cases
+    exe $'setlocal {opts}'
+    var notifications: list<dict<any>> = []
+    var lspserver = MakeTestLspServer(notifications)
+    lspserver.supportsDidOpenClose = true
+    lspserver.textdocDidOpen(bnr, 'text')
+    assert_equal(hasEol ? "abc\ndef\n" : "abc\ndef",
+		 notifications[0].params.textDocument.text, opts)
+    assert_equal(hasEol, lspserver.cachedBufferEol[bnr], opts)
+  endfor
+
+  :%bw!
+enddef
+
+def g:Test_TextdocDidChange_FullSync_TrailingNewlineFollowsWriteRule()
+  silent! edit XFullSyncTrailingNewline.txt
+  setline(1, ['abc', 'def'])
+  setlocal noeol fixeol nobinary
+
+  var notifications: list<dict<any>> = []
+  var lspserver = MakeTestLspServer(notifications)
+  lspserver.textDocumentSync = 1
+  var bnr = bufnr()
+
+  lspserver.textdocDidChange(bnr)
+  assert_equal([{text: "abc\ndef\n"}], notifications[-1].params.contentChanges)
+
+  setlocal nofixeol
+  lspserver.textdocDidChange(bnr)
+  assert_equal([{text: "abc\ndef"}], notifications[-1].params.contentChanges)
+
+  :%bw!
+enddef
+
+# A buffer read from a file without a trailing newline is still written with
+# one when 'fixendofline' is set, so a line appended after the last one comes
+# after that newline in the server's document.
+def g:Test_TextdocDidChange_IncrementalSync_FixEolAppendLine()
+  if !exists('*diff')
+    return
+  endif
+  g:LspOptionsSet({incrementalSync: true})
+  silent! edit XIncrementalFixEol.txt
+  setline(1, ['abc', 'def'])
+  setlocal noeol fixeol nobinary
+
+  var notifications: list<dict<any>> = []
+  var lspserver = MakeTestLspServer(notifications)
+  lspserver.supportsDidOpenClose = true
+  var bnr = bufnr()
+  lspserver.textdocDidOpen(bnr, 'text')
+  assert_equal("abc\ndef\n", notifications[-1].params.textDocument.text)
+
+  append('$', '')
+  lspserver.textdocDidChange(bnr)
+  assert_equal([{range: {start: {line: 2, character: 0},
+			 end: {line: 2, character: 0}},
+		 text: "\n"}],
+	       notifications[-1].params.contentChanges)
+
+  g:LspOptionsSet({incrementalSync: false})
+  :%bw!
+enddef
+
+# Changing 'fixendofline' or 'binary' changes whether the document ends with
+# a newline without changing any line, so the next change resends the full
+# text instead of a diff against the cached document.
+def g:Test_TextdocDidChange_IncrementalSync_WriteRuleToggleSendsFullText()
+  if !exists('*diff')
+    return
+  endif
+  g:LspOptionsSet({incrementalSync: true})
+  silent! edit XIncrementalEolToggle.txt
+  setline(1, ['abc', 'def'])
+  setlocal noeol fixeol nobinary
+
+  var notifications: list<dict<any>> = []
+  var lspserver = MakeTestLspServer(notifications)
+  var bnr = bufnr()
+  lspserver.textdocDidOpen(bnr, 'text')
+  assert_true(lspserver.cachedBufferEol[bnr])
+
+  setlocal binary
+  setline(1, 'xyz')
+  lspserver.textdocDidChange(bnr)
+  assert_equal([{text: "xyz\ndef"}], notifications[-1].params.contentChanges)
+  assert_false(lspserver.cachedBufferEol[bnr])
+
+  setlocal nobinary
+  setline(2, 'ghi')
+  lspserver.textdocDidChange(bnr)
+  assert_equal([{text: "xyz\nghi\n"}], notifications[-1].params.contentChanges)
+  assert_true(lspserver.cachedBufferEol[bnr])
+
+  setlocal nofixeol
+  setline(1, 'abc')
+  lspserver.textdocDidChange(bnr)
+  assert_equal([{text: "abc\nghi"}], notifications[-1].params.contentChanges)
+  assert_false(lspserver.cachedBufferEol[bnr])
+
+  g:LspOptionsSet({incrementalSync: false})
+  :%bw!
+enddef
+
+# Text edits are relative to the server's document, which ends with a newline
+# exactly when Vim writes one, so a range ending on the line after the last
+# one covers the whole last line.
+def g:Test_ApplyTextEdits_WholeDocumentFollowsWriteRule()
+  silent! edit XApplyTextEditsEol.txt
+  var bnr = bufnr()
+  var withEol = {range: {start: {line: 0, character: 0},
+			 end: {line: 2, character: 0}},
+		 newText: "xxx\nyyy\n"}
+  var withoutEol = {range: {start: {line: 0, character: 0},
+			    end: {line: 1, character: 3}},
+		    newText: "xxx\nyyy"}
+  var cases: list<list<any>> = [
+    ['noeol fixeol nobinary', withEol],
+    ['eol nofixeol nobinary', withEol],
+    ['eol fixeol binary', withEol],
+    ['noeol nofixeol nobinary', withoutEol],
+    ['noeol fixeol binary', withoutEol],
+  ]
+  for [opts, edit] in cases
+    :%d
+    setline(1, ['aaa', 'bbb'])
+    exe $'setlocal {opts}'
+    textedit.ApplyTextEdits(bnr, [edit])
+    assert_equal(['xxx', 'yyy'], getline(1, '$'), opts)
+  endfor
+
   :%bw!
 enddef
 

@@ -688,7 +688,7 @@ def LinesText(lines: list<string>, hasEol: bool): string
 enddef
 
 def BufferText(bnr: number): string
-  return LinesText(bnr->getbufline(1, '$'), bnr->getbufvar('&eol'))
+  return LinesText(bnr->getbufline(1, '$'), util.BufWritesEol(bnr))
 enddef
 
 def HunkText(newBufLines: list<string>, hunk: dict<number>, hasEol: bool): string
@@ -699,8 +699,8 @@ def HunkText(newBufLines: list<string>, hunk: dict<number>, hasEol: bool): strin
   var lastIdx = hunk.to_idx + hunk.to_count - 1
   var text = newBufLines[hunk.to_idx : lastIdx]->join("\n")
   # Append a newline when there is more buffer content after this hunk (so
-  # the replaced range boundary falls between lines), or when the buffer has
-  # a trailing end-of-line and this hunk reaches the last line.
+  # the replaced range boundary falls between lines), or when the document
+  # ends with a newline and this hunk reaches the last line.
   if lastIdx < newBufLines->len() - 1 || hasEol
     text ..= "\n"
   endif
@@ -736,8 +736,9 @@ def TextdocDidOpen(lspserver: dict<any>, bnr: number, ftype: string): void
   endif
 
   var newBufLines = bnr->getbufline(1, '$')
+  var hasEol = util.BufWritesEol(bnr)
   lspserver.cachedBufferContent[bnr] = newBufLines
-  lspserver.cachedBufferEol[bnr] = bnr->getbufvar('&eol')
+  lspserver.cachedBufferEol[bnr] = hasEol
 
   if !lspserver.supportsDidOpenClose
     return
@@ -749,7 +750,7 @@ def TextdocDidOpen(lspserver: dict<any>, bnr: number, ftype: string): void
       languageId: languageId,
       # Use Vim 'changedtick' as the LSP document version number
       version: bnr->getbufvar('changedtick'),
-      text: LinesText(newBufLines, bnr->getbufvar('&eol'))
+      text: LinesText(newBufLines, hasEol)
     }
   }
   lspserver.sendNotification('textDocument/didOpen', params)
@@ -930,7 +931,7 @@ def TextdocDidChange(lspserver: dict<any>, bnr: number): void
   elseif exists_compiled('*diff')
     # TextDocumentSyncKind: Incremental — send only the changed lines.
     var newBufLines = bnr->getbufline(1, '$')
-    var hasEol = bnr->getbufvar('&eol')
+    var hasEol = util.BufWritesEol(bnr)
     var cachedBufferContent = lspserver.cachedBufferContent
     var cachedBufferEol = lspserver.cachedBufferEol
     if cachedBufferContent->has_key(bnr)
@@ -961,7 +962,7 @@ def TextdocDidChange(lspserver: dict<any>, bnr: number): void
 	  if startLine > 0
 	    startLine -= 1
 	    startChar = EncodedLineLen(lspserver, oldBufLines[startLine])
-	    if !text->empty()
+	    if hunk.to_count > 0
 	      text = "\n" .. text
 	    endif
 	  endif
