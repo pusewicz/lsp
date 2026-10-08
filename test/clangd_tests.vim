@@ -361,6 +361,10 @@ enddef
 
 # Test for on-type formatting (opt-in), triggered by typing a newline.
 def g:Test_LspOnTypeFormatting()
+  if !exists('##KeyInputPre')
+    # A typed newline can't be detected
+    return
+  endif
   g:LspOptionsSet({onTypeFormatting: true})
 
   :silent! edit XLspOnTypeFormat.c
@@ -437,7 +441,7 @@ def g:Test_LspOnTypeFormatting_TypedTrigger()
 
   :silent! edit XLspOnTypeFormatTrigger.c
   sleep 200m
-  setline(1, ['int f1(int a) {', '  a = 1;a = 2;', '  return a;', '}'])
+  setline(1, ['int f1(int a) {', '  a = 1;a = 2', '  return a;', '}'])
   g:WaitForServerFileLoad(0)
   :redraw!
 
@@ -455,14 +459,16 @@ def g:Test_LspOnTypeFormatting_TypedTrigger()
   test_override('char_avail', 1)
   try
     # Typed trigger characters.
-    feedkeys("2GA\<BS>;\<Esc>", 'xt')
+    feedkeys("2GA;\<Esc>", 'xt')
     assert_equal([[';', 2, 15]], requests)
-    requests = []
-    feedkeys("3GA\<CR>\<Esc>", 'xt')
-    :4delete
-    feedkeys("3GA\<C-J>\<Esc>", 'xt')
-    :4delete
-    assert_equal([["\n", 4, 3], ["\n", 4, 3]], requests)
+    if exists('##KeyInputPre')
+      requests = []
+      feedkeys("3GA\<CR>\<Esc>", 'xt')
+      :4delete
+      feedkeys("3GA\<C-J>\<Esc>", 'xt')
+      :4delete
+      assert_equal([["\n", 4, 3], ["\n", 4, 3]], requests)
+    endif
 
     # A typed trigger character for which Vim reindents the line.
     requests = []
