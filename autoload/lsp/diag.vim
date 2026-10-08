@@ -596,7 +596,7 @@ enddef
 # New LSP diagnostic messages received from the server for a file.
 # Update the signs placed in the buffer for this file
 export def ProcessNewDiags(bnr: number)
-  DiagsUpdateLocList(bnr)
+  BufDiagsLocListsUpdate(bnr)
 
   var curmode: string = mode()
   var textChangedMode: bool = (curmode == 'i' || curmode == 'R' || curmode == 'Rv')
@@ -778,89 +778,108 @@ def DiagSevToQfType(severity: number): string
   return typeMap[severity - 1]
 enddef
 
-# Update the location list window for the current window with the diagnostic
-# messages.
-# Returns true if diagnostics is not empty and false if it is empty.
-def DiagsUpdateLocList(bnr: number, calledByCmd: bool = false): bool
-  var fname: string = bnr->bufname()->fnamemodify(':p')
-  if fname->empty()
-    return false
-  endif
+# The title of the location list with the diagnostics of the buffer displayed
+# in a window.  It identifies the list in the window's location list stack:
+# splitting a window copies the stack with new list IDs.
+const diagsLocListTitle: string = 'Language Server Diagnostics'
 
-  var LspQfId: number = bnr->getbufvar('LspQfId', 0)
-  if LspQfId == 0 && !opt.lspOptions.autoPopulateDiags && !calledByCmd
-    # Diags location list is not present. Create the location list only if
-    # the 'autoPopulateDiags' option is set or the ":LspDiag show" command is
-    # invoked.
-    return false
-  endif
-
-  if LspQfId != 0 && getloclist(0, {id: LspQfId}).id != LspQfId
-    # Previously used location list for the diagnostics is gone
-    LspQfId = 0
-  endif
-
-  if !diagsMap->has_key(bnr)
-    if LspQfId != 0
-      setloclist(0, [], 'r', {id: LspQfId, items: []})
+# Returns the ID of the diagnostics location list in the location list stack
+# of window "winid", or 0 if the window has none.
+def DiagsLocListId(winid: number): number
+  for nr in range(getloclist(winid, {nr: '$'}).nr, 1, -1)
+    var qfl: dict<any> = getloclist(winid, {nr: nr, id: 0, title: 0})
+    if qfl.title == diagsLocListTitle
+      return qfl.id
     endif
-    return false
-  endif
-  var bufferDiags = diagsMap[bnr]
-  var diags: list<dict<any>> = bufferDiags.sortedDiagnostics
-  if diags->empty()
-    if LspQfId != 0
-      setloclist(0, [], 'r', {id: LspQfId, items: []})
-    endif
-    return false
-  endif
-
-  var qflist: list<dict<any>> = []
-  var text: string
-
-  for diag in diags
-    var d_range = diag.range
-    var d_start = d_range.start
-    var d_end = d_range.end
-    text = diag.message->substitute("\n\\+", "\n", 'g')
-    qflist->add({filename: fname,
-		    lnum: d_start.line + 1,
-		    col: util.GetLineByteFromPos(bnr, d_start) + 1,
-		    end_lnum: d_end.line + 1,
-                    end_col: util.GetLineByteFromPos(bnr, d_end) + 1,
-		    text: text,
-		    type: DiagSevToQfType(diag->get('severity', 1)),
-		    user_data: { diagnostic: diag }})
   endfor
+  return 0
+enddef
 
-  var op: string = ' '
-  var props = {title: 'Language Server Diagnostics', items: qflist}
-  if LspQfId != 0
-    op = 'r'
-    props.id = LspQfId
+# Returns the location list items for the diagnostics in buffer "bnr".
+def DiagsLocListItems(bnr: number): list<dict<any>>
+  if !diagsMap->has_key(bnr)
+    return []
   endif
-  setloclist(0, [], op, props)
-  if LspQfId == 0
-    setbufvar(bnr, 'LspQfId', getloclist(0, {id: 0}).id)
-  endif
+  return diagsMap[bnr].sortedDiagnostics->mapnew((_, diag) => ({
+    bufnr: bnr,
+    lnum: diag.range.start.line + 1,
+    col: util.GetLineByteFromPos(bnr, diag.range.start) + 1,
+    end_lnum: diag.range.end.line + 1,
+    end_col: util.GetLineByteFromPos(bnr, diag.range.end) + 1,
+    text: diag.message->substitute("\n\\+", "\n", 'g'),
+    type: DiagSevToQfType(diag->get('severity', 1)),
+    user_data: {diagnostic: diag}
+  }))
+enddef
 
-  return true
+# Set the items of the diagnostics location list of window "winid" to
+# "items".  The list is replaced in place, keeping the current location list
+# of the window.  When the window has no diagnostics list, one is added to the
+# end of its location list stack, becoming the current list, only if "create"
+# is true and "items" is not empty.  Returns the ID of the diagnostics list,
+# or 0 if the window has none.
+def DiagsLocListSet(winid: number, items: list<dict<any>>, create: bool): number
+  var id: number = DiagsLocListId(winid)
+  if id != 0
+    setloclist(winid, [], 'r', {id: id, items: items})
+  elseif create && !items->empty()
+    setloclist(winid, [], ' ',
+	       {nr: '$', title: diagsLocListTitle, items: items})
+    id = getloclist(winid, {nr: '$', id: 0}).id
+  endif
+  return id
+enddef
+
+# Update the diagnostics location list of window "winid" with the diagnostics
+# in the buffer it displays.  A location list window doesn't have a list of
+# its own.  See DiagsLocListSet() for "create" and the return value.
+def WinDiagsLocListUpdate(winid: number, create: bool): number
+  if winid->win_gettype() != '' || (!create && DiagsLocListId(winid) == 0)
+    return 0
+  endif
+  return DiagsLocListSet(winid, DiagsLocListItems(winid->winbufnr()), create)
+enddef
+
+# Update the diagnostics location lists of all the windows displaying buffer
+# "bnr", in all the tab pages, with its diagnostics.  The lists are created
+# only if the "autoPopulateDiags" option is set.  The windows of a hidden
+# buffer are updated when it is displayed again (BufferDisplayed()).
+def BufDiagsLocListsUpdate(bnr: number)
+  var create: bool = opt.lspOptions.autoPopulateDiags
+  var winids: list<number> = bnr->win_findbuf()
+    ->filter((_, winid) => winid->win_gettype() == ''
+	&& (create || DiagsLocListId(winid) != 0))
+  if winids->empty()
+    return
+  endif
+  var items: list<dict<any>> = DiagsLocListItems(bnr)
+  for winid in winids
+    DiagsLocListSet(winid, items, create)
+  endfor
+enddef
+
+# Buffer "bnr" is displayed in the current window (BufWinEnter).  Update the
+# diagnostics location list of the window with the diagnostics of the buffer,
+# replacing the diagnostics of the buffer it displayed before.
+export def BufferDisplayed(bnr: number)
+  if winbufnr(0) != bnr
+    return
+  endif
+  WinDiagsLocListUpdate(win_getid(), opt.lspOptions.autoPopulateDiags)
 enddef
 
 # Display the diagnostic messages from the LSP server for the current buffer
 # in a location list
 export def ShowAllDiags(): void
-  var bnr: number = bufnr()
-  if !DiagsUpdateLocList(bnr, true)
+  var save_winid: number = win_getid()
+  var id: number = WinDiagsLocListUpdate(save_winid, true)
+  if id == 0 || getloclist(save_winid, {id: id, size: 0}).size == 0
     util.WarnMsg($'No diagnostic messages found for {@%}')
     return
   endif
 
-  var save_winid = win_getid()
   # make the diagnostics error list the active one and open it
-  var LspQfId: number = bnr->getbufvar('LspQfId', 0)
-  var LspQfNr: number = getloclist(0, {id: LspQfId, nr: 0}).nr
-  execute($':{LspQfNr} lhistory', 'silent')
+  execute($':{getloclist(save_winid, {id: id, nr: 0}).nr} lhistory', 'silent')
   :lopen
   if !opt.lspOptions.keepFocusInDiags
     save_winid->win_gotoid()

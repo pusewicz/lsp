@@ -1137,6 +1137,246 @@ def g:Test_PublishDiagnostics_UnopenedDocumentFoundByFileName()
   :%bw!
 enddef
 
+# Publish the diagnostics with "messages" for buffer "bnr" from "lspserver".
+def PublishBufDiags(lspserver: dict<any>, bnr: number, messages: list<string>)
+  handlers.ProcessNotif(lspserver,
+    PublishDiagsNotif(util.LspBufnrToUri(bnr), messages))
+enddef
+
+# Returns the texts of the items of each diagnostics location list in the
+# location list stack of window "winid".
+def DiagLocListTexts(winid: number): list<list<string>>
+  return range(1, getloclist(winid, {nr: '$'}).nr)
+    ->mapnew((_, nr) => getloclist(winid, {nr: nr, title: 0, items: 0}))
+    ->filter((_, qfl) => qfl.title == 'Language Server Diagnostics')
+    ->mapnew((_, qfl) => qfl.items->mapnew((_, item) => item.text))
+enddef
+
+# Returns the number of the current location list of window "winid" and all
+# the properties of every location list in its stack, to check that the
+# location lists of the window are left untouched.
+def LocListStack(winid: number): list<any>
+  return [getloclist(winid, {nr: 0}).nr,
+	  range(1, getloclist(winid, {nr: '$'}).nr)
+	    ->mapnew((_, nr) => getloclist(winid, {nr: nr, all: 0}))]
+enddef
+
+# Remove the diagnostics of the buffers in "bufnrs", free the location lists
+# of all the windows, restore the diagnostics options changed by a location
+# list test and close its windows and tab pages.  An Ex command run while an
+# exception is pending aborts the function, so it comes last.
+def DiagLocListTestCleanup(bufnrs: list<number>)
+  for bnr in bufnrs
+    diag.DiagRemoveFile(bnr)
+  endfor
+  for wininfo in getwininfo()
+    if !wininfo.quickfix
+      setloclist(wininfo.winid, [], 'f')
+    endif
+  endfor
+  g:LspOptionsSet({autoHighlightDiags: true, autoPopulateDiags: false})
+  :%bw!
+enddef
+
+# Test that the diagnostics published for a buffer displayed in a window that
+# isn't the current one update the location list of that window, not the one
+# of the current window.
+def g:Test_DiagLocList_NonCurrentWindow()
+  g:LspOptionsSet({autoHighlightDiags: false, autoPopulateDiags: true})
+  var lspserver = MakeDiagServer('srv')
+  silent! edit XDiagLocListA.c
+  var aBnr = bufnr()
+  var aWin = win_getid()
+  :new XDiagLocListB.c
+  var bBnr = bufnr()
+  var bWin = win_getid()
+  try
+    var bStack = LocListStack(bWin)
+    PublishBufDiags(lspserver, aBnr, ['a1', 'a2'])
+    assert_equal([['a1', 'a2']], DiagLocListTexts(aWin))
+    assert_equal([aBnr, aBnr], getloclist(aWin)->mapnew((_, v) => v.bufnr))
+    assert_equal(bStack, LocListStack(bWin))
+
+    PublishBufDiags(lspserver, bBnr, ['b1'])
+    assert_equal([['b1']], DiagLocListTexts(bWin))
+    assert_equal([['a1', 'a2']], DiagLocListTexts(aWin))
+
+    bStack = LocListStack(bWin)
+    PublishBufDiags(lspserver, aBnr, [])
+    assert_equal([[]], DiagLocListTexts(aWin))
+    assert_equal(bStack, LocListStack(bWin))
+    assert_equal(bWin, win_getid())
+  finally
+    DiagLocListTestCleanup([aBnr, bBnr])
+  endtry
+enddef
+
+# Test that the diagnostics published for a buffer update the location list
+# of every window displaying it, also in another tab page and in a window
+# split after the list was created, and no other window.
+def g:Test_DiagLocList_AllWindowsOfBuffer()
+  g:LspOptionsSet({autoHighlightDiags: false, autoPopulateDiags: true})
+  var lspserver = MakeDiagServer('srv')
+  silent! edit XDiagLocListShared.c
+  var bnr = bufnr()
+  var win1 = win_getid()
+  :split
+  var win2 = win_getid()
+  :tab split
+  var win3 = win_getid()
+  :new XDiagLocListOther.c
+  var otherBnr = bufnr()
+  var otherWin = win_getid()
+  try
+    var otherStack = LocListStack(otherWin)
+    PublishBufDiags(lspserver, bnr, ['s1'])
+    for winid in [win1, win2, win3]
+      assert_equal([['s1']], DiagLocListTexts(winid))
+    endfor
+    assert_equal(otherStack, LocListStack(otherWin))
+
+    # Splitting a window copies its location lists with new IDs
+    win_gotoid(win1)
+    :split
+    var win4 = win_getid()
+    win_gotoid(otherWin)
+    PublishBufDiags(lspserver, bnr, ['s2', 's3'])
+    for winid in [win1, win2, win3, win4]
+      assert_equal([['s2', 's3']], DiagLocListTexts(winid))
+      assert_equal(1, getloclist(winid, {nr: '$'}).nr)
+    endfor
+    assert_equal(otherStack, LocListStack(otherWin))
+  finally
+    DiagLocListTestCleanup([bnr, otherBnr])
+  endtry
+enddef
+
+# Test that the location lists of a window that aren't the diagnostics list
+# are kept: the diagnostics list is added after them, and is then updated in
+# place without becoming the current list again.  The location lists of a
+# window displaying another buffer are left untouched.
+def g:Test_DiagLocList_KeepsUserLocList()
+  g:LspOptionsSet({autoHighlightDiags: false})
+  var lspserver = MakeDiagServer('srv')
+  silent! edit XDiagLocListUserA.c
+  var aBnr = bufnr()
+  var aWin = win_getid()
+  setloclist(aWin, [], ' ', {title: 'user A',
+    items: [{bufnr: aBnr, lnum: 1, text: 'user A'}]})
+  :new XDiagLocListUserC.c
+  var cBnr = bufnr()
+  var cWin = win_getid()
+  setloclist(cWin, [], ' ', {title: 'user C',
+    items: [{bufnr: cBnr, lnum: 1, text: 'user C'}]})
+  try
+    var aStack = LocListStack(aWin)
+    var cStack = LocListStack(cWin)
+    var userList: dict<any> = getloclist(aWin, {nr: 1, all: 0})
+    PublishBufDiags(lspserver, aBnr, ['a1'])
+    assert_equal(aStack, LocListStack(aWin))
+    assert_equal(cStack, LocListStack(cWin))
+
+    g:LspOptionsSet({autoPopulateDiags: true})
+    PublishBufDiags(lspserver, aBnr, ['a2'])
+    assert_equal(2, getloclist(aWin, {nr: '$'}).nr)
+    assert_equal(2, getloclist(aWin, {nr: 0}).nr)
+    assert_equal(userList, getloclist(aWin, {nr: 1, all: 0}))
+    assert_equal([['a2']], DiagLocListTexts(aWin))
+    assert_equal(cStack, LocListStack(cWin))
+
+    win_execute(aWin, 'lolder')
+    PublishBufDiags(lspserver, aBnr, ['a3'])
+    assert_equal(1, getloclist(aWin, {nr: 0}).nr)
+    assert_equal(userList, getloclist(aWin, {nr: 1, all: 0}))
+    assert_equal([['a3']], DiagLocListTexts(aWin))
+    assert_equal(cStack, LocListStack(cWin))
+  finally
+    DiagLocListTestCleanup([aBnr, cBnr])
+  endtry
+enddef
+
+# Test that the diagnostics published for a hidden buffer don't change any
+# location list, and that the diagnostics location list of a window is set to
+# the diagnostics of the buffer displayed in it.
+def g:Test_DiagLocList_HiddenBufferShownLater()
+  g:LspOptionsSet({autoHighlightDiags: false, autoPopulateDiags: true})
+  var lspserver = MakeDiagServer('srv')
+  silent! edit XDiagLocListHiddenB.c
+  setlocal bufhidden=hide
+  var bBnr = bufnr()
+  silent! edit XDiagLocListShownA.c
+  setlocal bufhidden=hide
+  var aBnr = bufnr()
+  var win = win_getid()
+  try
+    assert_true(bBnr->bufloaded())
+    assert_equal([], bBnr->win_findbuf())
+    var stack = LocListStack(win)
+    PublishBufDiags(lspserver, bBnr, ['b1', 'b2'])
+    assert_equal(stack, LocListStack(win))
+
+    execute $'buffer {bBnr}'
+    assert_equal([['b1', 'b2']], DiagLocListTexts(win))
+    assert_equal([bBnr, bBnr], getloclist(win)->mapnew((_, v) => v.bufnr))
+
+    stack = LocListStack(win)
+    PublishBufDiags(lspserver, aBnr, ['a1'])
+    assert_equal(stack, LocListStack(win))
+    execute $'buffer {aBnr}'
+    assert_equal([['a1']], DiagLocListTexts(win))
+
+    # A buffer without diagnostics empties the list
+    :enew
+    assert_equal([[]], DiagLocListTexts(win))
+
+    # Without "autoPopulateDiags", displaying a buffer doesn't add a list
+    g:LspOptionsSet({autoPopulateDiags: false})
+    setloclist(win, [], 'f')
+    execute $'buffer {aBnr}'
+    assert_equal([], DiagLocListTexts(win))
+  finally
+    DiagLocListTestCleanup([aBnr, bBnr])
+  endtry
+enddef
+
+# Test that ":LspDiag show" sets the diagnostics location list of the current
+# window only, that without "autoPopulateDiags" only the windows with a
+# diagnostics list are updated, and that a location list window is never
+# given a list of its own.
+def g:Test_LspDiagShow_CurrentWindowOnly()
+  g:LspOptionsSet({autoHighlightDiags: false})
+  var lspserver = MakeDiagServer('srv')
+  silent! edit XDiagLocListShow.c
+  var bnr = bufnr()
+  var win1 = win_getid()
+  :split
+  var win2 = win_getid()
+  try
+    PublishBufDiags(lspserver, bnr, ['d1', 'd2'])
+    assert_equal([], DiagLocListTexts(win1))
+    assert_equal([], DiagLocListTexts(win2))
+
+    :LspDiag show
+    assert_equal('loclist', win_gettype())
+    assert_equal(win2, getloclist(0, {filewinid: 0}).filewinid)
+    assert_equal([['d1', 'd2']], DiagLocListTexts(win2))
+    assert_equal([], DiagLocListTexts(win1))
+
+    PublishBufDiags(lspserver, bnr, ['d3'])
+    assert_equal([['d3']], DiagLocListTexts(win2))
+    assert_equal([], DiagLocListTexts(win1))
+    assert_equal(1, line('$'))
+    assert_match(' d3$', getline(1))
+
+    # From the location list window
+    assert_match('Warn: No diagnostic messages found for',
+		 execute('LspDiag show')->split("\n")[0])
+    assert_equal([['d3']], DiagLocListTexts(win2))
+  finally
+    DiagLocListTestCleanup([bnr])
+  endtry
+enddef
+
 # Define stub ALE "other source" functions that record their calls in
 # g:LspTestAleCalls, and send the diagnostics to them.  Returns the directory
 # to pass to RemoveAleStub().

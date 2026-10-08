@@ -1506,11 +1506,12 @@ reported by the language server.
 			last message when no previous messages are found.
 
 						*:LspDiag-show* *:LspDiagShow*
-:LspDiag show		Creates a new location list with the diagnostics
-			messages (if any) from the language server for the
-			current file and opens the location list window. You
-			can use the Vim location list commands to browse the
-			list.
+:LspDiag show		Sets the diagnostics location list of the current
+			window to the diagnostics messages (if any) from the
+			language server for the current file, makes it the
+			current location list and opens the location list
+			window.  See |lsp-diags-loclist|.  You can use the
+			Vim location list commands to browse the list.
 
 ------------------------------------------------------------------------------
 							*lsp-server-cmds*
@@ -1671,7 +1672,9 @@ autoHighlightDiags	|Boolean| option. Automatically place signs on the
 
 						*lsp-opt-autoPopulateDiags*
 autoPopulateDiags	|Boolean| option. Automatically populate the location
-			list with diagnostics from the language server.
+			list of each window with the diagnostics from the
+			language server for the buffer it displays.  See
+			|lsp-diags-loclist|.
 			By default this is set to false.
 			The complete information of diagnostic messages,
 			as received from the lsp server, can be accessed at
@@ -2607,13 +2610,32 @@ automatic fix.  To apply this fix, you can use the |:LspCodeAction| command.
 This command applies the action provided by the language server (if any) for
 the current line.
 
-The ":LspDiag show" command creates a new location list with the current list
-of diagnostics for the current buffer.  To automatically refresh the location
-list with the latest diagnostics received from the language server, you can
-set the "autoPopulateDiags" option to |v:true|.  By default this option is set
-to |v:false|.  When new diagnostics are received for a buffer, if a location
-list with the diagnostics is already present, then it is refreshed with the
-new diagnostics.
+							*lsp-diags-loclist*
+Each window can have a location list with the diagnostics for the buffer it
+displays, titled "Language Server Diagnostics".  The ":LspDiag show" command
+creates this list in the current window, or updates the one the window
+already has, and makes it the current location list.  When new diagnostics
+are received for a buffer, the diagnostics location list of every window
+displaying the buffer, in all the tab pages, is refreshed.  When another
+buffer is displayed in a window, the diagnostics location list of the window
+is set to the diagnostics for that buffer, and emptied for a buffer without
+diagnostics.  So the diagnostics received for a hidden buffer show up when
+the buffer is displayed in a window again.
+
+To automatically create the diagnostics location list in the windows, set the
+"autoPopulateDiags" option to |v:true|.  By default this option is set to
+|v:false|, and only the windows that already have a diagnostics location list
+are updated.
+
+The other location lists of a window are never changed.  When a window that
+has a location list of your own (e.g. from |:lvimgrep|) gets a diagnostics
+location list, the diagnostics list is added at the end of the location list
+stack of the window and becomes the current list; your list is kept, and
+|:lolder| goes back to it.  Later updates replace the contents of the
+diagnostics list in place, without making it the current list again.  A
+location list stack holds at most ten lists: when ten newer lists push the
+diagnostics list out of the stack, a new one is added at the end of the stack
+when it is needed again.
 
 In GUI Vim or terminal Vim with the 'balloonevalterm' option enabled, a
 helpful feature allows you to view diagnostic messages in a popup balloon when
