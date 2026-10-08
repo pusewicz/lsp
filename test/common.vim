@@ -27,6 +27,12 @@ def g:LoadLspPlugin()
   g:LspEnable()
 enddef
 
+# Return the path of the clangd of Homebrew's llvm@15.  The clangd tests need
+# clangd 15.
+def g:ClangdPath(): string
+  return $'{trim(system('brew --prefix llvm@15'))}/bin/clangd'
+enddef
+
 # The WaitFor*() functions are reused from the Vim test suite.
 #
 # Wait for up to five seconds for "assert" to return zero.  "assert" must be a

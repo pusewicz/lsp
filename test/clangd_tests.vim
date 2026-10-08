@@ -36,25 +36,12 @@ enddef
 g:LSPTest_modifyDiags = false
 g:LSPTest_fileStatusDelay = 0
 
-var clangdPath: string
-if has('mac') && executable('brew')
-  var brewPrefix = trim(system('brew --prefix'))
-  var brewExePath = $'{brewPrefix}/opt/llvm@15/bin/clangd'
-  clangdPath = filereadable(brewExePath) ? brewExePath : exepath('clangd')
-else
-  clangdPath = exepath($'clangd-15') ?? exepath('clangd')
-endif
+var clangdPath: string = g:ClangdPath()
 
 var clangdVerDetail = systemlist($'{shellescape(clangdPath)} --version')
 var clangdVerMajor = clangdVerDetail->matchstr('.*version \d\+\..*')->substitute('.* \(\d\+\)\..*', '\1', 'g')->str2nr()
 if clangdVerMajor != 15
-  if has('mac')
-    echoerr $'Clangd version 15 required. Please `brew install llvm@15`'
-  elseif executable('apt')
-    echoerr $'Clangd version 15 required. Please `apt install clangd-15`'
-  else
-    echoerr $'Clangd version 15 required. Please install clangd-15'
-  endif
+  echoerr $'Clangd version 15 required. Please `brew install llvm@15`'
 endif
 echomsg clangdVerDetail
 

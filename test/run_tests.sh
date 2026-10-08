@@ -1,10 +1,10 @@
 #!/bin/bash
 
-# Use the environment VIMPRG or find it in PATH
-VIMPRG="${VIMPRG:-$(command -v vim)}"
+# Use the environment VIMPRG or the Vim of MacVim
+VIMPRG="${VIMPRG:-/Applications/MacVim.app/Contents/MacOS/Vim}"
 
 if [[ ! -x "$VIMPRG" ]]; then
-  echo "ERROR: vim ($VIMPRG) not found or not executable."
+  echo "ERROR: vim ($VIMPRG) not found or not executable.  Install MacVim with \`brew install --cask macvim-app\`."
   exit 1
 fi
 
