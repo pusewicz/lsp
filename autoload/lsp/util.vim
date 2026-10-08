@@ -151,28 +151,34 @@ def UriDecode(str: string): string
   return parts->join('')
 enddef
 
-# Convert a LSP file URI (file://<absolute_path>) to a Vim file name
+# Convert the LSP URI "uri" to a Vim file name.  A "file:" URI (RFC 8089) of a
+# local file, one without a host ("file:///path" or "file:/path") or with the
+# host "localhost", is converted to its path with the percent-encoded octets
+# (e.g. "%20" for a space) decoded.  Any other URI, with another scheme (e.g.
+# "jdt:") or with another host, is returned unchanged: it is the name of the
+# buffer for the URI, see LspFileToUri().
 export def LspUriToFile(uri: string): string
-  # Replace all the %xx numbers (e.g. %20 for space) in the URI to character
-  var uri_decoded: string = UriDecode(uri)
-
-  # File URIs on MS-Windows start with file:///[a-zA-Z]:'
-  if uri_decoded =~? '^file:///\a:'
-    # MS-Windows URI
-    uri_decoded = uri_decoded[8 : ]
-    if has("win32unix")
-      # Cygwin, C:/path/to/file -> /c/path/to/file
-      uri_decoded = uri_decoded->substitute('^\(\a\):',
-	'\="/" .. submatch(1)', '')
-    else
-      uri_decoded = uri_decoded->tr('/', '\')
-    endif
-  # On GNU/Linux (pattern not end with `:`)
-  elseif uri_decoded =~? '^file:///\a'
-    uri_decoded = uri_decoded[7 : ]
+  # The path starts after "file:", "file://" or "file://localhost", and with
+  # "file:" it doesn't start with "//", as that starts a host.
+  var pathIdx: number = uri->matchend(
+    '\c^file:\%(//\%(localhost\)\=\ze/\|\ze/\%(/\)\@!\)')
+  if pathIdx == -1
+    return uri
   endif
 
-  return uri_decoded
+  var path: string = UriDecode(uri->strpart(pathIdx))
+  if (has('win32') || has('win32unix')) && path =~ '^/\a:'
+    # MS-Windows path, e.g. file:///C:/path/to/file
+    path = path[1 : ]
+    if has('win32unix')
+      # Cygwin, C:/path/to/file -> /C/path/to/file
+      path = path->substitute('^\(\a\):', '/\1', '')
+    else
+      path = path->tr('/', '\')
+    endif
+  endif
+
+  return path
 enddef
 
 # Convert a LSP file URI (file://<absolute_path>) to a Vim buffer number.
@@ -201,12 +207,20 @@ enddef
 
 var resolvedUris = {}
 
-# Convert a Vim filename to an LSP URI (file://<absolute_path>)
+# Convert the Vim file name "fname" to an LSP URI: a "file:" URI of its full
+# path.  A name that Vim keeps as a URL, like the name of a buffer for a URI
+# that LspUriToFile() does not convert to a path, is the URI itself and is
+# returned unchanged.
 export def LspFileToUri(fname: string): string
   var fname_full: string = fname->fnamemodify(':p')
 
   if resolvedUris->has_key(fname_full)
     return resolvedUris[fname_full]
+  endif
+
+  if LspUriRemote(fname_full)
+    resolvedUris[fname_full] = fname_full
+    return fname_full
   endif
 
   var uri: string = fname_full
