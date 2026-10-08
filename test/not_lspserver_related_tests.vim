@@ -330,6 +330,26 @@ def g:Test_CompleteSource_CompleteList_ReturnsList()
 	       g:LspCompleteSource(0, 'SDL_C')->WordsOf())
 enddef
 
+# 'complete' sources are used in every buffer, so g:LspCompleteSource() skips
+# a buffer without a usable language server instead of reporting an error.
+def g:Test_CompleteSource_NoServer_SkipsSilently()
+  :messages clear
+  silent! edit XCompleteSourceNoServer.vim
+  assert_equal(-2, g:LspCompleteSource(1, ''))
+  assert_equal([], g:LspCompleteSource(0, ''))
+
+  var lspserver = SetupTruncatingServerBuffer('', 2)
+  defer TeardownTruncatingServerBuffer(lspserver)
+  lspserver.ready = false
+  assert_equal(-2, g:LspCompleteSource(1, ''))
+  lspserver.ready = true
+  lspserver.running = false
+  assert_equal(-2, g:LspCompleteSource(1, ''))
+
+  assert_equal([], execute('messages')->split("\n")
+			    ->filter((_, msg) => msg =~ '^Error'))
+enddef
+
 # g:LspOmniFunc() is the 'omnifunc' and external completion engines call it
 # directly expecting a list of matches, so it never returns the refresh dict.
 def g:Test_OmniFunc_IncompleteList_ReturnsList()
