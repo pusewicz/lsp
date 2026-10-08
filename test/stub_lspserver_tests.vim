@@ -683,6 +683,40 @@ def g:Test_GetCompletion_DoesNotCancelAnsweredRequest()
   :%bw!
 enddef
 
+# Test that the inlay hints request covers the whole buffer: its range ends at
+# the end of the last line, in the negotiated position encoding, when the last
+# line has composing characters and ends in a character outside the BMP.
+def g:Test_InlayHintsShow_RangeEndsAtEndOfBuffer()
+  silent! edit XInlayHintsRange.txt
+  setline(1, ['int x;', "á 😊"])
+  var lspserver = MakeTestLspServer([])
+  lspserver.isInlayHintProvider = true
+  lspserver.isClangdInlayHintsProvider = false
+  var ranges: list<dict<any>> = []
+  lspserver.rpc_a = (_, params, _) => {
+    ranges->add(params.range->deepcopy())
+    return 0
+  }
+
+  for posEncoding in [8, 16, 32]
+    lspserver.posEncoding = posEncoding
+    lspserver.inlayHintsShow(bufnr())
+  endfor
+  append('$', '')
+  lspserver.inlayHintsShow(bufnr())
+
+  # The second line is 8 bytes, 5 UTF-16 code units and 4 characters long
+  var start: dict<number> = {line: 0, character: 0}
+  var expected: list<dict<any>> = [
+    {start: start, end: {line: 1, character: 8}},
+    {start: start, end: {line: 1, character: 5}},
+    {start: start, end: {line: 1, character: 4}},
+    {start: start, end: {line: 2, character: 0}}
+  ]
+  assert_equal(expected, ranges)
+  :%bw!
+enddef
+
 def g:Test_ProcessMessages_IgnoreUnknownResponseId_Error()
   var lspserver = MakeTestLspServer([])
   var unknownId = 'X-unknown-response-id-error'
