@@ -487,6 +487,40 @@ def AleLinterNamesGet(bnr: number): list<string>
     ->uniq()
 enddef
 
+# Returns the ALE loclist entry for diagnostic "diag" in buffer "bnr".  ALE
+# highlights up to and including "end_col", so the end of the entry is the
+# last byte in the diagnostic range, kept within the buffer.  An empty range
+# highlights the character at its start.
+def AleLocListItem(bnr: number, diag: dict<any>): dict<any>
+  var range = diag.range
+  var lnum = range.start.line + 1
+  var col = util.GetLineByteFromPos(bnr, range.start) + 1
+  var endLnum = range.end.line + 1
+  var endCol: number
+  if bnr->getbufline(endLnum)->empty()
+    # The range ends past the end of the buffer
+    endLnum = bnr->getbufinfo()[0].linecount
+    endCol = bnr->getbufline(endLnum)->get(0, '')->strlen()
+  elseif range.end.character == 0 && endLnum > lnum
+    # The range ends with the newline of the previous line
+    endLnum -= 1
+    endCol = bnr->getbufline(endLnum)[0]->strlen()
+  else
+    # The byte index of the exclusive end is the column of the last byte in
+    # the range.  A range ending past the end of the line ends with the line.
+    var endText = bnr->getbufline(endLnum)[0]
+    endCol = endText->byteidxcomp(range.end.character)
+    if endCol < 0
+      endCol = endText->strlen()
+    endif
+  endif
+  if endLnum < lnum || (endLnum == lnum && endCol < col)
+    [endLnum, endCol] = [lnum, col]
+  endif
+  return {text: diag.message, lnum: lnum, col: col, end_lnum: endLnum,
+	  end_col: endCol, type: "EWIH"[get(diag, "severity", 1) - 1]}
+enddef
+
 # Sends the diagnostics of every language server attached to buffer "bnr" to
 # ALE, using the server name as the ALE linter name.  A server without
 # diagnostics gets an empty list, which ends ALE's check for it.
@@ -500,14 +534,8 @@ def SendAleDiags(bnr: number, timerid: number)
       diags->extend(kindDiags)
     endfor
     # Convert to Ale's diagnostics format (:h ale-loclist-format)
-    var loclist = SortDiags(DeduplicateDiags(diags))->mapnew((_, v) => {
-      return {text: v.message,
-              lnum: v.range.start.line + 1,
-              col: util.GetLineByteFromPos(bnr, v.range.start) + 1,
-              end_lnum: v.range.end.line + 1,
-              end_col: util.GetLineByteFromPos(bnr, v.range.end) + 1,
-              type: "EWIH"[get(v, "severity", 1) - 1]}
-    })
+    var loclist = SortDiags(DeduplicateDiags(diags))
+      ->mapnew((_, v) => AleLocListItem(bnr, v))
     loclists[lspserver.name] = loclists->get(lspserver.name, [])
       ->extend(loclist)
   endfor
