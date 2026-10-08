@@ -5,6 +5,7 @@ vim9script
 import './options.vim' as opt
 import './util.vim' as util
 import './buffer.vim' as buf
+import './offset.vim'
 
 # Keep the current signature help session in one place so overload
 # navigation can update the existing UI without asking the server again.
@@ -612,11 +613,13 @@ def GetSignatureDocSummary(paramDoc: dict<any>, sigDoc: dict<any>): string
   return docSummary
 enddef
 
-# Build unified display payload for popup and echo rendering paths.
+# Build unified display payload for popup and echo rendering paths.  "label"
+# is the signature label as displayed at the start of "text".
 def GetSignatureDisplayInfo(lspserver: dict<any>, sig: dict<any>,
 			    sigidx: number, total: number,
 			    activeParam: number): dict<any>
-  var text: string = FormatSignatureText(sig, sigidx, total)
+  var label: string = GetDisplayedSignatureLabel(sig, total)
+  var text: string = FormatSignatureText(label, sigidx, total)
   var sigDoc = {lines: [], filetype: ''}
   var lines = [text]
   var docSummary = ''
@@ -636,107 +639,136 @@ def GetSignatureDisplayInfo(lspserver: dict<any>, sig: dict<any>,
 
   return {
     text: text,
+    label: label,
     lines: lines,
     filetype: filetype,
     docSummary: docSummary
   }
 enddef
 
-# Append a compact overload indicator so the user can see where they are while
-# cycling through multiple signatures.
-def FormatSignatureText(sig: dict<any>, sigidx: number, total: number): string
-  var text: string = sig.label
-  if total > 1
-    text = text->trim('', 2)
-    text ..= $"  ({sigidx + 1}/{total})"
-  endif
-
-  return text
+# Return the label of the signature "sig" as it is displayed: without its
+# trailing white space when the overload indicator follows it.
+def GetDisplayedSignatureLabel(sig: dict<any>, total: number): string
+  return total > 1 ? sig.label->trim('', 2) : sig.label
 enddef
 
-# Convert the active parameter description from the LSP response into the text
-# range that should be highlighted in Vim.
-def GetStringLabelHighlight(text: string, label: string): dict<number>
+# Append a compact overload indicator to the displayed signature label "label"
+# so the user can see where they are while cycling through multiple
+# signatures.
+def FormatSignatureText(label: string, sigidx: number, total: number): string
+  return total > 1 ? $'{label}  ({sigidx + 1}/{total})' : label
+enddef
+
+# Return the byte index in the signature label "label" of the first
+# occurrence, at or after the byte index "start", of the parameter label
+# "paramLabel", or -1 when there is none.  An occurrence that is a whole word
+# is preferred, so that the parameter "a" is not found in "add" or "aa".
+def FindParameterLabel(label: string, paramLabel: string, start: number): number
+  var pat = '\V\C'
+  if paramLabel =~ '^\k'
+    pat ..= '\<'
+  endif
+  pat ..= paramLabel->escape('\')
+  if paramLabel =~ '\k$'
+    pat ..= '\>'
+  endif
+
+  # With a {count}, match() checks for a word start against the text before
+  # "start" instead of matching one at "start".
+  var idx = label->match(pat, start, 1)
+  return idx >= 0 ? idx : label->stridx(paramLabel, start)
+enddef
+
+# Return the byte range in the signature label "label" of the parameter
+# "activeParam" of the signature "sig", whose label is a string.  The labels of
+# the parameters are searched for in order, each one after the previous one,
+# so that a parameter is not found in the name of an earlier one.  When that
+# fails, as when the parameters are not in order, the label is searched for
+# from the start of the signature label.  The range is empty when the label
+# is not found.
+def GetStringLabelHighlight(sig: dict<any>, label: string,
+			    activeParam: number): dict<number>
+  var start = 0
+  for param in sig.parameters->slice(0, activeParam)
+    var paramLabel: any = param->get('label', '')
+    if paramLabel->type() == v:t_string
+      var idx = FindParameterLabel(label, paramLabel, start)
+      if idx >= 0
+	start = idx + paramLabel->len()
+      endif
+    endif
+  endfor
+
+  var activeLabel: string = sig.parameters[activeParam].label
+  var startcol = FindParameterLabel(label, activeLabel, start)
+  if startcol < 0 && start > 0
+    startcol = FindParameterLabel(label, activeLabel, 0)
+  endif
+  if startcol < 0
+    return {hllen: 0, startcol: 0}
+  endif
+
+  return {hllen: activeLabel->len(), startcol: startcol}
+enddef
+
+# Return the byte index in the signature label "label" of the offset "off" in
+# it, in the position encoding negotiated with the language server.  An offset
+# past the end of the label is at its end.
+def LabelOffsetToByteIdx(lspserver: dict<any>, label: string,
+			 off: number): number
+  var charIdx = min([offset.DecodeCharacter(lspserver, label, off),
+		     label->strchars()])
+  return label->byteidxcomp(charIdx)
+enddef
+
+# Return the byte range in the signature label "label" of a parameter whose
+# label is the [inclusive start, exclusive end] offsets "labelOffsets" in the
+# signature label, in the position encoding negotiated with the language
+# server.  Offsets past the end of the label are at its end.
+def GetOffsetLabelHighlight(lspserver: dict<any>, label: string,
+			    labelOffsets: list<any>): dict<number>
   var result = {hllen: 0, startcol: 0}
 
-  result.hllen = label->len()
-  result.startcol = text->stridx(label)
-  if result.startcol < 0
-    result.hllen = 0
-    result.startcol = 0
+  if labelOffsets->len() < 2 ||
+      labelOffsets[0]->type() != v:t_number ||
+      labelOffsets[1]->type() != v:t_number
+    return result
+  endif
+
+  var startOffset: number = labelOffsets[0]
+  var endOffset: number = labelOffsets[1]
+  if startOffset < 0 || endOffset <= startOffset
+    return result
+  endif
+
+  var startByte = LabelOffsetToByteIdx(lspserver, label, startOffset)
+  var endByte = LabelOffsetToByteIdx(lspserver, label, endOffset)
+  if endByte > startByte
+    result.startcol = startByte
+    result.hllen = endByte - startByte
   endif
 
   return result
 enddef
 
-# Helper function to convert LSP UTF-16 offsets to Vim byte indices.
-def GetByteOffsets(text: string, start_utf16: number, end_utf16: number): dict<number>
-  var result = {start: 0, len: 0}
-
-  var start_byte = text->byteidx(start_utf16, true)
-  var end_byte = text->byteidx(end_utf16, true)
-
-  if start_byte >= 0 && end_byte > start_byte
-    result.start = start_byte
-    result.len = end_byte - start_byte
+# Return the byte range {startcol, hllen} in the displayed signature label
+# "label" of the parameter "activeParam" of the signature "sig", to highlight
+# as the active parameter.  "hllen" is 0 when there is nothing to highlight,
+# as when "activeParam" is -1 because the server sent a null activeParameter.
+def GetParameterHighlight(lspserver: dict<any>, sig: dict<any>, label: string,
+			  activeParam: number): dict<number>
+  if activeParam < 0 || activeParam >= GetSignatureParameterCount(sig)
+    return {hllen: 0, startcol: 0}
   endif
 
-  return result
-enddef
-
-# Convert a UTF-16 label-offset pair into a Vim byte-range highlight.
-def GetOffsetLabelHighlight(text: string, labelOffset: list<any>): dict<number>
-  var result = {hllen: 0, startcol: 0}
-
-  if labelOffset->len() < 2 ||
-      labelOffset[0]->type() != v:t_number ||
-      labelOffset[1]->type() != v:t_number
-    return result
+  var paramLabel: any = sig.parameters[activeParam].label
+  if paramLabel->type() == v:t_string
+    return GetStringLabelHighlight(sig, label, activeParam)
+  elseif paramLabel->type() == v:t_list
+    return GetOffsetLabelHighlight(lspserver, label, paramLabel)
   endif
 
-  var start_offset: number = labelOffset[0]
-  var end_offset: number = labelOffset[1]
-  if start_offset < 0 || end_offset <= start_offset
-    return result
-  endif
-
-  var offsets = GetByteOffsets(text, start_offset, end_offset)
-  result.startcol = offsets.start
-  result.hllen = offsets.len
-
-  return result
-enddef
-
-def GetParameterHighlight(sig: dict<any>, text: string, activeParam: number): dict<number>
-  var result = {hllen: 0, startcol: 0}
-
-  # -1 means the server sent null activeParameter: suppress the highlight.
-  if activeParam < 0
-    return result
-  endif
-
-  var paramCount = GetSignatureParameterCount(sig)
-  if paramCount == 0
-    return result
-  endif
-
-  var params: list<dict<any>> = sig.parameters
-  if activeParam >= paramCount
-    return result
-  endif
-
-  var paramInfo: dict<any> = params[activeParam]
-  var label: any = paramInfo.label
-  if label->type() == v:t_string
-    # Some servers return a string label that does not appear verbatim in the
-    # rendered signature text. In that case, skip highlighting.
-    return GetStringLabelHighlight(text, label)
-  elseif label->type() == v:t_list
-    # label is [inclusive start offset, exclusive end offset].
-    return GetOffsetLabelHighlight(text, label)
-  endif
-
-  return result
+  return {hllen: 0, startcol: 0}
 enddef
 
 # Return the currently selected signature, or {} when state is invalid.
@@ -816,7 +848,8 @@ def DisplayCurrentSignature(): void
   var activeParam = GetCurrentActiveParameter()
   var display = GetSignatureDisplayInfo(lspserver, sig, sig_state.index, total,
 				       activeParam)
-  var hlinfo = GetParameterHighlight(sig, display.text, activeParam)
+  var hlinfo = GetParameterHighlight(lspserver, sig, display.label,
+				     activeParam)
 
   if opt.lspOptions.echoSignature
     EchoSignature(display.text, hlinfo, display.docSummary)

@@ -6695,6 +6695,171 @@ def g:Test_FormatOnSave_BeforeWillSave()
   endtry
 enddef
 
+# A signature label with multibyte, composing and astral plane characters
+# before its parameters, and a parameter whose name starts with the name of the
+# next one.
+const SIG_LABEL = "fn(é x, 😊 y, á z, int aa, int a) -> 😊"
+# The labels of the parameters in SIG_LABEL, their byte columns in it and their
+# [start, end] offsets in it in the UTF-8, UTF-16 and UTF-32 encodings.
+const SIG_PARAMS = ['é x', '😊 y', "á z", 'int aa', 'int a']
+const SIG_PARAM_COLS = [4, 10, 18, 25, 33]
+const SIG_PARAM_OFFSETS = {
+  8: [[3, 7], [9, 15], [17, 22], [24, 30], [32, 37]],
+  16: [[3, 6], [8, 12], [14, 18], [20, 26], [28, 33]],
+  32: [[3, 6], [8, 11], [13, 17], [19, 25], [27, 32]]
+}
+
+# Return a stub language server with the position encoding "posEncoding" for
+# the signature-help tests.
+def MakeSigServer(posEncoding: number): dict<any>
+  var lspserver = MakeTestLspServer([])
+  lspserver.posEncoding = posEncoding
+  return lspserver
+enddef
+
+# Return a signature-help reply with "total" signatures labelled "label",
+# whose parameters have the labels "paramLabels" and the parameter
+# "activeParam" is active.
+def MakeSigHelp(label: string, paramLabels: list<any>, activeParam: number,
+		total: number = 1): dict<any>
+  var sig = {label: label,
+	     parameters: paramLabels->mapnew((_, l) => ({label: l}))}
+  return {signatures: repeat([sig], total), activeSignature: 0,
+	  activeParameter: activeParam}
+enddef
+
+# Return the [byte column, text] of each active-parameter highlight in the
+# signature popup.
+def SigPopupHighlights(): list<list<any>>
+  var bnr = popup_list()[0]->winbufnr()
+  var text = getbufline(bnr, 1)[0]
+  return prop_list(1, {bufnr: bnr})
+    ->mapnew((_, p) => [p.col, text->strpart(p.col - 1, p.length)])
+enddef
+
+# Return the screen attribute of text echoed in the command line with the
+# highlight group "group".
+def CmdlineAttr(group: string): number
+  exe $'echohl {group}'
+  echo 'x'
+  echohl None
+  return screenattr(&lines, 1)
+enddef
+
+# Return the text in the command line that is drawn with the screen attribute
+# "attr".
+def CmdlineTextWithAttr(attr: number): string
+  return range(1, &columns)
+    ->filter((_, c) => screenattr(&lines, c) == attr)
+    ->mapnew((_, c) => screenstring(&lines, c))
+    ->join('')
+enddef
+
+# Test for highlighting the active parameter in the signature popup when the
+# labels of the parameters are offsets in the signature label.  The offsets are
+# in the position encoding negotiated with the language server, and
+# multibyte, composing and astral plane characters come before the parameters.
+def g:Test_SignatureHelp_OffsetLabels()
+  signature.InitOnce()
+  g:LspOptionsSet({echoSignature: false, showSignatureDocs: false})
+  for posEncoding in [8, 16, 32]
+    var lspserver = MakeSigServer(posEncoding)
+    var offsets: list<list<number>> = SIG_PARAM_OFFSETS[posEncoding]->deepcopy()
+    var msg = $'UTF-{posEncoding}'
+    for i in range(SIG_PARAMS->len())
+      signature.SignatureHelp(lspserver, MakeSigHelp(SIG_LABEL, offsets, i), {})
+      assert_equal([[SIG_PARAM_COLS[i], SIG_PARAMS[i]]], SigPopupHighlights(),
+		   $'{msg}, parameter {i}')
+    endfor
+
+    # An end offset past the end of the label is at the end of the label, also
+    # when the overload indicator follows the label.
+    offsets[4][1] = 100
+    for total in [1, 2]
+      signature.SignatureHelp(lspserver,
+			      MakeSigHelp(SIG_LABEL, offsets, 4, total), {})
+      assert_equal([[33, 'int a) -> 😊']], SigPopupHighlights(),
+		   $'{msg}, {total} signatures')
+    endfor
+
+    # Nothing is highlighted for a parameter that starts past the end of the
+    # label.
+    offsets[4] = [100, 101]
+    signature.SignatureHelp(lspserver, MakeSigHelp(SIG_LABEL, offsets, 4), {})
+    assert_equal([], SigPopupHighlights(), msg)
+
+    signature.SignatureHelp(lspserver, {}, {})
+  endfor
+  :%bw!
+enddef
+
+# Test for highlighting the active parameter in the signature popup when the
+# labels of the parameters are strings.  Each parameter is searched for in the
+# signature label after the previous one, as a whole word if it can be found
+# as one.
+def g:Test_SignatureHelp_StringLabels()
+  signature.InitOnce()
+  g:LspOptionsSet({echoSignature: false, showSignatureDocs: false})
+  # [signature label, parameter labels, active parameter, expected highlight]
+  var cases: list<list<any>> = [
+    ['f(int a, int aa)', ['int a', 'int aa'], 0, [[3, 'int a']]],
+    ['f(int a, int aa)', ['int a', 'int aa'], 1, [[10, 'int aa']]],
+    ['add(a, d)', ['a', 'd'], 0, [[5, 'a']]],
+    ['add(a, d)', ['a', 'd'], 1, [[8, 'd']]],
+    ['éa(a, é)', ['a', 'é'], 0, [[5, 'a']]],
+    ['éa(a, é)', ['a', 'é'], 1, [[8, 'é']]],
+    ['f(xy, y)', ['x', 'y'], 1, [[7, 'y']]],
+    ['f(b, a)', ['a', 'b'], 1, [[3, 'b']]],
+    ['f(int x)', ['int y'], 0, []]
+  ]
+  for i in range(SIG_PARAMS->len())
+    cases->add([SIG_LABEL, SIG_PARAMS, i, [[SIG_PARAM_COLS[i], SIG_PARAMS[i]]]])
+  endfor
+
+  for posEncoding in [8, 16, 32]
+    var lspserver = MakeSigServer(posEncoding)
+    for [label, params, active, expected] in cases
+      signature.SignatureHelp(lspserver, MakeSigHelp(label, params, active), {})
+      assert_equal(expected, SigPopupHighlights(),
+		   $'UTF-{posEncoding}, {label}, parameter {active}')
+    endfor
+    signature.SignatureHelp(lspserver, {}, {})
+  endfor
+  :%bw!
+enddef
+
+# Test for highlighting the active parameter in the signature echoed in the
+# command line when the labels of the parameters are offsets in the signature
+# label, in the position encoding negotiated with the language server.  The
+# active parameter is highlighted in reverse, so that it is drawn differently
+# from the rest of the signature whatever the highlight it is linked to.
+def g:Test_SignatureHelp_EchoOffsetLabels()
+  signature.InitOnce()
+  var savedHl = hlget('LspSigActiveParameter')
+  hlset([{name: 'LspSigActiveParameter', linksto: 'NONE'},
+	 {name: 'LspSigActiveParameter', term: {reverse: true},
+	  cterm: {reverse: true}, gui: {reverse: true}}])
+  g:LspOptionsSet({echoSignature: true, showSignatureDocs: false})
+  try
+    var hlAttr = CmdlineAttr('LspSigActiveParameter')
+    assert_notequal(CmdlineAttr('None'), hlAttr)
+    for posEncoding in [8, 16, 32]
+      var lspserver = MakeSigServer(posEncoding)
+      for i in range(SIG_PARAMS->len())
+	signature.SignatureHelp(lspserver,
+	  MakeSigHelp(SIG_LABEL, SIG_PARAM_OFFSETS[posEncoding], i), {})
+	assert_equal(SIG_PARAMS[i], CmdlineTextWithAttr(hlAttr),
+		     $'UTF-{posEncoding}, parameter {i}')
+      endfor
+      signature.SignatureHelp(lspserver, {}, {})
+    endfor
+  finally
+    g:LspOptionsSet({echoSignature: false})
+    hlset(savedHl)
+    :%bw!
+  endtry
+enddef
+
 # Only here to because the test runner needs it
 def g:StartLangServer(): bool
   return true
