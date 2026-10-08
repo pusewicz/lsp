@@ -251,12 +251,12 @@ The tests run with the Vim of MacVim against real language servers, as the GitHu
 
 ```sh
 brew install --cask macvim-app
-brew install llvm@15 go gopls rustup node
+brew install llvm go gopls rustup node
 rustup default stable && rustup component add rust-src
 (cd test && npm ci)
 ```
 
-The clangd tests need clangd 15, which they take from `llvm@15`. The Rust tests use the `rust-analyzer` on `PATH`; CI pins it to the [2024-06-24 release](https://github.com/rust-lang/rust-analyzer/releases/tag/2024-06-24). Then run the whole suite, or only some test files:
+The clangd tests need clangd 22 or later, which they take from Homebrew's `llvm`. The Rust tests use the `rust-analyzer` on `PATH`; CI pins it to the [2024-06-24 release](https://github.com/rust-lang/rust-analyzer/releases/tag/2024-06-24). Then run the whole suite, or only some test files:
 
 ```sh
 cd test && ./run_tests.sh
