@@ -50,15 +50,16 @@ RunTestsInFile() {
 
   # Use a unique results file name to allow potential parallel runs later
   local res_file="results_${testfile}_${encoding}.txt"
-  rm -f "$res_file"
+  local screen_file="screen_${testfile}_${encoding}.log"
+  rm -f "$res_file" "$screen_file"
 
   echo "===> Running: $testfile (Encoding: $encoding)"
 
   export LSP_OFFSET_ENCODING="$encoding"
 
-  # Execute Vim and redirect its internal 'results.txt' logic if possible,
-  # or handle the renaming here.
-  $VIM_CMD -c "let g:TestName='$testfile'" -S runner.vim <&3
+  # Vim draws its screen on stdout, which is only noise in the output of the
+  # run.  Keep it in a file, to see where Vim was when a test failed.
+  $VIM_CMD -c "let g:TestName='$testfile'" -S runner.vim <&3 > "$screen_file"
   local vim_status=$?
 
   # Standardizing the results file name if runner.vim always outputs 'results.txt'
@@ -88,7 +89,7 @@ RunTestsInFile() {
   if grep -q "^SKIP:" "$res_file"; then
     echo "RESULT: $testfile SKIPPED."
     echo ""
-    rm "$res_file"
+    rm "$res_file" "$screen_file"
     return 0
   fi
 
@@ -101,7 +102,7 @@ RunTestsInFile() {
 
   echo "RESULT: All $passed tests in $testfile PASSED."
   echo ""
-  rm "$res_file"
+  rm "$res_file" "$screen_file"
   TOTAL_PASSED=$((TOTAL_PASSED + passed))
 }
 
