@@ -8,6 +8,8 @@ export const CODEACTIONDETAILS_SERVER   = 0x1
 export const CODEACTIONDETAILS_KIND     = 0x2
 export const CODEACTIONDETAILS_FULLKIND = 0x4
 
+const popupOpacitySupported: bool = has('patch-9.2.0017')
+
 # LSP plugin options
 # User can override these by calling the OptionsSet() function.
 export var lspOptions: dict<any> = {
@@ -141,34 +143,46 @@ export var lspOptions: dict<any> = {
 
   popupHighlight: 'LspPopup',
 
+  # Popup opacity, from 0 (fully transparent) to 100 (fully opaque)
+  popupOpacity: 100,
+
   # Optional overrideable popup options:
   # popupBorderCodeAction
   # popupBorderHighlightCodeAction
   # popupHighlightCodeAction
+  # popupOpacityCodeAction
   # popupBorderCompletion
   # popupBorderHighlightCompletion
   # popupHighlightCompletion
+  # popupOpacityCompletion
   # popupBorderDiag
   # popupBorderHighlightDiag
   # popupHighlightDiag
+  # popupOpacityDiag
   # popupBorderHover
   # popupBorderHighlightHover
   # popupHighlightHover
+  # popupOpacityHover
   # popupBorderPeek
   # popupBorderHighlightPeek
   # popupHighlightPeek
+  # popupOpacityPeek
   # popupBorderSignatureHelp
   # popupBorderHighlightSignatureHelp
   # popupHighlightSignatureHelp
+  # popupOpacitySignatureHelp
   # popupBorderSymbolMenu
   # popupBorderHighlightSymbolMenu
   # popupHighlightSymbolMenu
+  # popupOpacitySymbolMenu
   # popupBorderSymbolMenuInput
   # popupBorderHighlightSymbolMenuInput
   # popupHighlightSymbolMenuInput
+  # popupOpacitySymbolMenuInput
   # popupBorderTypeHierarchy
   # popupBorderHighlightTypeHierarchy
   # popupHighlightTypeHierarchy
+  # popupOpacityTypeHierarchy
 
   # Enable semantic highlighting
   semanticHighlight: false,
@@ -312,12 +326,20 @@ enddef
 # if users have configured those options, e.g. popupHighlightHover will be used
 # as the highlight group for "Hover" type popups if configured, otherwise hover
 # popups will fall back to the standard popupHighlight option.
+# The "opacity" attribute is only set for a value in the 0-99 range on a Vim
+# that supports popup opacity, so popups stay untouched by default.
 export def PopupConfigure(type: string, popupAttrs: dict<any>): dict<any>
   popupAttrs.highlight = PopupOptionGet(type, 'popupHighlight')
   if PopupOptionGet(type, 'popupBorder')
     popupAttrs.border = []
     popupAttrs.borderchars = lspOptions.popupBorderChars
     popupAttrs.borderhighlight = [PopupOptionGet(type, 'popupBorderHighlight')]
+  endif
+  if popupOpacitySupported
+    var opacity = PopupOptionGet(type, 'popupOpacity')
+    if opacity->type() == v:t_number && opacity >= 0 && opacity < 100
+      popupAttrs.opacity = opacity
+    endif
   endif
   return popupAttrs
 enddef
