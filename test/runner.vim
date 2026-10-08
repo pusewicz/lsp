@@ -6,11 +6,20 @@ vim9script
 
 source common.vim
 
+# Run every global Test_ function defined by the sourced test file and append
+# one "pass" or "FAIL" line per test to results.txt.  A test file that cannot
+# run in this environment sets g:LSPTest_skip to the reason and gets a single
+# "SKIP" line instead.  Running no tests for any other reason is a failure.
 def LspRunTests()
   :set nomore
   :set debug=beep
   # Use a list to accumulate all results, then write once for better I/O
   var all_results: list<string> = []
+
+  if exists('g:LSPTest_skip')
+    writefile([$'SKIP: {g:TestName}: {g:LSPTest_skip}'], 'results.txt', 'a')
+    return
+  endif
 
   # ROBUST DISCOVERY: Capture functions defined in the sourced test file
   # The regex is tightened to handle compiled vs non-compiled function headers
@@ -21,7 +30,7 @@ def LspRunTests()
     ->sort()
 
   if fns->empty()
-    writefile([$'No tests found in {g:TestName}'], 'results.txt', 'a')
+    writefile([$'FAIL: No tests found in {g:TestName}'], 'results.txt', 'a')
     return
   endif
 
@@ -30,13 +39,15 @@ def LspRunTests()
   for pass in passes
     if pass != v:null && exists('*g:LSPTest_setupPass')
       if !g:LSPTest_setupPass(pass, all_results)
-	# Failed to setup this pass of test run
-        add(all_results, $'Skipping this round of tests')
+        add(all_results, $'FAIL: Could not set up the test pass {pass}')
 	continue
       endif
     endif
 
-    g:StartLangServer()
+    if !g:StartLangServer()
+      add(all_results, 'FAIL: Not able to start the language server')
+      continue
+    endif
 
     for f in fns
       v:errors = []
