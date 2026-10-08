@@ -16,6 +16,7 @@ var lspServers = [{
       filetype: ['typescript', 'javascript'],
       path: $'{nodeModules}/.bin/typescript-language-server',
       args: ['--stdio'],
+      debug: g:LspServerDebug(),
       initializationOptions: {
 	disableAutomaticTypingAcquisition: true,
 	tsserver: {path: $'{nodeModules}/typescript/lib/tsserver.js'}
