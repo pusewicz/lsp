@@ -8,6 +8,7 @@ import '../autoload/lsp/signature.vim' as signature
 import '../autoload/lsp/completion.vim' as completion
 import '../autoload/lsp/handlers.vim' as handlers
 import '../autoload/lsp/diag.vim' as diag
+import '../autoload/lsp/symbol.vim' as symbol
 import '../autoload/lsp/util.vim' as util
 import '../autoload/lsp/buffer.vim' as buf
 import '../autoload/lsp/ontypeformat.vim' as ontypeformat
@@ -1032,6 +1033,37 @@ def g:Test_ProcessShowMessageRequest_ValidMessage()
   assert_equal(1, responses->len())
   assert_equal(null, responses[0].result)
   assert_equal(1, responses[0].error->empty())
+enddef
+
+# Test that the location list items built from LSP locations span the whole
+# range, for ranges with multibyte and composing characters, ranges ending on a
+# later line and locations in a file that is not loaded in a buffer.
+def g:Test_ShowLocations_SetsEndPosition()
+  var fname = 'XShowLocationsEnd.txt'
+  writefile(["a\u0301b\u0301a\u0301b\u0301 \U0001F60A\U0001F60A tail", 'next'],
+	    fname)
+  var uri = util.LspFileToUri(fname)
+  var locations = [
+	{uri: uri, range: {start: {line: 0, character: 0},
+			   end: {line: 0, character: 8}}},
+	{uri: uri, range: {start: {line: 0, character: 9},
+			   end: {line: 0, character: 11}}},
+	{targetUri: uri,
+	 targetRange: {start: {line: 0, character: 0},
+		       end: {line: 1, character: 4}},
+	 targetSelectionRange: {start: {line: 0, character: 12},
+				end: {line: 1, character: 4}}}
+  ]
+  assert_false(fname->bufloaded())
+  try
+    symbol.ShowLocations({}, locations, false, 'Locations')
+    assert_equal([[1, 1, 1, 13], [1, 14, 1, 22], [1, 23, 2, 5]],
+		 getloclist(0)->mapnew((_, v) => [v.lnum, v.col, v.end_lnum, v.end_col]))
+  finally
+    :lclose
+    setloclist(0, [], 'f')
+    delete(fname)
+  endtry
 enddef
 
 def g:Test_CodeActionMenu_ServerLabelOnlyForDuplicateTitles()
