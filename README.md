@@ -168,6 +168,7 @@ call LspOptionsSet(#{
         \   completionKinds: {},
         \   filterCompletionDuplicates: v:false,
         \   condensedCompletionMenu: v:false,
+        \   completionLabelMaxWidth: 0,
         \   documentationFormat: ['markdown', 'plaintext'],
 	\ })
 ```

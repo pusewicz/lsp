@@ -2087,6 +2087,19 @@ condensedCompletionMenu |Boolean| option. If enabled, minimizes completion
 			Moves all additional details to info popup.
 			Caveat: LazyDoc will override moved details!
 
+					*lsp-opt-completionLabelMaxWidth*
+completionLabelMaxWidth |Number| option. The maximum width, in screen cells,
+			of the label of an item in the completion menu.  A
+			longer label is cut and ends in "…" ("..." when
+			'encoding' is not "utf-8").  The info popup of the
+			selected item then shows the full label.  Set to 0
+			for no limit.
+			Unlike Vim's 'pummaxwidth' option, which cuts off the
+			end of every line in the menu once the longest label
+			reaches the limit, this keeps the kind and the detail
+			of each item visible.
+			By default this is set to 0.
+
 				*lsp-opt-ignoreCompleteItemsIsIncomplete*
 ignoreCompleteItemsIsIncomplete |List| of strings option.
 			Optional list of LSP server names for which
