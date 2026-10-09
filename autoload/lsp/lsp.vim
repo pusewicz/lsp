@@ -530,12 +530,11 @@ def LspHoverAutoStop(bnr: number)
   hover.HoverAutoStop(bnr)
 enddef
 
-# Add buffer-local autocmds when attaching a LSP server to a buffer
-def AddBufLocalAutocmds(lspserver: dict<any>, bnr: number): void
+# Add the buffer-local autocmds whose handlers act for all the language
+# servers of buffer "bnr", when attaching a LSP server to it.  Each of them
+# replaces the one added for another server.
+def AddBufLocalAutocmds(bnr: number): void
   var acmds: list<dict<any>> = []
-
-  # The handlers of these autocmds act for all the language servers of the
-  # buffer, so each of them replaces the one added for another server.
 
   # file save handlers
   acmds->add({bufnr: bnr,
@@ -556,16 +555,35 @@ def AddBufLocalAutocmds(lspserver: dict<any>, bnr: number): void
 	      replace: true,
 	      cmd: $'LspLeftInsertMode({bnr})'})
 
+  autocmd_add(acmds)
+enddef
+
+# The events of the autocmds added by AddBufFeatureAutocmds()
+const BUF_FEATURE_EVENTS: list<string> = ['CursorMoved', 'CursorHold', 'BufLeave']
+
+# Add the buffer-local autocmds for the features of buffer "bnr" that use the
+# one of its language servers that provides them.  That server is known only
+# when all the servers are ready.  Replaces the autocmds added before, as this
+# can be called more than once for a buffer.
+def AddBufFeatureAutocmds(bnr: number): void
+  autocmd_delete(BUF_FEATURE_EVENTS->mapnew((_, event) => ({
+    bufnr: bnr,
+    group: 'LSPBufferAutocmds',
+    event: event
+  })))
+
+  var acmds: list<dict<any>> = []
+
   # Auto highlight all the occurrences of the current keyword
-  if opt.lspOptions.autoHighlight &&
-			lspserver.isDocumentHighlightProvider
+  if opt.lspOptions.autoHighlight
+      && !buf.BufLspServerGet(bnr, 'documentHighlight')->empty()
     acmds->add({bufnr: bnr,
 		event: 'CursorMoved',
 		group: 'LSPBufferAutocmds',
 		cmd: $'call LspDocHighlightClear({bnr}) | call LspDocHighlight({bnr}, "silent")'})
   endif
 
-  if opt.lspOptions.hoverOnCursorHold && lspserver.isHoverProvider
+  if opt.lspOptions.hoverOnCursorHold && !buf.BufLspServerGet(bnr, 'hover')->empty()
     # Setup autocmds for auto hover display
     acmds->add({bufnr: bnr,
 		event: 'CursorHold',
@@ -656,7 +674,7 @@ export def BufferInit(lspserverId: number, bnr: number): void
 
   AddBufListener(lspserver, bnr)
 
-  AddBufLocalAutocmds(lspserver, bnr)
+  AddBufLocalAutocmds(bnr)
 
   diag.BufferInit(lspserver, bnr)
 
@@ -665,11 +683,12 @@ export def BufferInit(lspserverId: number, bnr: number): void
   endif
 
   # Delay feature-specific initialization until all attached servers are ready,
-  # so feature-provider selection uses finalized capabilities.
+  # so feature-provider selection uses finalized capabilities, and have the
+  # document open, so the features are initialized once, after that.
   var allServersReady = true
   var lspservers: list<dict<any>> = buf.BufLspServersGet(bnr)
   for lspsrv in lspservers
-    if !lspsrv.ready
+    if !lspsrv.ready || !lspsrv.docVersions->has_key(bnr)
       allServersReady = false
       break
     endif
@@ -698,7 +717,7 @@ export def BufferInit(lspserverId: number, bnr: number): void
 
       var semanticServer = buf.BufLspServerGet(bnr, 'semanticTokens')
       if !semanticServer->empty() && serverId == semanticServer.id
-	semantichighlight.BufferInit(lspserver, bnr)
+	semantichighlight.BufferInit(lspsrv, bnr)
       endif
 
       var onTypeFormatServer = buf.BufLspServerGet(bnr, 'documentOnTypeFormatting')
@@ -706,6 +725,8 @@ export def BufferInit(lspserverId: number, bnr: number): void
 	ontypeformat.BufferInit(lspsrv, bnr)
       endif
     endfor
+
+    AddBufFeatureAutocmds(bnr)
 
     if exists('#User#LspAttached')
       if LspAttached(bnr)

@@ -6705,16 +6705,23 @@ def InsertAtStartEdit(text: string): dict<any>
 enddef
 
 # Returns a running and ready language server with the capabilities "caps".
-# It replies to a request with the reply for its method in "replies", and
-# with none (as when the request times out) to the other requests.  The
-# notifications and the requests sent to the server are added to "messages".
-def MakeSaveServer(caps: dict<any>, replies: dict<dict<any>>,
-		   messages: list<dict<any>>): dict<any>
+# The notifications sent to the server are added to "messages".
+def MakeCapsServer(caps: dict<any>, messages: list<dict<any>>): dict<any>
   var lspserver = MakeTestLspServer(messages)
   lspserver.caps = caps
   capabilities.ProcessServerCaps(lspserver, caps)
   lspserver.running = true
   lspserver.ready = true
+  return lspserver
+enddef
+
+# Returns a running and ready language server with the capabilities "caps".
+# It replies to a request with the reply for its method in "replies", and
+# with none (as when the request times out) to the other requests.  The
+# notifications and the requests sent to the server are added to "messages".
+def MakeSaveServer(caps: dict<any>, replies: dict<dict<any>>,
+		   messages: list<dict<any>>): dict<any>
+  var lspserver = MakeCapsServer(caps, messages)
   lspserver.rpc = (method: string, params: any): dict<any> => {
     messages->add({method: method, params: params->deepcopy()})
     return replies->get(method, {})->deepcopy()
@@ -7166,6 +7173,137 @@ def g:Test_SignatureHelp_EchoOffsetLabels()
     g:LspOptionsSet({echoSignature: false})
     hlset(savedHl)
     :%bw!
+  endtry
+enddef
+
+# Returns the commands of the autocmds for the features of buffer "bnr" that
+# use one of its language servers, by event.
+def BufFeatureAutocmds(bnr: number): dict<list<string>>
+  var acmds: dict<list<string>> = {}
+  for event in ['CursorMoved', 'CursorHold', 'BufLeave']
+    acmds[event] = autocmd_get({group: 'LSPBufferAutocmds', bufnr: bnr,
+				event: event})->mapnew((_, acmd) => acmd.cmd)
+  endfor
+  return acmds
+enddef
+
+# Returns what BufFeatureAutocmds() returns for buffer "bnr" when it has the
+# autocmds for both the automatic highlight and the hover on CursorHold.
+def HighlightAndHoverAutocmds(bnr: number): dict<list<string>>
+  var hoverStop = $'LspHoverAutoStop({bnr})'
+  return {
+    CursorMoved: [
+      $'call LspDocHighlightClear({bnr}) | call LspDocHighlight({bnr}, "silent")',
+      hoverStop
+    ],
+    CursorHold: [$'LspHoverAutoSchedule({bnr})'],
+    BufLeave: [hoverStop]
+  }
+enddef
+
+# Test that the autocmds for the features that use one of the language
+# servers of a buffer are added once, when all the servers are ready and have
+# the document open, however many servers provide the features.  The second
+# server is ready either when it is attached to the buffer or only later.
+def g:Test_BufFeatureAutocmds_AddedOnce()
+  g:LspOptionsSet({autoHighlight: true, hoverOnCursorHold: true})
+  var caps = {textDocumentSync: {openClose: true, change: 1},
+	      documentHighlightProvider: true, hoverProvider: true}
+  try
+    for readyWhenAttached in [true, false]
+      var srv1 = MakeCapsServer(caps, [])
+      var srv2 = MakeCapsServer(caps, [])
+      srv2.ready = readyWhenAttached
+      :silent edit XBufFeatureAutocmds.txt
+      var bnr = bufnr()
+      buf.BufLspServerSet(bnr, srv1)
+      buf.BufLspServerSet(bnr, srv2)
+      lsp.BufferInit(srv1.id, bnr)
+      assert_equal({CursorMoved: [], CursorHold: [], BufLeave: []},
+		   BufFeatureAutocmds(bnr), readyWhenAttached)
+      srv2.ready = true
+      lsp.BufferInit(srv2.id, bnr)
+      assert_equal(HighlightAndHoverAutocmds(bnr), BufFeatureAutocmds(bnr),
+		   readyWhenAttached)
+      lsp.RemoveFile(bnr)
+      :%bw!
+    endfor
+  finally
+    g:LspOptionsSet({autoHighlight: false, hoverOnCursorHold: false})
+  endtry
+enddef
+
+# Test that the semantic highlighting of a buffer is initialized for the
+# language server that provides it, when another server is the last to get
+# ready.
+def g:Test_SemanticHighlight_InitForItsServer()
+  g:LspOptionsSet({semanticHighlight: true})
+  try
+    var sync = {textDocumentSync: {openClose: true, change: 1}}
+    var srv1 = MakeCapsServer(sync->extendnew({semanticTokensProvider: {
+      legend: {tokenTypes: [], tokenModifiers: []}, full: true}}), [])
+    var srv2 = MakeCapsServer(sync, [])
+    srv2.ready = false
+    :silent edit XSemanticInit.txt
+    var bnr = bufnr()
+    buf.BufLspServerSet(bnr, srv1)
+    buf.BufLspServerSet(bnr, srv2)
+    lsp.BufferInit(srv1.id, bnr)
+    srv2.ready = true
+    lsp.BufferInit(srv2.id, bnr)
+    assert_equal([$'LspUpdateSemanticHighlight({bnr})'],
+		 autocmd_get({group: 'LSPBufferAutocmds', bufnr: bnr,
+			      event: 'TextChanged'})->mapnew((_, a) => a.cmd))
+    lsp.RemoveFile(bnr)
+  finally
+    g:LspOptionsSet({semanticHighlight: false})
+    :%bw!
+  endtry
+enddef
+
+# Test that initializing the inlay hints of a buffer again, as when it is
+# attached to the language servers again, doesn't add the autocmds again.
+def g:Test_InlayHints_BufferInitTwice()
+  g:LspOptionsSet({showInlayHints: true})
+  try
+    var srv = MakeCapsServer({inlayHintProvider: true}, [])
+    srv.syncInit = true
+    :silent edit XInlayHintsInitTwice.txt
+    var bnr = bufnr()
+    inlayhints.BufferInit(srv, bnr)
+    inlayhints.BufferInit(srv, bnr)
+    # autocmd_get() names the BufReadPost event BufRead
+    assert_equal(['BufLeave', 'BufRead', 'CursorHold', 'TextChanged'],
+		 autocmd_get({group: 'LspInlayHints', bufnr: bnr})
+		   ->mapnew((_, a) => a.event)->sort())
+    assert_equal(1, autocmd_get({group: 'LspAttached', bufnr: bnr})->len())
+    autocmd_delete([{group: 'LspInlayHints', bufnr: bnr},
+		    {group: 'LspAttached', bufnr: bnr}])
+  finally
+    g:LspOptionsSet({showInlayHints: false})
+    :%bw!
+  endtry
+enddef
+
+# Test that the autocmds for a feature are not added when the language server
+# that provides it has the feature disabled.
+def g:Test_BufFeatureAutocmds_FeatureDisabled()
+  g:LspOptionsSet({autoHighlight: true, hoverOnCursorHold: true})
+  try
+    var srv = MakeCapsServer({textDocumentSync: {openClose: true, change: 1},
+			      documentHighlightProvider: true,
+			      hoverProvider: true}, [])
+    srv.features = {documentHighlight: false}
+    var bnr = SaveTestEdit('XBufFeatureDisabled.txt', [], [srv], [])
+    assert_equal({CursorMoved: [$'LspHoverAutoStop({bnr})'],
+		  CursorHold: [$'LspHoverAutoSchedule({bnr})'],
+		  BufLeave: [$'LspHoverAutoStop({bnr})']},
+		 BufFeatureAutocmds(bnr))
+    lsp.RemoveFile(bnr)
+  finally
+    g:LspOptionsSet({autoHighlight: false, hoverOnCursorHold: false})
+    :%bw!
+    delete('XBufFeatureDisabled.txt')
   endtry
 enddef
 
