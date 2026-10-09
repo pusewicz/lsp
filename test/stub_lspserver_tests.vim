@@ -643,6 +643,257 @@ def g:Test_Hover_NoServerFallbackOnlyWhenNotSilent()
   :%bw!
 enddef
 
+# Returns a running and ready test language server, attached to the current
+# buffer, that sends the "replies" to the asynchronous requests, which Vim
+# numbers from 1.  The channel callbacks only get the replies while Vim
+# waits, e.g. in g:WaitForAssert().
+def MakeAsyncReplyingLspServer(replies: list<any>,
+			       notifications: list<dict<any>> = []): dict<any>
+  var lspserver = MakeTestLspServer(notifications)
+  lspserver.running = true
+  lspserver.ready = true
+  var id = 0
+  lspserver.job = StartStubServerJob(replies->mapnew((_, result) => {
+    id += 1
+    return {jsonrpc: '2.0', id: id, result: result}
+  }))
+  buf.BufLspServerSet(bufnr(), lspserver)
+  return lspserver
+enddef
+
+# Stop the test language server "lspserver" made by
+# MakeAsyncReplyingLspServer() for buffer "bnr".
+def StopAsyncReplyingLspServer(lspserver: dict<any>, bnr: number)
+  job_stop(lspserver.job)
+  buf.BufLspServerRemove(bnr, lspserver)
+enddef
+
+# Test that the reply to a goto definition request jumps to the definition
+# when it arrives, unless the cursor moved before it did.
+def g:Test_GotoDefinition_DropsReplyAfterCursorMoved()
+  silent! edit XGotoDefinitionAsync.txt
+  setline(1, ['use def', 'def'])
+  var bnr = bufnr()
+  var pos = {line: 1, character: 1}
+  var location = {uri: util.LspBufnrToUri(bnr), range: {start: pos, end: pos}}
+  g:LSPTest = false
+  try
+    for moveCursor in [false, true]
+      var lspserver = MakeAsyncReplyingLspServer([location])
+      lspserver.isDefinitionProvider = true
+      cursor(1, 5)
+      lspserver.gotoDefinition(false, '', 0)
+      assert_equal([1, 5], [line('.'), col('.')])
+      if moveCursor
+	cursor(1, 6)
+      endif
+      g:WaitForAssert(() => assert_equal({}, lspserver.supersedableRequests))
+      assert_equal(moveCursor ? [1, 6] : [2, 2], [line('.'), col('.')],
+		   $'moveCursor: {moveCursor}')
+      StopAsyncReplyingLspServer(lspserver, bnr)
+    endfor
+  finally
+    g:LSPTest = true
+    :%bw!
+  endtry
+enddef
+
+# Test that ":LspFormat" applies the edits when the reply arrives, unless the
+# buffer was changed before it did.
+def g:Test_LspFormat_DropsReplyAfterChange()
+  silent! edit XLspFormatAsync.txt
+  var bnr = bufnr()
+  g:LSPTest = false
+  try
+    for change in [false, true]
+      setline(1, ['int  x;'])
+      var lspserver = MakeAsyncReplyingLspServer([[MakeTextEdit(0, 3, 0, 4, '')]])
+      lspserver.isDocumentFormattingProvider = true
+      :LspFormat
+      assert_equal(['int  x;'], getline(1, '$'))
+      if change
+	append('$', 'int y;')
+      endif
+      g:WaitForAssert(() => assert_equal({}, lspserver.supersedableRequests))
+      assert_equal(change ? ['int  x;', 'int y;'] : ['int x;'],
+		   getline(1, '$'), $'change: {change}')
+      StopAsyncReplyingLspServer(lspserver, bnr)
+      :%d _
+    endfor
+  finally
+    g:LSPTest = true
+    :%bw!
+  endtry
+enddef
+
+# Test that ":LspFormat" in a BufWritePre autocmd formats the buffer before it
+# is written.
+def g:Test_LspFormat_InBufWritePreFormatsBeforeWriting()
+  silent! edit XLspFormatOnWrite.txt
+  setline(1, ['int  x;'])
+  var bnr = bufnr()
+  var lspserver = MakeTestLspServer([])
+  lspserver.running = true
+  lspserver.ready = true
+  lspserver.isDocumentFormattingProvider = true
+  # A synchronous request has an ID of its own
+  lspserver.job = StartStubServerJob([{jsonrpc: '2.0',
+    id: lspserver.nextSyncRpcId, result: [MakeTextEdit(0, 3, 0, 4, '')]}])
+  buf.BufLspServerSet(bnr, lspserver)
+  augroup TestLspFormatOnWrite
+    autocmd BufWritePre <buffer> LspFormat
+  augroup END
+  g:LSPTest = false
+  try
+    :write
+    assert_equal(['int x;'], readfile('XLspFormatOnWrite.txt'))
+  finally
+    g:LSPTest = true
+    autocmd! TestLspFormatOnWrite
+    augroup! TestLspFormatOnWrite
+    StopAsyncReplyingLspServer(lspserver, bnr)
+    :%bw!
+    delete('XLspFormatOnWrite.txt')
+  endtry
+enddef
+
+# Test that ":LspFormat!" formats the buffer before the command that follows
+# it runs.
+def g:Test_LspFormatBang_WaitsForReply()
+  silent! edit XLspFormatBang.txt
+  setline(1, ['int  x;'])
+  var bnr = bufnr()
+  var lspserver = MakeTestLspServer([])
+  lspserver.running = true
+  lspserver.ready = true
+  lspserver.isDocumentFormattingProvider = true
+  # A synchronous request has an ID of its own
+  lspserver.job = StartStubServerJob([{jsonrpc: '2.0',
+    id: lspserver.nextSyncRpcId, result: [MakeTextEdit(0, 3, 0, 4, '')]}])
+  buf.BufLspServerSet(bnr, lspserver)
+  g:LSPTest = false
+  try
+    LspFormat! | write
+    assert_equal(['int x;'], readfile('XLspFormatBang.txt'))
+  finally
+    g:LSPTest = true
+    StopAsyncReplyingLspServer(lspserver, bnr)
+    :%bw!
+    delete('XLspFormatBang.txt')
+  endtry
+enddef
+
+# Test that the pulled diagnostics are stored when the reply arrives, and that
+# the request is sent again when the reply says that the content was modified.
+def g:Test_PullDiagnostics_Async()
+  DiagInitOnce()
+  silent! edit XPullDiagnosticsAsync.txt
+  setline(1, ['one', 'two'])
+  var bnr = bufnr()
+  var lspserver = MakeAsyncReplyingLspServer([])
+  lspserver.features = {diagnostics: true}
+  lspserver.isDiagnosticsProvider = true
+  var queued: list<number> = []
+  lspserver.queuePullDiagnostics = (queuedBnr: number) => {
+    queued->add(queuedBnr)
+  }
+  var DiagMessages = () => diag.GetDiagsForBuf(bnr)->mapnew((_, d) => d.message)
+  g:LSPTest = false
+  try
+    job_stop(lspserver.job)
+    lspserver.job = StartStubServerJob([{jsonrpc: '2.0', id: 1,
+      error: {code: -32801, message: 'content modified'}}])
+    lspserver.pullDiagnostics(bnr)
+    g:WaitForAssert(() => assert_equal([bnr], queued))
+
+    job_stop(lspserver.job)
+    lspserver.job = StartStubServerJob([{jsonrpc: '2.0', id: 1,
+      result: {kind: 'full', resultId: 'r1', items: [MakeLineDiag(1, 'pulled')]}}])
+    lspserver.pullDiagnostics(bnr)
+    assert_equal([], DiagMessages())
+    g:WaitForAssert(() => assert_equal(['pulled'], DiagMessages()))
+    assert_equal('r1', lspserver.diagnosticResultIds[bnr])
+    assert_equal([bnr], queued)
+  finally
+    g:LSPTest = true
+    diag.DiagRemoveFile(bnr)
+    StopAsyncReplyingLspServer(lspserver, bnr)
+    :%bw!
+  endtry
+enddef
+
+# Test that closing a document cancels the pending pull diagnostics request
+# for it, and that its reply is ignored.
+def g:Test_PullDiagnostics_CancelledWhenDocumentClosed()
+  DiagInitOnce()
+  silent! edit XPullDiagnosticsClosed.txt
+  var bnr = bufnr()
+  var notifications: list<dict<any>> = []
+  var lspserver = MakeAsyncReplyingLspServer([
+    {kind: 'full', items: [MakeLineDiag(0, 'stale')]}, v:null], notifications)
+  lspserver.features = {diagnostics: true}
+  lspserver.isDiagnosticsProvider = true
+  g:LSPTest = false
+  try
+    lspserver.pullDiagnostics(bnr)
+    lspserver.textdocDidClose(bnr)
+    assert_equal([{method: '$/cancelRequest', params: {id: 1}}], notifications)
+    assert_equal({}, lspserver.supersedableRequests)
+
+    # The replies arrive in order, so once the second one has, the first one
+    # was ignored
+    var replied = false
+    lspserver.rpc_a('test/barrier', {}, (_, _, _) => {
+      replied = true
+    })
+    g:WaitForAssert(() => assert_true(replied))
+    assert_equal([], diag.GetDiagsForBuf(bnr))
+    assert_false(lspserver.diagnosticResultIds->has_key(bnr))
+  finally
+    g:LSPTest = true
+    StopAsyncReplyingLspServer(lspserver, bnr)
+    :%bw!
+  endtry
+enddef
+
+# Returns a type hierarchy item for type "name" at line "lnum" (0-based) in
+# the document "uri".
+def MakeTypeHierarchyItem(name: string, uri: string, lnum: number): dict<any>
+  var range = {start: {line: lnum, character: 6},
+	       end: {line: lnum, character: 7}}
+  return {name: name, kind: 5, uri: uri, range: range,
+	  selectionRange: range->deepcopy()}
+enddef
+
+# Test that the type hierarchy is retrieved with a request for each type in
+# it, and displayed once all the replies arrived.
+def g:Test_TypeHierarchy_RetrievesAllLevels()
+  silent! edit XTypeHierarchyAsync.txt
+  setline(1, ['class A', 'class B', 'class C'])
+  var bnr = bufnr()
+  var uri = util.LspBufnrToUri(bnr)
+  var lspserver = MakeAsyncReplyingLspServer([
+    [MakeTypeHierarchyItem('C', uri, 2)],
+    [MakeTypeHierarchyItem('B', uri, 1)],
+    [MakeTypeHierarchyItem('A', uri, 0)],
+    []])
+  lspserver.isTypeHierarchyProvider = true
+  g:LSPTest = false
+  try
+    cursor(3, 7)
+    lspserver.typeHierarchy(1)
+    g:WaitForAssert(() => assert_notequal(-1,
+      lspserver.typeHierPopup->winbufnr()))
+    assert_equal(['▾ C (C)', '| ▾ B (C)', '| |   A (C)'],
+		 lspserver.typeHierPopup->winbufnr()->getbufline(1, '$'))
+  finally
+    g:LSPTest = true
+    popup_clear()
+    StopAsyncReplyingLspServer(lspserver, bnr)
+    :%bw!
+  endtry
+enddef
+
 # Returns the last message in the message history.
 def LastMessage(): string
   return execute('messages')->split("\n")[-1]
@@ -727,7 +978,7 @@ def g:Test_DocHighlight_CancelsSupersededRequestForSameBuffer()
   var lspserver = MakeTestLspServer(notifications)
   lspserver.isDocumentHighlightProvider = true
   var lastId = 0
-  lspserver.rpc_a = (_, _, _) => {
+  lspserver.rpc_a = (_, _, _, _: dict<any> = {}) => {
     lastId += 1
     return lastId
   }
@@ -752,7 +1003,7 @@ def g:Test_GetCompletion_DoesNotCancelAnsweredRequest()
   lspserver.isCompletionProvider = true
   lspserver.completionLazyDoc = false
   var lastId = 0
-  lspserver.rpc_a = (_, _, Cb) => {
+  lspserver.rpc_a = (_, _, Cb, _: dict<any> = {}) => {
     lastId += 1
     Cb(lspserver, [], {})
     return lastId
@@ -777,7 +1028,7 @@ def g:Test_InlayHintsShow_RangeEndsAtEndOfBuffer()
   lspserver.isInlayHintProvider = true
   lspserver.isClangdInlayHintsProvider = false
   var ranges: list<dict<any>> = []
-  lspserver.rpc_a = (_, params, _) => {
+  lspserver.rpc_a = (_, params, _, _: dict<any> = {}) => {
     ranges->add(params.range->deepcopy())
     return 0
   }
@@ -886,9 +1137,11 @@ def PullDiagnosticsWithError(error: dict<any>): list<number>
   }
   lspserver.job = StartStubServerJob(
     [{jsonrpc: '2.0', id: lspserver.nextSyncRpcId, error: error}])
+  buf.BufLspServerSet(bufnr(), lspserver)
   try
     lspserver.pullDiagnostics(bufnr())
   finally
+    buf.BufLspServerRemove(bufnr(), lspserver)
     job_stop(lspserver.job)
   endtry
   return queued
@@ -1941,7 +2194,7 @@ def g:Test_CodeActionContext_MultiLineDiagnostic()
   var lspserver = SeedMultiLineDiags()
   lspserver.isCodeActionProvider = true
   var sentDiags: list<list<string>> = []
-  lspserver.rpc_a = (_, params, _) => {
+  lspserver.rpc_a = (_, params, _, _: dict<any> = {}) => {
     sentDiags->add(DiagMsgs(params.context.diagnostics))
     return 1
   }
@@ -2289,17 +2542,19 @@ def g:Test_Resolve_RangePastEndOfLine()
     lspserver.isCodeLensResolveProvider = true
     lspserver.isDocumentLinkResolveProvider = true
     var requests: list<dict<any>> = []
-    lspserver.rpc = (method: string, params: any): dict<any> => {
+    lspserver.rpc_a = (method: string, params: any, Cbfunc: func, _ = {}) => {
       requests->add({method: method, params: params->deepcopy()})
-      return {result: params->deepcopy()}
+      Cbfunc(lspserver, params->deepcopy(), {})
+      return requests->len()
     }
 
     # The range as the language server sent it, decoded
     var range = {start: {line: 0, character: aIdx[posEncoding]},
 		 end: {line: 0, character: 40}}
     lspserver.decodeRange(bufnr(), range)
-    lspserver.resolveCodeLens(bufnr(), {range: range->deepcopy()})
-    lspserver.resolveDocumentLink(bufnr(), {range: range->deepcopy()})
+    lspserver.resolveCodeLens(bufnr(), {range: range->deepcopy()}, (_) => 0)
+    lspserver.resolveDocumentLink(bufnr(), {range: range->deepcopy()},
+				  (_) => 0)
 
     var msg = $'UTF-{posEncoding}'
     assert_equal(['codeLens/resolve', 'documentLink/resolve'],
@@ -2933,7 +3188,7 @@ def g:Test_RemoveFile_CancelsPendingBufferRequests()
   srv.running = true
   srv.ready = true
   var lastId = 0
-  srv.rpc_a = (_, _, _) => {
+  srv.rpc_a = (_, _, _, _: dict<any> = {}) => {
     lastId += 1
     return lastId
   }
@@ -4615,10 +4870,12 @@ def PatternDecoys(): list<list<string>>
   ]
 enddef
 
-# Returns "result" in a reply to a request.  Stands in for lspserver.rpc().
-def StubRpcReply(result: any, method: string, params: any,
-		 opts: dict<any> = {}): dict<any>
-  return {result: result->deepcopy()}
+# Passes "result" in a reply to a request to "Cbfunc" and returns the request
+# id.  Stands in for lspserver.rpc_a() of "lspserver".
+def StubAsyncRpcReply(lspserver: dict<any>, result: any, method: string,
+		      params: any, Cbfunc: func, opts: dict<any> = {}): number
+  Cbfunc(lspserver, result->deepcopy(), {})
+  return 1
 enddef
 
 # Returns a running and ready language server that replies "result" to every
@@ -4627,7 +4884,7 @@ def MakeReplyingLspServer(result: any): dict<any>
   var lspserver = MakeTestLspServer([])
   lspserver.running = true
   lspserver.ready = true
-  lspserver.rpc = function(StubRpcReply, [result])
+  lspserver.rpc_a = function(StubAsyncRpcReply, [lspserver, result])
   return lspserver
 enddef
 
@@ -5423,9 +5680,8 @@ def g:Test_RenameSymbol_DecodesEditsAfterPrecedingChanges()
   var fname = 'XRenameUtf16Created.txt'
   var lspserver = MakeUtf16LspServer()
   lspserver.isRenameProvider = true
-  lspserver.rpc = (_: string, _: any): dict<any> => {
-    return {result: Utf16CreateAndEdit(fname)}
-  }
+  lspserver.rpc_a = function(StubAsyncRpcReply,
+			     [lspserver, Utf16CreateAndEdit(fname)])
   try
     silent! edit XRenameUtf16Source.txt
     lspserver.renameSymbol('new')
@@ -5445,13 +5701,17 @@ def g:Test_CodeAction_DecodesEditsAfterPrecedingChanges()
   var lspserver = MakeUtf16LspServer()
   lspserver.isCodeActionProvider = true
   lspserver.isCodeActionResolveProvider = true
-  lspserver.rpc = (method: string, _: any): dict<any> => {
+  lspserver.rpc_a = (method: string, _: any, Cbfunc: func, _ = {}) => {
     var resolved = action->extendnew({edit: Utf16CreateAndEdit(fname)})
-    return {result: method == 'codeAction/resolve' ? resolved : [resolved]}
+    Cbfunc(lspserver, method == 'codeAction/resolve' ? resolved : [resolved],
+	   {})
+    return 1
   }
   try
     silent! edit XCodeActionUtf16Source.txt
-    lspserver.codeAction(@%, 1, 1, '1')
+    lspserver.codeActionAsync(@%, 1, 1, '1', (srv, actions, query, _) => {
+      codeaction.ApplyCodeAction(srv, actions, query)
+    })
     assert_equal(['😀!ab'], getbufline(fname, 1, '$'))
     exe $'bwipe! {fname}'
     delete(fname)
@@ -5492,7 +5752,7 @@ def g:Test_GetCompletion_CancelsSupersededRequest()
   lspserver.isCompletionProvider = true
   lspserver.completionLazyDoc = false
   var replyCbs: list<func> = []
-  lspserver.rpc_a = (_, _, Cb) => {
+  lspserver.rpc_a = (_, _, Cb, _: dict<any> = {}) => {
     replyCbs->add(Cb)
     return replyCbs->len()
   }
@@ -5531,7 +5791,7 @@ def g:Test_OmniFunc_CancelsAbandonedRequest()
   lspserver.completionLazyDoc = false
   lspserver.completionTriggerChars = []
   var replyCbs: list<func> = []
-  lspserver.rpc_a = (_, _, Cb) => {
+  lspserver.rpc_a = (_, _, Cb, _: dict<any> = {}) => {
     replyCbs->add(Cb)
     return replyCbs->len()
   }
@@ -5570,6 +5830,57 @@ def g:Test_OmniFunc_CancelsAbandonedRequest()
   endtry
 enddef
 
+# Test that ":LspCodeLens" resolves the code lens items without a command,
+# leaves out of the menu those that cannot be resolved, and runs the command
+# of the selected item.
+def g:Test_LspCodeLens_ResolvesItems()
+  silent! edit XCodeLens.txt
+  setline(1, ['one', 'two', 'three'])
+  var LineRange = (lnum: number): dict<any> => ({
+    start: {line: lnum, character: 0}, end: {line: lnum, character: 1}})
+  var lenses = [
+    {range: LineRange(0), data: 'unresolvable'},
+    {range: LineRange(1), command: {title: 'Run', command: 'run'}},
+    {range: LineRange(2), data: 'resolvable'}
+  ]
+  var resolved = {range: LineRange(2),
+		  command: {title: 'Debug', command: 'debug'}}
+  var lspserver = MakeTestLspServer([])
+  lspserver.running = true
+  lspserver.ready = true
+  lspserver.isCodeLensProvider = true
+  lspserver.isCodeLensResolveProvider = true
+  var resolveRequests: list<string> = []
+  lspserver.rpc_a = (method: string, params: any, Cbfunc: func, _ = {}) => {
+    var result: any = null
+    if method == 'textDocument/codeLens'
+      result = lenses->deepcopy()
+    elseif method == 'codeLens/resolve'
+      resolveRequests->add(params.data)
+      if params.data == 'resolvable'
+	result = resolved->deepcopy()
+      endif
+    endif
+    Cbfunc(lspserver, result, {})
+    return 1
+  }
+  var execCmds: list<string> = []
+  lspserver.executeCommand = (cmd: dict<any>) => {
+    execCmds->add(cmd.command)
+  }
+  buf.BufLspServerSet(bufnr(), lspserver)
+
+  try
+    # Select the second item in the menu, which is the second resolved item
+    feedkeys(":LspCodeLens\<CR>2\<CR>", 'xt')
+    assert_equal(['unresolvable', 'resolvable'], resolveRequests)
+    assert_equal(['debug'], execCmds)
+  finally
+    buf.BufLspServerRemove(bufnr(), lspserver)
+    :%bw!
+  endtry
+enddef
+
 # Returns a stub language server that replies to "textDocument/documentLink"
 # with "links" and to "documentLink/resolve" with "resolved".  The server is a
 # resolve provider only if "resolved" is not empty.  The requests sent to the
@@ -5581,10 +5892,11 @@ def MakeDocumentLinkServer(links: list<dict<any>>, resolved: dict<any>,
   lspserver.ready = true
   lspserver.isDocumentLinkProvider = true
   lspserver.isDocumentLinkResolveProvider = !resolved->empty()
-  lspserver.rpc = (method: string, params: any): dict<any> => {
+  lspserver.rpc_a = (method: string, params: any, Cbfunc: func, _ = {}) => {
     requests->add({method: method, params: params->deepcopy()})
     var result: any = method == 'documentLink/resolve' ? resolved : links
-    return {result: result->deepcopy()}
+    Cbfunc(lspserver, result->deepcopy(), {})
+    return requests->len()
   }
   return lspserver
 enddef
@@ -5699,15 +6011,12 @@ def MakeScratchServer(): dict<any>
   var range = {start: {line: 0, character: 5}, end: {line: 0, character: 17}}
   var item = {name: 'xScratchFunc', kind: 12, range: range,
 	      selectionRange: range, uri: util.LspFileToUri('XScratchSrc.c')}
-  lspserver.rpc_a = (method: string, params: any, Cbfunc: func): number => {
-    Cbfunc(lspserver, [item->deepcopy()], {})
+  lspserver.rpc_a = (method: string, params: any, Cbfunc: func, _ = {}) => {
+    var result: list<dict<any>> = method == 'callHierarchy/incomingCalls'
+      ? [{from: item->deepcopy(), fromRanges: []}]
+      : [item->deepcopy()]
+    Cbfunc(lspserver, result, {})
     return 1
-  }
-  lspserver.rpc = (method: string, params: any): dict<any> => {
-    if method == 'textDocument/prepareCallHierarchy'
-      return {result: [item->deepcopy()]}
-    endif
-    return {result: [{from: item->deepcopy(), fromRanges: []}]}
   }
   return lspserver
 enddef
