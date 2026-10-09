@@ -2202,7 +2202,8 @@ def g:Test_LspShowSignature_OffsetLabelHighlight()
 
   var lspserver = {
     id: 5005,
-    signaturePopup: -1
+    signaturePopup: -1,
+    posEncoding: 16
   }
   # Use array-format label for offset-based highlighting
   var sighelp = {
@@ -2210,8 +2211,8 @@ def g:Test_LspShowSignature_OffsetLabelHighlight()
       {
         label: 'Fn(int x, double y)',
         parameters: [
-          {label: [0, 5]},  # 'Fn(in'
-          {label: [8, 14]}  # 'double'
+          {label: [3, 8]},  # 'int x'
+          {label: [10, 18]}  # 'double y'
         ],
         activeParameter: 1
       }
@@ -2225,10 +2226,11 @@ def g:Test_LspShowSignature_OffsetLabelHighlight()
   var popups = popup_list()
   var bnr = winbufnr(popups[0])
 
-  # Verify text property exists for second parameter
+  # Verify the text property of the second parameter
   var props = prop_list(1, {bufnr: bnr})
   assert_equal(1, props->len())
   assert_equal('signature', props[0].type)
+  assert_equal([11, 8], [props[0].col, props[0].length])
 
   popup_close(popups[0])
   :%bw!
