@@ -124,18 +124,29 @@ def LspShowSignatureCb(timer: number)
   endif
 enddef
 
-# Debounce signature requests so rapid insert-mode events are coalesced.
+# Debounce signature requests so rapid insert-mode events are coalesced.  A
+# content change doesn't replace a pending request for the same buffer, which
+# keeps its trigger kind and character, as typing a trigger character also
+# changes the text (VS Code merges its trigger contexts the same way).
 def LspShowSignatureDelayed(triggerKind: number, triggerChar: string)
+  var kind = triggerKind
+  var char = triggerChar
+
   # Cancel old timer if still running.
   if signature_timer != -1
     call timer_stop(signature_timer)
+    if kind == SIG_TRIGGER_KIND_CONTENT_CHANGE
+	&& signature_timer_bufnr == bufnr()
+      kind = signature_timer_trigger_kind
+      char = signature_timer_trigger_char
+    endif
   endif
 
   # Delay signature requests so rapid insert-mode events are coalesced.
   signature_timer_bufnr = bufnr()
-  signature_timer_trigger_kind = triggerKind
-  signature_timer_trigger_char = triggerChar
-  signature_timer = timer_start(GetSignatureTriggerDelay(triggerKind), function('LspShowSignatureCb'))
+  signature_timer_trigger_kind = kind
+  signature_timer_trigger_char = char
+  signature_timer = timer_start(GetSignatureTriggerDelay(kind), function('LspShowSignatureCb'))
 enddef
 
 # -----------------------------------------------------------------------------
@@ -856,14 +867,13 @@ def AddSignatureAutocmd(bnr: number, event: string, cmd: string)
 		cmd: cmd}])
 enddef
 
-# Configure trigger-character detection in buffer "bnr" using the KeyInputPre
-# autocmd.
-def SetupSignatureTriggerChars(lspserver: dict<any>, bnr: number,
-                               autoTriggerChars: list<string>)
+# Configure trigger and retrigger character detection in buffer "bnr" using
+# the KeyInputPre autocmd.
+def SetupSignatureTriggerChars(bnr: number, autoTriggerChars: list<string>)
   if !autoTriggerChars->empty()
     # detect the trigger chars and show the signature
     var cmd =<< trim eval END
-      if index({lspserver.caps.signatureHelpProvider.triggerCharacters}, v:char) != -1
+      if index({autoTriggerChars}, v:char) != -1
         call g:LspHandleSignatureTriggerChar(v:char)
       endif
     END
@@ -976,7 +986,7 @@ export def BufferInit(lspserver: dict<any>, bnr: number)
   endif
 
   var autoTriggerChars = GetAutoSignatureTriggerCharacters(lspserver)
-  SetupSignatureTriggerChars(lspserver, bnr, autoTriggerChars)
+  SetupSignatureTriggerChars(bnr, autoTriggerChars)
   AddSignatureAutocmd(bnr, 'InsertEnter', 'OnInsertEnter()')
 enddef
 
