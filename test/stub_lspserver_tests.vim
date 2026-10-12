@@ -595,6 +595,63 @@ def g:Test_ShowHoverInfo_ContentModifiedIsNotCached()
   :%bw!
 enddef
 
+# Test that the error that the language server replies to a request is
+# reported once, and not at all for a silent request, as the automatic hover
+# and highlight are.
+def g:Test_ErrorReply_ReportedOnce()
+  silent! edit XErrorReplyReportedOnce.txt
+  var fname = expand('%:p')
+  var bnr = bufnr()
+  var lspserver = MakeTestLspServer([])
+  lspserver.isHoverProvider = true
+  lspserver.isDocumentHighlightProvider = true
+  lspserver.isSignatureHelpProvider = true
+  lspserver.isCompletionProvider = true
+  lspserver.isDocumentSymbolProvider = true
+  # [send the request, its method, whether the error is reported]
+  var requests: list<list<any>> = [
+    [() => lspserver.initServer(bnr), 'initialize', true],
+    [() => lspserver.hover(''), 'textDocument/hover', true],
+    [() => lspserver.hover('silent'), 'textDocument/hover', false],
+    [() => lspserver.docHighlight(bnr, ''), 'textDocument/documentHighlight',
+     true],
+    [() => lspserver.docHighlight(bnr, 'silent'),
+     'textDocument/documentHighlight', false],
+    [() => lspserver.showSignature(), 'textDocument/signatureHelp', true],
+    [() => lspserver.getCompletion(1, ''), 'textDocument/completion', true],
+    [() => lspserver.getDocSymbols(fname, true),
+     'textDocument/documentSymbol', true],
+    [() => lspserver.getDocSymbols(fname, false),
+     'textDocument/documentSymbol', true]
+  ]
+  # Send the requests asynchronously, as outside the tests.
+  g:LSPTest = false
+  try
+    for [Request, method, reported] in requests
+      # Vim numbers the asynchronous requests on a new channel from 1.
+      lspserver.job = StartStubServerJob([{jsonrpc: '2.0', id: 1,
+	error: {code: -32603, message: 'failed'}}])
+      :messages clear
+      var noMessages: list<string> = execute('messages')->split("\n")
+      Request()
+      g:WaitForAssert(() => assert_equal({}, lspserver.supersedableRequests))
+      if reported
+	g:WaitForAssert(() => assert_notequal(noMessages,
+					      execute('messages')->split("\n")))
+	assert_equal(noMessages + [$'Error: request {method} failed (failed, error = InternalError)'],
+		     execute('messages')->split("\n"), method)
+      else
+	assert_equal(noMessages, execute('messages')->split("\n"), method)
+      endif
+      job_stop(lspserver.job)
+    endfor
+  finally
+    g:LSPTest = true
+    job_stop(lspserver.job)
+  endtry
+  :%bw!
+enddef
+
 # Test that, with 'hoverFallback' enabled, an empty hover result runs
 # 'keywordprg' only for a request that is not silent: the automatic hover on
 # CursorHold is silent and must not run it, while an explicit hover at the same

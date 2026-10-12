@@ -662,9 +662,8 @@ enddef
 # Result: DocumentSymbol[] | SymbolInformation[] | null
 export def DocSymbolOutline(lspserver: dict<any>, docSymbol: any,
                             docSymbolError: dict<any>, fname: string)
-  # Handle document symbol error
+  # AsyncRpcCb() reported the error
   if !docSymbolError->empty()
-    util.ErrMsg($'Document symbols failed: {docSymbolError.message}')
     return
   endif
 
@@ -1027,9 +1026,8 @@ enddef
 # Display the symbols in a popup window and jump to the selected symbol
 export def DocSymbolPopup(lspserver: dict<any>, docSymbol: any,
                           docSymbolError: dict<any>, fname: string)
-  # Handle document symbol error
+  # AsyncRpcCb() reported the error
   if !docSymbolError->empty()
-    util.ErrMsg($'Document symbols failed: {docSymbolError.message}')
     return
   endif
 

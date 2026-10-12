@@ -124,11 +124,10 @@ enddef
 
 # process the "initialize" method reply from the LSP server
 # Result: InitializeResult
-def ServerInitReply(lspserver: dict<any>, initResult: dict<any>,
+def ServerInitReply(lspserver: dict<any>, initResult: any,
                     initError: dict<any>): void
-  # Handle initialization error
+  # AsyncRpcCb() reported the error
   if !initError->empty()
-    util.ErrMsg($'LSP server initialization failed: {initError.message}')
     return
   endif
 
@@ -1639,7 +1638,7 @@ def ShowHoverInfo(lspserver: dict<any>, cmdmods: string): void
   AsyncRpcSupersede(lspserver, 'textDocument/hover', 'textDocument/hover',
 		    params, (_: dict<any>, reply, error) => {
     hover.HoverReply(lspserver, reply, error, cmdmods, reqctx)
-  })
+  }, {handleError: cmdmods !~ 'silent'})
 enddef
 
 # Request: "textDocument/references"
@@ -1716,11 +1715,8 @@ enddef
 def DocHighlightReply(lspserver: dict<any>, docHighlightReply: any,
                       docHighlightError: dict<any>, bnr: number,
                       cmdmods: string): void
-  # Handle document highlight error
+  # AsyncRpcCb() reported the error, unless the request is silent
   if !docHighlightError->empty()
-    if cmdmods !~ 'silent'
-      util.ErrMsg($'Document highlight failed: {docHighlightError.message}')
-    endif
     return
   endif
 
@@ -1776,7 +1772,7 @@ def DocHighlight(lspserver: dict<any>, bnr: number, cmdmods: string): void
   AsyncRpcSupersede(lspserver, $'textDocument/documentHighlight {bnr}',
 		    'textDocument/documentHighlight', params, (_: dict<any>, reply, error) => {
     DocHighlightReply(lspserver, reply, error, bnr, cmdmods)
-  })
+  }, {handleError: cmdmods !~ 'silent'})
 enddef
 
 # Request: "textDocument/documentSymbol"

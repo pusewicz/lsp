@@ -354,11 +354,8 @@ enddef
 export def HoverReply(lspserver: dict<any>, hoverResult: any,
                       hoverError: dict<any>, cmdmods: string = '',
                       reqctx: dict<any> = {}): void
-  # Handle hover error
+  # AsyncRpcCb() reported the error, unless the request is silent
   if !hoverError->empty()
-    if cmdmods !~ 'silent'
-      util.ErrMsg($'Hover failed: {hoverError.message}')
-    endif
     return
   endif
 
