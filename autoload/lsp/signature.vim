@@ -971,9 +971,8 @@ enddef
 export def SignatureHelp(lspserver: dict<any>, sighelp: any,
                          sighelpError: dict<any>,
                          reqctx: dict<number> = {}): void
-  # Handle signature help error
+  # AsyncRpcCb() reported the error
   if !sighelpError->empty()
-    util.ErrMsg($'Signature help failed: {sighelpError.message}')
     CloseSignaturePopup(lspserver)
     return
   endif
