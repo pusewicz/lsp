@@ -7324,6 +7324,87 @@ def g:Test_SignatureHelp_EchoOffsetLabels()
   endtry
 enddef
 
+# Type "keys", which enter Insert mode, and return the [trigger kind, trigger
+# character] of the signature help requests of the language server
+# "lspserver" for it, waiting for the first one.  feedkeys() stays in Insert
+# mode with the "!" flag, so a timer leaves it.
+def SigRequestsOnTyping(lspserver: dict<any>, keys: string): list<list<any>>
+  var requests: list<list<any>> = []
+  lspserver.showSignature = (kind: number, char: string) => {
+    requests->add([kind, char])
+  }
+  var tries = 0
+  timer_start(10, (timer) => {
+    tries += 1
+    if !requests->empty() || tries >= 500
+      timer_stop(timer)
+      feedkeys("\<Esc>", 't')
+    endif
+  }, {repeat: -1})
+  feedkeys(keys, 'xt!')
+  return requests
+enddef
+
+# Test for the trigger kind and character of the signature help requested
+# while typing: a typed trigger character, or a retrigger character while a
+# signature is shown, is sent as such, also when typing it changes the text,
+# and entering Insert mode requests the signature help as invoked.
+def g:Test_SignatureHelp_TriggerKinds()
+  signature.InitOnce()
+  g:LspOptionsSet({echoSignature: false, showSignatureDocs: false})
+  silent! edit XSignatureTriggerKinds.txt
+  set filetype=text
+  var bnr = bufnr()
+  var srv = MakeTestLspServer([])
+  srv.caps = {signatureHelpProvider: {triggerCharacters: ['(', ','],
+				      retriggerCharacters: [')']}}
+  srv.isSignatureHelpProvider = true
+  srv.running = true
+  srv.ready = true
+  buf.BufLspServerSet(bnr, srv)
+  signature.BufferInit(srv, bnr)
+  try
+    # [whether a signature is shown, typed keys, expected requests]
+    var cases = [
+      [false, 'a(', [[2, '(']]],
+      [false, 'a)', [[1, '']]],
+      [true, 'a,', [[2, ',']]],
+      [true, 'a)', [[2, ')']]]
+    ]
+    for [shown, keys, expected] in cases
+      setline(1, 'f(a')
+      cursor(1, 3)
+      if shown
+	signature.SignatureHelp(srv, MakeSigHelp('f(int a, int b)',
+						 ['int a', 'int b'], 0), {})
+      endif
+      assert_equal(expected, SigRequestsOnTyping(srv, keys),
+		   $'shown: {shown}, keys: {keys}')
+    endfor
+  finally
+    signature.BufferDeInit(bnr)
+    buf.BufLspServerRemove(bnr, srv)
+    :%bw!
+  endtry
+enddef
+
+# Test that the signature help of a buffer is initialized for a language
+# server that has retrigger characters but no trigger characters.
+def g:Test_SignatureHelp_OnlyRetriggerCharacters()
+  signature.InitOnce()
+  silent! edit XSignatureOnlyRetrigger.txt
+  var bnr = bufnr()
+  var srv = MakeTestLspServer([])
+  srv.caps = {signatureHelpProvider: {retriggerCharacters: [')']}}
+  srv.isSignatureHelpProvider = true
+  signature.BufferInit(srv, bnr)
+  assert_equal(['InsertEnter', 'KeyInputPre'],
+	       autocmd_get({group: 'LspSignatureHelp', pattern: $'<buffer={bnr}>'})
+		 ->mapnew((_, a) => a.event)->sort())
+  signature.BufferDeInit(bnr)
+  :%bw!
+enddef
+
 # Returns the commands of the autocmds for the features of buffer "bnr" that
 # use one of its language servers, by event.
 def BufFeatureAutocmds(bnr: number): dict<list<string>>
