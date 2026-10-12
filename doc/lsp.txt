@@ -2779,7 +2779,9 @@ by default, since it edits the buffer while you are typing.
 
 Only a trigger character that you type in Insert mode reformats the code, not
 one that is already before the cursor (for example, after "cw") and not a
-newline started with "o".
+newline started with "o".  A newline typed with a <CR> mapping reformats the
+code too, also when the mapping adds keys after the newline that insert
+nothing (as vim-eunuch's mapping does).
 
 						*lsp-format-on-save*
 If the |lsp-opt-formatOnSave| option is set to true, a buffer is formatted
