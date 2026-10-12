@@ -1903,6 +1903,63 @@ def g:Test_LspShowSignature()
   :%bw!
 enddef
 
+# Test for showing the signature automatically when Insert mode is entered in
+# the arguments of a call, also after leaving Insert mode closed it.
+def g:Test_LspShowSignature_InsertEnter()
+  g:LspOptionsSet({echoSignature: false, showSignatureDocs: false})
+
+  silent! edit XLspShowSignatureInsertEnter.c
+  var lines: list<string> =<< trim END
+    int MyFunc(int a, int b)
+    {
+      return 0;
+    }
+
+    void f2(void)
+    {
+      MyFunc(
+
+      );
+    }
+  END
+  setline(1, lines)
+  g:WaitForServerFileLoad(1)
+
+  # Enter Insert mode with "cmd" and return the lines of the signature popup
+  # shown then, or [] when none is shown in time.  feedkeys() stays in Insert
+  # mode with the "!" flag, so a timer leaves it.
+  var SigPopupOnInsert = (cmd: string): list<string> => {
+    var popupLines: list<string> = []
+    var tries = 0
+    timer_start(10, (timer) => {
+      var popups = popup_list()
+      if !popups->empty()
+	popupLines = getbufline(popups[0]->winbufnr(), 1, '$')
+      endif
+      tries += 1
+      if !popups->empty() || tries >= 500
+	timer_stop(timer)
+	feedkeys("\<Esc>", 't')
+      endif
+    }, {repeat: -1})
+    feedkeys(cmd, 'xt!')
+    return popupLines
+  }
+
+  cursor(8, 1)
+  assert_equal(['MyFunc(int a, int b) -> int'], SigPopupOnInsert('A'))
+  assert_equal([], popup_list())
+  assert_equal(['MyFunc(int a, int b) -> int'], SigPopupOnInsert('A'))
+  assert_equal([], popup_list())
+
+  # On a line of the arguments of a call that spans several lines
+  cursor(9, 1)
+  assert_equal(['MyFunc(int a, int b) -> int'], SigPopupOnInsert('I'))
+  assert_equal([], popup_list())
+
+  :%bw!
+enddef
+
 # Additional signature-help coverage for behavior that is difficult to trigger
 # from clangd responses alone.
 def g:Test_LspShowSignature_SyntheticSession()

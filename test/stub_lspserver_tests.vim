@@ -3212,6 +3212,33 @@ def g:Test_OnTypeFormatting_CRMappingAddsKeys()
   endtry
 enddef
 
+# Test that the signature help autocmds are added to the buffer that is
+# initialized, also when another buffer is the current one, and that
+# detaching the buffer from its language servers removes them.
+def g:Test_SignatureAutocmds_InitAndDetach()
+  signature.InitOnce()
+  silent! edit XSignatureAutocmds.txt
+  var bnr = bufnr()
+
+  var srv = MakeTestLspServer([])
+  srv.caps = {signatureHelpProvider: {triggerCharacters: ['(', ',']}}
+  srv.isSignatureHelpProvider = true
+  buf.BufLspServerSet(bnr, srv)
+  :new
+  signature.BufferInit(srv, bnr)
+  var otherBnr = bufnr()
+  :close
+  var BufEvents = (b: number): list<string> =>
+    autocmd_get({group: 'LspSignatureHelp', pattern: $'<buffer={b}>'})
+      ->mapnew((_, a) => a.event)->sort()
+  assert_equal([], BufEvents(otherBnr))
+  assert_equal(['InsertEnter', 'KeyInputPre'], BufEvents(bnr))
+
+  lsp.RemoveFile(bnr)
+  assert_equal([], BufEvents(bnr))
+  :%bw!
+enddef
+
 def g:Test_LspDetached_AutocmdNotFiredWithoutAttachedServer()
   silent! edit XLspDetachedNoServer.txt
   setline(1, ['none'])

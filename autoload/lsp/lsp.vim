@@ -707,7 +707,7 @@ export def BufferInit(lspserverId: number, bnr: number): void
 
       var signatureServer = buf.BufLspServerGet(bnr, 'signatureHelp')
       if !signatureServer->empty() && serverId == signatureServer.id
-	signature.BufferInit(lspsrv)
+	signature.BufferInit(lspsrv, bnr)
       endif
 
       var inlayHintServer = buf.BufLspServerGet(bnr, 'inlayHint')
@@ -852,6 +852,7 @@ export def RemoveFile(bnr: number): void
     RemoveBufLocalAutocmds(bnr)
     RemoveBufListener(bnr)
     ontypeformat.BufferDeInit(bnr)
+    signature.BufferDeInit(bnr)
     inlayhints.BufferDeInit(bnr)
     semantichighlight.BufferDeInit(bnr)
     diag.BufferDeInit(bnr)

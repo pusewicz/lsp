@@ -847,17 +847,18 @@ enddef
 # Setup And Entry Points
 # -----------------------------------------------------------------------------
 
-# Add or replace a buffer-local signature autocmd in the shared group.
-def AddSignatureAutocmd(event: string, cmd: string)
-  autocmd_add([{bufnr: bufnr(),
+# Add or replace an autocmd for buffer "bnr" in the shared group.
+def AddSignatureAutocmd(bnr: number, event: string, cmd: string)
+  autocmd_add([{bufnr: bnr,
 		group: 'LspSignatureHelp',
 		event: event,
 		replace: true,
 		cmd: cmd}])
 enddef
 
-# Configure trigger-character detection using the KeyInputPre autocmd.
-def SetupSignatureTriggerChars(lspserver: dict<any>,
+# Configure trigger-character detection in buffer "bnr" using the KeyInputPre
+# autocmd.
+def SetupSignatureTriggerChars(lspserver: dict<any>, bnr: number,
                                autoTriggerChars: list<string>)
   if !autoTriggerChars->empty()
     # detect the trigger chars and show the signature
@@ -866,18 +867,31 @@ def SetupSignatureTriggerChars(lspserver: dict<any>,
         call g:LspHandleSignatureTriggerChar(v:char)
       endif
     END
-    AddSignatureAutocmd('KeyInputPre', cmd->join(' | '))
+    AddSignatureAutocmd(bnr, 'KeyInputPre', cmd->join(' | '))
   endif
+enddef
+
+# Handle the start of Insert mode (InsertEnter): show the signature of the
+# call whose arguments the cursor is in, as the popup was closed when Insert
+# mode was left.  The server replies with no signature when the cursor is not
+# in a call.
+def OnInsertEnter()
+  if buf.CurbufGetServer('signatureHelp')->empty()
+    return
+  endif
+
+  LspShowSignatureDelayed(SIG_TRIGGER_KIND_INVOKED, '')
 enddef
 
 # Register retrigger and teardown autocmds for an active popup session.
 def EnableSignatureSessionAutocmds()
+  var bnr = bufnr()
   # Update the current parameter in the signature popup when the cursor is
   # moved in insert mode or the text is changed.
-  AddSignatureAutocmd('CursorMovedI', 'g:LspHandleSignatureContentChange()')
-  AddSignatureAutocmd('TextChangedI', 'g:LspHandleSignatureContentChange()')
+  AddSignatureAutocmd(bnr, 'CursorMovedI', 'g:LspHandleSignatureContentChange()')
+  AddSignatureAutocmd(bnr, 'TextChangedI', 'g:LspHandleSignatureContentChange()')
   # Close the signature popup when leaving insert mode
-  AddSignatureAutocmd('InsertLeave', 'CloseCurBufSignaturePopup()')
+  AddSignatureAutocmd(bnr, 'InsertLeave', 'CloseCurBufSignaturePopup()')
 enddef
 
 # Remove popup-session autocmds when the signature popup is no longer visible.
@@ -948,8 +962,8 @@ export def InitOnce()
   hlset([{name: 'LspSigActiveParameter', default: true, linksto: 'LineNr'}])
 enddef
 
-# Initialize signature trigger autocmds for the current buffer.
-export def BufferInit(lspserver: dict<any>)
+# Initialize the signature trigger autocmds for buffer "bnr".
+export def BufferInit(lspserver: dict<any>, bnr: number)
   if !lspserver.isSignatureHelpProvider
     # no support for signature help
     return
@@ -962,7 +976,15 @@ export def BufferInit(lspserver: dict<any>)
   endif
 
   var autoTriggerChars = GetAutoSignatureTriggerCharacters(lspserver)
-  SetupSignatureTriggerChars(lspserver, autoTriggerChars)
+  SetupSignatureTriggerChars(lspserver, bnr, autoTriggerChars)
+  AddSignatureAutocmd(bnr, 'InsertEnter', 'OnInsertEnter()')
+enddef
+
+# Remove the signature autocmds of buffer "bnr".
+export def BufferDeInit(bnr: number)
+  if exists('#LspSignatureHelp')
+    autocmd_delete([{bufnr: bnr, group: 'LspSignatureHelp'}])
+  endif
 enddef
 
 # process the 'textDocument/signatureHelp' reply from the LSP server and
