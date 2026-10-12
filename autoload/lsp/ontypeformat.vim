@@ -44,10 +44,13 @@ def OnInsertEnter()
 enddef
 
 # Handle a key about to be processed in buffer "bnr" (KeyInputPre).  Enter and
-# CTRL-J insert a newline, which InsertCharPre doesn't report.  Any other key
-# forgets the previously typed character, because the key typed last decides
-# whether a trigger character was typed; InsertCharPre, which is triggered
-# after this, records a typed character.
+# CTRL-J insert a newline, which InsertCharPre doesn't report.  Any other typed
+# key forgets the previously typed character, because the key typed last
+# decides whether a trigger character was typed; InsertCharPre, which is
+# triggered after this, records a typed character.  A key from a mapping
+# doesn't: a <CR> mapping can add keys after the newline that insert nothing
+# (vim-eunuch adds "<C-R>=EunuchNewLine()<CR>"), and Vim triggers TextChangedI
+# only after them.  OnTypeFormat() checks the text change they made.
 def OnKeyInputPre(bnr: number)
   if mode() !~# '^[iR]'
     return
@@ -55,7 +58,7 @@ def OnKeyInputPre(bnr: number)
 
   if v:char == "\r" || v:char == "\n"
     SetTypedChar(bnr, "\n")
-  else
+  elseif v:event.typed
     typedChar = {}
   endif
 enddef
