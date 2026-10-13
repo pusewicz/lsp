@@ -164,14 +164,24 @@ def g:Test_ZZZ_Cleanup()
   delete('./xrust_tests', 'rf')
 enddef
 
-# Start the rust-analyzer language server.  Returns true on success and false
-# on failure.
+# Start the rust-analyzer language server and wait for it to load the
+# workspace.  Returns true on success and false on failure.  Until the
+# workspace is loaded rust-analyzer reports no diagnostics, which the tests
+# wait for, and loading it (fetching the metadata, scanning the sysroot,
+# priming the caches) can take longer than a test waits for them.
 def g:StartLangServer(): bool
   system('cargo new xrust_tests')
   :cd xrust_tests/src
   var status = false
   try
     status = g:StartLangServerWithFile('./main.rs')
+    if status
+      silent! edit ./main.rs
+      append('$', '-')
+      status = g:WaitForCommon(() => lsp#lsp#ErrorCount().Error > 0, v:null,
+			       180000) >= 0
+      :bw!
+    endif
   finally
     :cd ../..
   endtry
