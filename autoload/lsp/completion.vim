@@ -818,9 +818,8 @@ enddef
 # Result: CompletionItem[] | CompletionList | null
 export def CompletionReply(lspserver: dict<any>, cItems: any,
                            completionError: dict<any> = {})
-  # Handle completion error
+  # AsyncRpcCb() reported the error
   if !completionError->empty()
-    util.ErrMsg($'Completion failed: {completionError.message}')
     if lspserver.omniCompletePending
       lspserver.completeItems = []
       lspserver.omniCompletePending = false
