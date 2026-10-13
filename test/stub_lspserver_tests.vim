@@ -3091,6 +3091,70 @@ def g:Test_LspDetached_RemovesOnTypeFormattingAutocmds()
   :bw!
 enddef
 
+# Type "keys" at the end of the first line of the current buffer, with the
+# keys a mapping produces still in the typeahead when the next key is
+# processed, as when typing, and leave Insert mode after the text change.  Vim
+# triggers TextChangedI only when the typeahead is empty.  The timer only ends
+# Insert mode if TextChangedI isn't triggered.
+def TypeInInsertMode(keys: string)
+  :%delete _
+  setline(1, ['abc'])
+  autocmd TextChangedI <buffer> ++once feedkeys("\<Esc>", 't')
+  var timer = timer_start(5000, (_) => feedkeys("\<Esc>", 't'))
+  feedkeys($"A{keys}", 'xt!')
+  timer_stop(timer)
+enddef
+
+# Test that a newline typed with a <CR> mapping that adds keys after the
+# newline requests on-type formatting, as vim-eunuch's <CR> mapping does.
+def g:Test_OnTypeFormatting_CRMappingAddsKeys()
+  g:LspOptionsSet({onTypeFormatting: true})
+  silent! edit XOnTypeFormattingCRMapping.txt
+  var bnr = bufnr()
+
+  var requests: list<list<any>> = []
+  var srv = MakeTestLspServer([])
+  srv.running = true
+  srv.ready = true
+  srv.isDocumentOnTypeFormattingProvider = true
+  srv.onTypeFormattingTriggers = ["\n"]
+  srv.featureEnabled = (_: string): bool => true
+  srv.textDocOnTypeFormat = (ch: string) => {
+    requests->add([ch, line('.'), col('.')])
+  }
+  buf.BufLspServerSet(bnr, srv)
+  ontypeformat.BufferInit(srv, bnr)
+
+  try
+    # The mapping inserts the newline and then evaluates an expression that
+    # inserts nothing.
+    inoremap <buffer> <expr> <CR> "\<CR>\<C-R>=''\<CR>"
+    TypeInInsertMode("\<CR>")
+    assert_equal([["\n", 2, 1]], requests)
+
+    # A key typed after the mapped keys still cancels the request.
+    requests = []
+    TypeInInsertMode("\<CR>\<Left>")
+    assert_equal([], requests)
+
+    # The mapping moves the cursor after the newline.
+    requests = []
+    inoremap <buffer> <expr> <CR> "\<CR>\<Up>"
+    TypeInInsertMode("\<CR>")
+    assert_equal([], requests)
+
+    # The mapping inserts text after the newline.
+    inoremap <buffer> <expr> <CR> "\<CR>x"
+    TypeInInsertMode("\<CR>")
+    assert_equal([], requests)
+  finally
+    ontypeformat.BufferDeInit(bnr)
+    buf.BufLspServerRemove(bnr, srv)
+    g:LspOptionsSet({onTypeFormatting: false})
+    :bw!
+  endtry
+enddef
+
 def g:Test_LspDetached_AutocmdNotFiredWithoutAttachedServer()
   silent! edit XLspDetachedNoServer.txt
   setline(1, ['none'])
