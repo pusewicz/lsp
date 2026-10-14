@@ -29,7 +29,8 @@ The following language server protocol (LSP) features are supported:
 * Code completion
 * Jump to definition, declaration, implementation, type definition
 * Peek definition, declaration, implementation, type definition and references
-* Display warning and error diagnostics
+* Display warning and error diagnostics, with their related information and
+  unnecessary/deprecated code tags
 * Find all symbol references
 * Document and Workspace symbol search
 * Display code outline

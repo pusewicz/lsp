@@ -1512,8 +1512,11 @@ reported by the language server.
 			current line.  If the option 'showDiagInPopup' is set
 			to true (default), then the message is displayed in
 			a popup window.  Otherwise the message is displayed in
-			the status message area.  A diagnostic spanning
-			multiple lines is displayed on any line it covers.
+			the status message area.  The related information of
+			the diagnostic, if any, is displayed after the
+			message, see |lsp-diags-related-info|.  A diagnostic
+			spanning multiple lines is displayed on any line it
+			covers.
 
 			When there are multiple diagnostics on the current
 			line, this selects the first diagnostic whose start
@@ -1734,6 +1737,9 @@ aleSupport		|Boolean| option. If true, diagnostics will be sent to
 			when Ale lints while text is changed in insert mode
 			(|g:ale_lint_on_text_changed| is "always" or
 			"insert"), otherwise when insert mode is left.
+			The related information of a diagnostic
+			(|lsp-diags-related-info|) is added after its message
+			in the detail that |:ALEDetail| displays.
 
 						*lsp-opt-autoComplete*
 autoComplete		|Boolean| option. In insert mode, automatically
@@ -1762,7 +1768,10 @@ autoPopulateDiags	|Boolean| option. Automatically populate the location
 			For this purpose a dictionary
 			{ diagnostic: <complete diag message> }
 			is added to each location list items attribute
-			'user_data'.
+			'user_data'.  The items for the related information
+			of a diagnostic (|lsp-diags-related-info|) also have
+			the related information item in the "relatedInformation"
+			entry of this dictionary.
 
 						*lsp-opt-codeActionPopupDetails*
 codeActionPopupDetails	|String| option. Configure the details of the code popup.
@@ -2704,6 +2713,23 @@ diagnostic message:
     "LspDiagInlineInfo" for informational messages.
     "LspDiagInlineWarning" for warning messages.
 
+							*lsp-diags-tags*
+A language server can tag a diagnostic as reporting unnecessary code (e.g. an
+unused variable or unreachable code) or the use of a deprecated item.  The
+text of such a diagnostic is also highlighted with the
+"LspDiagInlineUnnecessary" group, which dims it (linked to "Comment" by
+default), or with the "LspDiagInlineDeprecated" group, which strikes it
+through.  These highlights are combined with the one for the severity of the
+diagnostic.
+
+Language servers report much of the unnecessary and deprecated code as hints
+with a tag, often for every unused import or parameter.  As in other editors,
+such a hint is displayed only by the highlight for its tag: it gets no sign,
+no virtual text and no "LspDiagInlineHint" highlight.  It is still listed in
+the location list and displayed by ":LspDiag current".  When the
+"highlightDiagInline" option is set to |v:false|, it is displayed like any
+other hint.
+
 If you wish to temporarily disable the automatic diagnostic highlighting for
 the current Vim session, you can achieve this using the ":LspDiag highlight
 disable" command.  When you want to re-enable the highlighting, you can use
@@ -2749,6 +2775,23 @@ To automatically create the diagnostics location list in the windows, set the
 "autoPopulateDiags" option to |v:true|.  By default this option is set to
 |v:false|, and only the windows that already have a diagnostics location list
 are updated.
+
+							*lsp-diags-related-info*
+A diagnostic can come with related information: other locations, each with a
+message, that the diagnostic refers to, like the previous definition for a
+redefinition error.  In the diagnostics location list, the item of a
+diagnostic is followed by an item for each of these locations, so that you can
+jump to them.  ":LspDiag current" and the balloon display the related
+information after the message of the diagnostic, one location per line, as
+compilers print them: >
+
+    redefinition of 'x'
+    main.c:1:5: previous definition is here
+<
+The files of these locations are not loaded in a buffer for this.  Some
+language servers, like clangd, add this information to the message of the
+diagnostic, or report it as separate diagnostics, only for an editor that
+doesn't support related information.
 
 The other location lists of a window are never changed.  When a window that
 has a location list of your own (e.g. from |:lvimgrep|) gets a diagnostics
@@ -3125,6 +3168,9 @@ override them.
 				their lines (|lsp-opt-showCodeLens|).  By
 				default, linked to the "Comment" highlight
 				group.
+*LspDiagInlineDeprecated*	Used to highlight the text of a diagnostic
+				tagged as deprecated, see |lsp-diags-tags|.
+				By default, the text is struck through.
 *LspDiagInlineError*		Used to highlight inline error diagnostics.
 				By default, linked to the "SpellBad" highlight
 				group.
@@ -3134,6 +3180,10 @@ override them.
 *LspDiagInlineInfo*		Used to highlight inline info diagnostics.
 				By default, linked to the "SpellRare"
 				highlight group.
+*LspDiagInlineUnnecessary*	Used to highlight the text of a diagnostic
+				tagged as unnecessary, see |lsp-diags-tags|.
+				By default, linked to the "Comment" highlight
+				group.
 *LspDiagInlineWarning*		Used to highlight inline warning diagnostics.
 				By default, linked to the "SpellCap" highlight
 				group.
