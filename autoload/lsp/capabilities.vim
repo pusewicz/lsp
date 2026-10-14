@@ -10,6 +10,37 @@ import './watchedfiles.vim'
 # at the position according to the language's syntax rule.
 const PREPARE_SUPPORT_DEFAULT_BEHAVIOR_IDENTIFIER = 1
 
+# The requests that are sent again when the language server replies
+# ContentModified to them, because its state changed while it worked on them:
+# the ones that answer a user command, which would otherwise fail although the
+# server could answer it.  The requests that the plugin sends by itself are
+# sent again after the next change anyway, and the pull diagnostics are
+# retried by lspserver.PullDiagnosticsReply().
+export const RETRY_ON_CONTENT_MODIFIED: list<string> = [
+  'callHierarchy/incomingCalls',
+  'callHierarchy/outgoingCalls',
+  'textDocument/codeAction',
+  'textDocument/declaration',
+  'textDocument/definition',
+  'textDocument/documentSymbol',
+  'textDocument/foldingRange',
+  'textDocument/formatting',
+  'textDocument/hover',
+  'textDocument/implementation',
+  'textDocument/prepareCallHierarchy',
+  'textDocument/prepareRename',
+  'textDocument/prepareTypeHierarchy',
+  'textDocument/rangeFormatting',
+  'textDocument/references',
+  'textDocument/rename',
+  'textDocument/selectionRange',
+  'textDocument/switchSourceHeader',
+  'textDocument/typeDefinition',
+  'typeHierarchy/subtypes',
+  'typeHierarchy/supertypes',
+  'workspace/symbol'
+]
+
 # Process the server capabilities
 #   interface ServerCapabilities
 export def ProcessServerCaps(lspserver: dict<any>, caps: dict<any>)
@@ -462,7 +493,8 @@ export def GetClientCaps(): dict<any>
       positionEncodings: ['utf-32', 'utf-16', 'utf-8'],
       staleRequestSupport: {
 	cancel: true,
-	retryOnContentModified: ['textDocument/diagnostic']
+	retryOnContentModified:
+	  ['textDocument/diagnostic'] + RETRY_ON_CONTENT_MODIFIED
       }
     },
     textDocument: {

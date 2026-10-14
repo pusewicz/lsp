@@ -468,6 +468,22 @@ def IsStaleRequestError(responseError: dict<any>): bool
 	|| code == LSP_ERROR_SERVER_CANCELLED
 enddef
 
+# The most times that a request is sent again after a ContentModified reply.
+# A language server reloading its project can change its state a few times in
+# a row.
+export const CONTENT_MODIFIED_MAX_RETRIES = 3
+
+# Returns true when the request "method", already sent again "retries" times,
+# is to be sent again after the error reply "responseError": the server
+# replied ContentModified and the request is one of
+# capabilities.RETRY_ON_CONTENT_MODIFIED.
+def RetryOnContentModified(method: string, responseError: dict<any>,
+			   retries: number): bool
+  return responseError->get('code', 0) == LSP_ERROR_CONTENT_MODIFIED
+	&& retries < CONTENT_MODIFIED_MAX_RETRIES
+	&& capabilities.RETRY_ON_CONTENT_MODIFIED->index(method) != -1
+enddef
+
 # Process a LSP server response error and display an error message.  The error
 # from a cancelled request, or from a request about modified content, is not
 # reported.
@@ -546,6 +562,10 @@ const SYNC_RPC_FIRST_ID = 1000000000
 # "opts.handleError" is false: then the caller handles the error, which is not
 # reported, and the reply with the "error" is returned.
 #
+# A ContentModified reply to one of capabilities.RETRY_ON_CONTENT_MODIFIED
+# sends the request again, up to CONTENT_MODIFIED_MAX_RETRIES times;
+# "retries" counts the times it was sent again so far.
+#
 # ch_evalexpr() isn't used: while waiting for the reply, Vim invokes the
 # channel callback for the other messages from the server, and in the "lsp"
 # mode it can pass it the awaited reply too.  ch_evalexpr() then times out.
@@ -555,7 +575,8 @@ const SYNC_RPC_FIRST_ID = 1000000000
 #
 # When the wait ends without a reply, because it timed out or CTRL-C
 # interrupted it, the request is cancelled.  The interrupt is not caught.
-def Rpc(lspserver: dict<any>, method: string, params: any, opts: dict<any> = {}): dict<any>
+def Rpc(lspserver: dict<any>, method: string, params: any,
+	opts: dict<any> = {}, retries: number = 0): dict<any>
   var job = lspserver.job
   if job->job_status() != 'run'
     # LSP server has exited
@@ -610,6 +631,11 @@ def Rpc(lspserver: dict<any>, method: string, params: any, opts: dict<any> = {})
     lspserver.traceLog($'Got response {reply->json_encode()}')
   endif
 
+  if reply->has_key('error')
+      && RetryOnContentModified(method, reply.error, retries)
+    return Rpc(lspserver, method, params, opts, retries + 1)
+  endif
+
   if reply->has_key('result')
     # successful reply
     return reply
@@ -625,10 +651,13 @@ def Rpc(lspserver: dict<any>, method: string, params: any, opts: dict<any> = {})
   return {}
 enddef
 
-# LSP server asynchronous RPC callback.  When "handleError" is false, an error
-# is not reported and "RpcCb" gets it, also for a stale request.
-def AsyncRpcCb(lspserver: dict<any>, method: string, RpcCb: func,
-	       handleError: bool, chan: channel, reply: dict<any>)
+# LSP server asynchronous RPC callback for the request "method" with "params",
+# sent by AsyncRpc() with "opts" after "retries" times sent again.  When
+# "opts.handleError" is false, an error is not reported and "RpcCb" gets it,
+# also for a stale request.
+def AsyncRpcCb(lspserver: dict<any>, method: string, params: any, RpcCb: func,
+	       opts: dict<any>, retries: number, chan: channel,
+	       reply: dict<any>)
   if reply->has_key('id') && lspserver.pendingRequests->has_key(reply.id)
     lspserver.pendingRequests->remove(reply.id)
   endif
@@ -637,6 +666,13 @@ def AsyncRpcCb(lspserver: dict<any>, method: string, RpcCb: func,
     lspserver.traceLog($'Got response {reply->json_encode()}')
   endif
 
+  if reply->has_key('error')
+      && RetryOnContentModified(method, reply.error, retries)
+      && AsyncRpc(lspserver, method, params, RpcCb, opts, retries + 1) > 0
+    return
+  endif
+
+  var handleError: bool = opts->get('handleError', true)
   var result: any = v:null
   var error: dict<any> = {}
 
@@ -696,8 +732,14 @@ enddef
 # In case of an error reply, the error is reported and the callback gets it,
 # unless "opts.handleError" is false: then the error is not reported, and the
 # callback gets it also when the request is stale (see IsStaleRequestError()).
+#
+# A ContentModified reply to one of capabilities.RETRY_ON_CONTENT_MODIFIED
+# sends the request again, up to CONTENT_MODIFIED_MAX_RETRIES times, and only
+# the last reply is passed to the callback; "retries" counts the times it was
+# sent again so far.  When "opts.request" is a Dict, its "id" is set to the
+# message id each time the request is sent, to cancel the one pending.
 def AsyncRpc(lspserver: dict<any>, method: string, params: any, Cbfunc: func,
-	     opts: dict<any> = {}): number
+	     opts: dict<any> = {}, retries: number = 0): number
   var req = {
     method: method,
     params: params
@@ -712,8 +754,8 @@ def AsyncRpc(lspserver: dict<any>, method: string, params: any, Cbfunc: func,
   SendPendingChanges(lspserver.docBufnrs, method, params)
 
   # Do the asynchronous RPC call
-  var Fn = function('AsyncRpcCb', [lspserver, method, Cbfunc,
-				   opts->get('handleError', true)])
+  var Fn = function('AsyncRpcCb', [lspserver, method, params, Cbfunc, opts,
+				   retries])
 
   var reply = job->ch_sendexpr(req, {callback: Fn})
   if reply->empty()
@@ -721,6 +763,9 @@ def AsyncRpc(lspserver: dict<any>, method: string, params: any, Cbfunc: func,
   endif
   # Until its reply is processed, so that one can wait for that
   lspserver.pendingRequests[reply.id] = method
+  if opts->has_key('request')
+    opts.request.id = reply.id
+  endif
 
   if lspserver.debug
     var logreq = {id: reply.id}->extend(req)
@@ -753,7 +798,8 @@ def AsyncRpcSupersede(lspserver: dict<any>, key: string, method: string,
 
   # The callback identifies its request by this Dict and not by the message
   # id, which is known only once rpc_a() returns: a stand-in for it, as in the
-  # tests, can invoke the callback before that.
+  # tests, can invoke the callback before that.  The id changes when the
+  # request is sent again (see AsyncRpc()).
   var req: dict<number> = {id: -1}
   lspserver.supersedableRequests[key] = req
   var id = lspserver.rpc_a(method, params, (_: dict<any>, reply, error) => {
@@ -762,7 +808,7 @@ def AsyncRpcSupersede(lspserver: dict<any>, key: string, method: string,
     endif
     lspserver.supersedableRequests->remove(key)
     Cbfunc(lspserver, reply, error)
-  }, opts)
+  }, opts->extendnew({request: req}))
   if lspserver.supersedableRequests->get(key, {}) is req
     req.id = id
   endif

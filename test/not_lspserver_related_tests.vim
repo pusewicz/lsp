@@ -1386,10 +1386,22 @@ def g:Test_DocumentLinkCapability()
 enddef
 
 # Test that the client advertises retrying only the requests that it retries
-# when the content was modified
+# when the content was modified: the pull diagnostics and the requests that
+# answer a user command, but not the ones that it sends by itself.
 def g:Test_StaleRequestSupportCapability()
-  assert_equal({cancel: true, retryOnContentModified: ['textDocument/diagnostic']},
-	       capabilities.GetClientCaps().general.staleRequestSupport)
+  var support = capabilities.GetClientCaps().general.staleRequestSupport
+  assert_equal({cancel: true, retryOnContentModified:
+		 ['textDocument/diagnostic'] + capabilities.RETRY_ON_CONTENT_MODIFIED},
+	       support)
+  for method in ['textDocument/definition', 'textDocument/references',
+		 'textDocument/hover', 'textDocument/rename']
+    assert_notequal(-1, support.retryOnContentModified->index(method), method)
+  endfor
+  for method in ['textDocument/completion', 'textDocument/semanticTokens/full',
+		 'textDocument/inlayHint', 'textDocument/documentHighlight',
+		 'textDocument/signatureHelp', 'workspace/executeCommand']
+    assert_equal(-1, support.retryOnContentModified->index(method), method)
+  endfor
 enddef
 
 # Test that the client advertises the "window/showDocument" request
