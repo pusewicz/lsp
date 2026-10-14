@@ -25,16 +25,22 @@ fi
 rm -f results.txt
 
 # --- Configuration ---
-VIM_CMD="$VIMPRG -u NONE -U NONE -i NONE --noplugin -N --not-a-term"
+# Run the tests in the GUI when LSP_TEST_GUI is set, in the terminal otherwise.
+# "-f" keeps the GUI in the foreground, so that this script waits for it.
+if [[ -n "$LSP_TEST_GUI" ]]; then
+  VIM_CMD="$VIMPRG -g -f -u NONE -U NONE -i NONE --noplugin -N"
+else
+  VIM_CMD="$VIMPRG -u NONE -U NONE -i NONE --noplugin -N --not-a-term"
+fi
 
 # Kill Vim when the tests in one file take longer than this many seconds, as
 # when Vim waits for a key at a prompt, which the input below never gives it.
 TEST_TIMEOUT="${LSP_TEST_TIMEOUT:-600}"
 
-# Vim checks its input for typed keys while a test waits (":sleep",
-# complete_check()) and exits when the input is at end of file, as when stdin
-# is /dev/null.  Give Vim an input that never has anything to read: a pipe
-# that this script keeps open for writing on file descriptor 3.
+# Vim in the terminal checks its input for typed keys while a test waits
+# (":sleep", complete_check()) and exits when the input is at end of file, as
+# when stdin is /dev/null.  Give Vim an input that never has anything to read:
+# a pipe that this script keeps open for writing on file descriptor 3.
 STDIN_DIR=$(mktemp -d) || exit 1
 mkfifo "$STDIN_DIR/stdin" || exit 1
 exec 3<>"$STDIN_DIR/stdin" || exit 1
@@ -87,8 +93,9 @@ RunTestsInFile() {
 
   export LSP_OFFSET_ENCODING="$encoding"
 
-  # Vim draws its screen on stdout, which is only noise in the output of the
-  # run.  Keep it in a file, to see where Vim was when a test failed.
+  # Vim in the terminal draws its screen on stdout, which is only noise in the
+  # output of the run.  Keep it in a file, to see where Vim was when a test
+  # failed.
   # While Vim runs a test it turns the other signals into an interrupt, which
   # only fails that test, so it has to be killed.  "--foreground" keeps Vim in
   # the foreground process group, where a CTRL-C typed in a terminal reaches

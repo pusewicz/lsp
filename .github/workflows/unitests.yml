@@ -18,9 +18,12 @@ jobs:
       matrix:
         # The test groups of run_tests.sh, each installing only what it needs
         tests: [clangd, others]
+        # Vim in the terminal, or the MacVim GUI, where has('gui_running') holds
+        ui: [terminal, gui]
     env:
       HOMEBREW_NO_AUTO_UPDATE: 1
       HOMEBREW_NO_INSTALL_CLEANUP: 1
+      LSP_TEST_GUI: ${{ matrix.ui == 'gui' && '1' || '' }}
     steps:
       - name: Checkout LSP plugin Code
         uses: actions/checkout@v7.0.1
@@ -77,7 +80,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v7.0.2
         with:
-          name: test-logs-${{ matrix.tests }}
+          name: test-logs-${{ matrix.tests }}-${{ matrix.ui }}
           path: |
             /tmp/lsp-*.log
             /tmp/lsp-*.err
