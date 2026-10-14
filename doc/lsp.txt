@@ -1314,9 +1314,20 @@ Commands to modify, rename, or format your code using the language server.
 
 			When [newName] is not given, then you will be prompted
 			to enter the new name for the symbol.  The prompt is
-			pre-filled with the current word under the cursor.
+			pre-filled with the current name of the symbol.
 			You can press <Esc> or enter an empty string in the
 			prompt to cancel the operation.
+
+			When the language server supports it, it is first
+			asked whether the symbol under the cursor can be
+			renamed.  If it cannot, a message tells why and
+			nothing is renamed.  Otherwise the server tells the
+			current name, which can differ from the word under the
+			cursor, e.g. for a Rust lifetime or a PHP variable
+			with its "$".  The prompt appears, or the symbol is
+			renamed to [newName], when the reply arrives, see
+			|lsp-async|.  Without that support, the current name
+			is the word under the cursor.
 
 			This command requires a server that supports
 			|lsp-features-rename|.  If rename is unsupported,
@@ -2164,7 +2175,12 @@ showInlayHints		|Boolean| option.  Show inlay hints from the language
 			buffer.  Hints are shown only in normal mode.  Updates
 			are requested when the cursor has not moved for
 			|'updatetime'| milliseconds (|CursorHold|), followed
-			by a short debounce delay.
+			by a short debounce delay.  When the language server
+			asks for the hints to be refreshed, because they
+			changed without an edit (e.g. after it finished
+			indexing), they are requested again right away in the
+			buffers shown in a window, and after a |CursorHold| in
+			the other buffers.
 			Use |:LspInlayHints| to enable, disable, or toggle
 			hints for the current session without permanently
 			changing this option.
@@ -3116,7 +3132,11 @@ use a language server that advertises semantic tokens support.  When enabled,
 the plugin requests semantic tokens for the current buffer and refreshes them
 after buffer changes (using the |TextChanged| autocommand) with the delay
 configured by |lsp-opt-semanticHighlightDelay|.  If the server supports
-semantic token delta updates, they are used automatically.
+semantic token delta updates, they are used automatically.  When the server
+asks for the semantic tokens to be refreshed, because they changed without an
+edit (e.g. after it finished indexing), they are requested again for the
+buffers shown in a window, and for the other buffers when they are next shown
+in one (|BufWinEnter|).
 
 Only the semantic token types listed below have built-in highlight groups in
 this plugin.  If a language server returns other token types, they are

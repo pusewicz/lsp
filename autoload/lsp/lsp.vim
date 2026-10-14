@@ -1509,27 +1509,29 @@ export def TypeHierarchy(direction: number)
   lspserver.typeHierarchy(direction)
 enddef
 
-# Rename a symbol
-# Uses LSP "textDocument/rename" request
+# Rename the symbol at the cursor to "a_newName", or, when it is empty, to the
+# name entered at a prompt that is pre-filled with its current name.
+# Uses LSP "textDocument/prepareRename" and "textDocument/rename" requests
 export def Rename(a_newName: string)
   var lspserver: dict<any> = buf.CurbufGetServerChecked('rename')
   if lspserver->empty()
     return
   endif
 
-  var newName: string = a_newName
-  if newName->empty()
-    var sym: string = expand('<cword>')
-    newName = input($"Rename symbol '{sym}' to: ", sym)
+  lspserver.prepareRename((sym: string) => {
+    var newName: string = a_newName
     if newName->empty()
-      return
+      newName = input($"Rename symbol '{sym}' to: ", sym)
+      if newName->empty()
+	return
+      endif
+
+      # clear the input prompt
+      :echo "\r"
     endif
 
-    # clear the input prompt
-    :echo "\r"
-  endif
-
-  lspserver.renameSymbol(newName)
+    lspserver.renameSymbol(newName)
+  })
 enddef
 
 # Perform a code action
