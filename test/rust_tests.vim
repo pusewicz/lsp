@@ -35,6 +35,7 @@ def g:Test_LspGotoDef()
     g:WaitForServerFileLoad(0)
     cursor(6, 5)
     :LspGotoDefinition
+    g:WaitForReplies()
     assert_equal([3, 4], [line('.'), col('.')])
     :%bw!
   finally
@@ -58,6 +59,7 @@ def g:Test_LspCodeAction_CreateFile()
     g:WaitForServerFileLoad(1)
     cursor(1, 1)
     :LspCodeAction 1
+    g:WaitForReplies()
     g:WaitForServerFileLoad(0)
     assert_true(filereadable('foo.rs'))
     :%bw!
@@ -111,6 +113,7 @@ def g:Test_LspCodeAction_RenameFile()
     g:WaitForServerFileLoad(0)
     cursor(1, 5)
     :LspRename foobaz
+    g:WaitForReplies()
     g:WaitForServerFileLoad(0)
     assert_true(filereadable('foobaz.rs'))
     :%bw!
@@ -148,7 +151,7 @@ def g:Test_OmniComplete_ReplaceInsertEdit()
 
     # Position cursor at "field:" on line 10 and trigger completion
     cursor(8, 10)
-    feedkeys("a\<C-X>\<C-O>", 'xt')
+    g:FeedOmniCompleteKeys("a\<C-X>\<C-O>")
     # After completion, should have "field_name:" which demonstrates the
     # replace-insert-edit handling
     g:WaitForAssert(() => assert_match('^\s\+field_name: 0,', getline(8)))

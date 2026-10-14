@@ -274,6 +274,7 @@ def g:Test_LspFormat_RightAfterChange()
   g:WaitForServerFileLoad(0)
   setline(1, ['int f1(int i)', '{', 'int j = 10; return j;', '}'])
   :LspFormat
+  g:WaitForReplies()
   assert_equal(['int f1(int i) {', '  int j = 10;', '  return j;', '}'],
 	       getline(1, '$'))
   :%bw!
@@ -310,6 +311,7 @@ def g:Test_LspFormat_PlugMappings()
   setline(6, ['  int x;', '  int y;'])
   redraw!
   feedkeys('gqap', 'x')
+  g:WaitForReplies()
   assert_equal(['int i;', 'int j;'], getline(1, 2))
   assert_equal(['  int x;', '  int y;'], getline(6, 7))
   nunmap gq
@@ -321,6 +323,7 @@ def g:Test_LspFormat_PlugMappings()
   setline(6, ['  int x;', '  int y;'])
   redraw!
   feedkeys('vapgq', 'x')
+  g:WaitForReplies()
   assert_equal(['int i;', 'int j;'], getline(1, 2))
   assert_equal(['  int x;', '  int y;'], getline(6, 7))
   xunmap gq
@@ -405,10 +408,11 @@ def g:Test_LspOnTypeFormatting()
   test_override('char_avail', 1)
   try
     # Press Enter at the end of the under-indented "int i;" line, then type a
-    # character.  clangd's on-type formatting (triggered on "\n") should
-    # reindent the "int i;" line and the new line to match the surrounding
-    # braces, and the character should land after the inserted indent.
-    feedkeys("2GA\<CR>x\<Esc>", 'xt')
+    # character once the reply arrived, as it is dropped after a change.
+    # clangd's on-type formatting (triggered on "\n") should reindent the
+    # "int i;" line and the new line to match the surrounding braces, and the
+    # character should land after the inserted indent.
+    feedkeys("2GA\<CR>\<Cmd>call g:WaitForReplies()\<CR>x\<Esc>", 'xt')
     assert_equal(['int f1() {', '  int i;', '  x', '}'], getline(1, '$'))
   finally
     # Restore defaults to avoid impacting other tests.
@@ -436,11 +440,13 @@ def g:Test_LspOnTypeFormatting_NoNewline()
     # Change a word on a line below the line last edited in Insert mode.
     feedkeys("1GAx\<BS>\<Esc>", 'xt')
     feedkeys("2G$Fbcwa\<Esc>", 'xt')
+    g:WaitForReplies()
     assert_equal(['int f1(int a, int b) {', '  return f1(a, a);', '}'],
 		 getline(1, '$'))
 
     # Move to the next line in Insert mode, then type.
     feedkeys("1GAx\<BS>\<Down>c\<Esc>", 'xt')
+    g:WaitForReplies()
     assert_equal(['int f1(int a, int b) {', '  return f1(a, a);c', '}'],
 		 getline(1, '$'))
   finally
@@ -542,7 +548,7 @@ def g:Test_LspShowReferences()
   cursor(5, 2)
   var bnr: number = bufnr()
   :LspShowReferences
-  sleep 100m
+  g:WaitForReplies()
   assert_equal('quickfix', getwinvar(winnr('$'), '&buftype'))
   var loclist: list<dict<any>> = getloclist(0)
   assert_equal(bnr, loclist[0].bufnr)
@@ -552,6 +558,7 @@ def g:Test_LspShowReferences()
   :lclose
   cursor(1, 5)
   :LspShowReferences
+  g:WaitForReplies()
   assert_equal(1, getloclist(0)->len())
   loclist = getloclist(0)
   assert_equal([[1, 5, 1, 10]],
@@ -562,7 +569,7 @@ def g:Test_LspShowReferences()
   g:LspOptionsSet({useQuickfixForLocations: true})
   cursor(5, 2)
   :LspShowReferences
-  sleep 100m
+  g:WaitForReplies()
   assert_equal('quickfix', getwinvar(winnr('$'), '&buftype'))
   :cclose
   var qfl: list<dict<any>> = getqflist()
@@ -572,6 +579,7 @@ def g:Test_LspShowReferences()
 	       qfl->mapnew((_, v) => [v.lnum, v.col, v.end_lnum, v.end_col]))
   cursor(1, 5)
   :LspShowReferences
+  g:WaitForReplies()
   assert_equal(1, getqflist()->len())
   qfl = getqflist()
   assert_equal([[1, 5, 1, 10]],
@@ -582,6 +590,7 @@ def g:Test_LspShowReferences()
   # Test for maintaining buffer focus
   g:LspOptionsSet({keepFocusInReferences: false})
   :LspShowReferences
+  g:WaitForReplies()
   assert_equal('', getwinvar(0, '&buftype'))
   :lclose
   g:LspOptionsSet({keepFocusInReferences: true})
@@ -594,7 +603,7 @@ def g:Test_LspShowReferences()
   setlocal nomodified
   cursor(10, 6)
   :LspPeekReferences
-  sleep 50m
+  g:WaitForReplies()
   var ids = popup_list()
   assert_equal(2, ids->len())
   var filePopupAttrs = ids[0]->popup_getoptions()
@@ -612,7 +621,7 @@ def g:Test_LspShowReferences()
   # LspShowReferences should start with the current symbol
   cursor(12, 6)
   :LspPeekReferences
-  sleep 50m
+  g:WaitForReplies()
   ids = popup_list()
   assert_equal(2, ids->len())
   assert_equal(12, line('.', ids[0]))
@@ -808,13 +817,13 @@ def g:Test_UnicodeColumnCalc()
   cursor(5, 1) # 😊😊😊😊 = a;
   search('a')
   assert_equal([],
-              execute('LspGotoDefinition')->split("\n"))
+              execute(['LspGotoDefinition', 'g:WaitForReplies()'])->split("\n"))
   assert_equal([2, 12], [line('.'), col('.')])
 
   cursor(8, 1) # b = a;
   search('a')
   assert_equal([],
-              execute('LspGotoDefinition')->split("\n"))
+              execute(['LspGotoDefinition', 'g:WaitForReplies()'])->split("\n"))
   assert_equal([2, 12], [line('.'), col('.')])
 
   :%bw!
@@ -1031,6 +1040,7 @@ def g:Test_LspCodeAction()
   cursor(4, 1)
   redraw!
   :LspCodeAction 1
+  g:WaitForReplies()
   assert_equal("\tcount = 20;", getline(4))
 
   setline(4, "\tcount = 20:")
@@ -1038,14 +1048,17 @@ def g:Test_LspCodeAction()
   :redraw!
   g:WaitForDiags(1)
   :LspCodeAction 0
+  g:WaitForReplies()
   assert_equal("\tcount = 20:", getline(4))
 
   cursor(4, 1)
   :LspCodeAction 2
+  g:WaitForReplies()
   assert_equal("\tcount = 20:", getline(4))
 
   cursor(4, 1)
   :LspCodeAction 1
+  g:WaitForReplies()
   assert_equal("\tcount = 20;", getline(4))
   bw!
 
@@ -1064,6 +1077,7 @@ def g:Test_LspCodeAction()
   cursor(4, 1)
   redraw!
   :LspCodeAction use
+  g:WaitForReplies()
   assert_equal("\tif (count == 1) {", getline(4))
 
   g:WaitForDiags(0, 'Warn')
@@ -1072,6 +1086,7 @@ def g:Test_LspCodeAction()
   :redraw!
   g:WaitForDiags(1, 'Warn')
   :LspCodeAction /paren
+  g:WaitForReplies()
   assert_equal("\tif ((count = 1)) {", getline(4))
 
   g:WaitForDiags(0, 'Warn')
@@ -1080,14 +1095,17 @@ def g:Test_LspCodeAction()
   :redraw!
   g:WaitForDiags(1, 'Warn')
   :LspCodeAction NON_EXISTING_PREFIX
+  g:WaitForReplies()
   assert_equal("\tif (count = 1) {", getline(4))
 
   cursor(4, 1)
   :LspCodeAction /NON_EXISTING_REGEX
+  g:WaitForReplies()
   assert_equal("\tif (count = 1) {", getline(4))
 
   cursor(4, 1)
   :LspCodeAction only:quickfix#2
+  g:WaitForReplies()
   assert_equal("\tif (count == 1) {", getline(4))
   bw!
 
@@ -1225,7 +1243,11 @@ def g:Test_LspRename()
   cursor(1, 1)
   search('count')
   redraw!
-  feedkeys(":LspRename\<CR>er\<CR>", "xt")
+  # The prompt for the new name, which opens when the reply to the
+  # textDocument/prepareRename request arrives, reads the typed keys
+  feedkeys("er\<CR>", 't')
+  :LspRename
+  g:WaitForReplies()
   redraw!
   var expected: list<string> =<< trim END
     void F1(int counter)
@@ -1245,6 +1267,7 @@ def g:Test_LspRename()
   cursor(1, 1)
   search('counter')
   LspRename countvar
+  g:WaitForReplies()
   var expected2: list<string> =<< trim END
     void F1(int countvar)
     {
@@ -1304,6 +1327,7 @@ def g:Test_LspSelection()
   cursor(2, 1)
   redraw!
   :LspSelectionExpand
+  g:WaitForReplies()
   redraw!
   normal! y
   assert_equal('v', visualmode())
@@ -1314,14 +1338,16 @@ def g:Test_LspSelection()
   cursor(4, 29)
   redraw!
   :LspSelectionExpand
+  g:WaitForReplies()
   redraw!
   normal! y
   assert_equal('v', visualmode())
   assert_equal([4, 5, 6, 5], [line("'<"), col("'<"), line("'>"), col("'>")])
 
-  # Expand the visual selection
-  xnoremap <silent> le <Cmd>LspSelectionExpand<CR>
-  xnoremap <silent> ls <Cmd>LspSelectionShrink<CR>
+  # Expand the visual selection.  The mappings wait for the selection range
+  # reply, as a user does before typing the next key.
+  xnoremap <silent> le <Cmd>LspSelectionExpand<CR><Cmd>call g:WaitForReplies()<CR>
+  xnoremap <silent> ls <Cmd>LspSelectionShrink<CR><Cmd>call g:WaitForReplies()<CR>
   cursor(5, 8)
   normal vley
   assert_equal([5, 8, 5, 12], [line("'<"), col("'<"), line("'>"), col("'>")])
@@ -1447,12 +1473,14 @@ def g:Test_LspGotoSymbol()
 
   cursor(21, 6)
   :LspGotoDeclaration
+  g:WaitForReplies()
   assert_equal([3, 19], [line('.'), col('.')])
   exe "normal! \<C-t>"
   assert_equal([21, 6], [line('.'), col('.')])
   assert_equal(1, winnr('$'))
 
   :LspGotoDefinition
+  g:WaitForReplies()
   assert_equal([6, 12], [line('.'), col('.')])
   exe "normal! \<C-t>"
   assert_equal([21, 6], [line('.'), col('.')])
@@ -1460,6 +1488,7 @@ def g:Test_LspGotoSymbol()
 
   # Command modifiers
   :topleft LspGotoDefinition
+  g:WaitForReplies()
   assert_equal([6, 12], [line('.'), col('.')])
   assert_equal([1, 2], [winnr(), winnr('$')])
   close
@@ -1467,6 +1496,7 @@ def g:Test_LspGotoSymbol()
   assert_equal([21, 6], [line('.'), col('.')])
 
   :tab LspGotoDefinition
+  g:WaitForReplies()
   assert_equal([6, 12], [line('.'), col('.')])
   assert_equal([2, 2, 1], [tabpagenr(), tabpagenr('$'), winnr('$')])
   tabclose
@@ -1476,6 +1506,7 @@ def g:Test_LspGotoSymbol()
   # :LspGotoTypeDef
   cursor(21, 2)
   :LspGotoTypeDef
+  g:WaitForReplies()
   assert_equal([1, 7], [line('.'), col('.')])
   exe "normal! \<C-t>"
   assert_equal([21, 2], [line('.'), col('.')])
@@ -1483,6 +1514,7 @@ def g:Test_LspGotoSymbol()
   # :LspGotoImpl
   cursor(21, 6)
   :LspGotoImpl
+  g:WaitForReplies()
   assert_equal([12, 11], [line('.'), col('.')])
   exe "normal! \<C-t>"
   assert_equal([21, 6], [line('.'), col('.')])
@@ -1510,6 +1542,7 @@ def g:Test_LspGotoSymbol()
   cursor(21, 6)
   var bnum = bufnr()
   :LspPeekDeclaration
+  g:WaitForReplies()
   var plist = popup_list()
   assert_true(1, plist->len())
   assert_equal(bnum, plist[0]->winbufnr())
@@ -1520,6 +1553,7 @@ def g:Test_LspGotoSymbol()
 
   # Test for LspPeekDefinition
   :LspPeekDefinition
+  g:WaitForReplies()
   plist = popup_list()
   assert_true(1, plist->len())
   assert_equal(bnum, plist[0]->winbufnr())
@@ -1565,6 +1599,7 @@ def g:Test_LspGotoDefinition_SpecialFileName()
 
     cursor(2, 30)
     :LspGotoDefinition
+    g:WaitForReplies()
     assert_equal([hdr, 1, 5, 1],
 		 [expand('%:t'), line('.'), col('.'), winnr('$')])
     var hdrBnr: number = bufnr()
@@ -1573,6 +1608,7 @@ def g:Test_LspGotoDefinition_SpecialFileName()
 
     exe $'bwipe {hdrBnr}'
     :topleft LspGotoDefinition
+    g:WaitForReplies()
     assert_equal([hdr, 1, 5, 1, 2],
 		 [expand('%:t'), line('.'), col('.'), winnr(), winnr('$')])
   finally
@@ -1602,6 +1638,7 @@ def g:Test_LspDiagAndGotoDefinition_FileNameIsNotAPattern()
 
     cursor(2, 31)
     :LspGotoDefinition
+    g:WaitForReplies()
     assert_equal([hdr, 1, 5], [expand('%:t'), line('.'), col('.')])
   finally
     delete(src)
@@ -1626,6 +1663,7 @@ def g:Test_LspSwitchSourceHeader_SpecialFileName()
     :setlocal nomodified
 
     :LspSwitchSourceHeader
+    g:WaitForReplies()
     assert_equal(hdr, expand('%:t'))
   finally
     delete(src)
@@ -1651,6 +1689,7 @@ def g:Test_LspHighlight()
   g:WaitForServerFileLoad(0)
   cursor(1, 13)
   :LspHighlight
+  g:WaitForReplies()
   var expected: dict<any>
   expected = {id: 0, col: 13, end: 1, type: 'LspTextRef', length: 3, start: 1}
   expected.type_bufnr = 0
@@ -1667,7 +1706,7 @@ def g:Test_LspHighlight()
   assert_equal([], prop_list(4))
 
   cursor(5, 3) # if (arg == 2) {
-  var output = execute('LspHighlight')->split("\n")
+  var output = execute(['LspHighlight', 'g:WaitForReplies()'])->split("\n")
   assert_equal('Warn: No highlight for the current position', output[0])
   :%bw!
 enddef
@@ -1691,7 +1730,7 @@ def g:Test_LspHover()
   setline(1, lines)
   g:WaitForServerFileLoad(1)
   cursor(8, 4)
-  var output = execute(':LspHover')->split("\n")
+  var output = execute([':LspHover', 'g:WaitForReplies()'])->split("\n")
   assert_equal([], output)
   var p: list<number> = popup_list()
   assert_equal(1, p->len())
@@ -1700,13 +1739,14 @@ def g:Test_LspHover()
   # Re-running :LspHover at the same position should replace the existing
   # hover popup, not create additional hover popups.
   :LspHover
+  g:WaitForReplies()
   assert_equal(1, popup_list()->len())
   var activeHoverPopups = popup_list()
   popup_close(activeHoverPopups[0])
   cursor(7, 1)
-  output = execute(':LspHover')->split("\n")
+  output = execute([':LspHover', 'g:WaitForReplies()'])->split("\n")
   assert_equal('Warn: No documentation found for current keyword', output[0])
-  output = execute(':silent LspHover')->split("\n")
+  output = execute([':silent LspHover', 'g:WaitForReplies()'])->split("\n")
   assert_equal([], output)
   assert_equal([], popup_list())
 
@@ -1717,6 +1757,7 @@ def g:Test_LspHover()
   :LspDiag current
   assert_equal(1, popup_list()->len())
   :LspHover
+  g:WaitForReplies()
   assert_equal(2, popup_list()->len())
   popup_clear()
 
@@ -1725,10 +1766,12 @@ def g:Test_LspHover()
   g:LspOptionsSet({hoverInPreview: true})
   cursor(8, 4)
   :LspHover
+  g:WaitForReplies()
   assert_equal([2, 2, 'preview'], [winnr('$'), winnr(), win_gettype(1)])
   assert_equal('LspHover', winbufnr(1)->bufname())
   cursor(9, 9)
   :LspHover
+  g:WaitForReplies()
   assert_equal([2, 2, 'preview'], [winnr('$'), winnr(), win_gettype(1)])
   g:LspOptionsSet({hoverInPreview: false})
   :pclose
@@ -1802,8 +1845,8 @@ def g:Test_LspHover()
   popup_clear()
 
   # HoverAutoStop should cancel a pending timer and clear the buffer-local
-  # timer handle. Temporarily disable LSPTest shortcut path to ensure a real
-  # timer is created.
+  # timer handle. Temporarily disable the LSPTest shortcut of the hover timer
+  # to ensure a real timer is created.
   var saveLspTest = get(g:, 'LSPTest', false)
   g:LSPTest = false
   g:LspOptionsSet({hoverOnCursorHold: true, hoverDelay: 1000})
@@ -1876,6 +1919,7 @@ def g:Test_LspShowSignature()
 
   # Re-invoking should replace/update the popup, not accumulate popups.
   :LspShowSignature
+  g:WaitForReplies()
   p = popup_list()
   g:WaitForAssert(() => assert_equal(1, p->len()))
 
@@ -1884,6 +1928,7 @@ def g:Test_LspShowSignature()
   # Echo mode should avoid popup creation while still requesting signature help.
   g:LspOptionsSet({echoSignature: true, showSignatureDocs: false})
   :LspShowSignature
+  g:WaitForReplies()
   g:WaitForAssert(() => assert_equal([], popup_list()))
 
   # Enabling docs should remain compatible with clangd replies.
@@ -1910,6 +1955,7 @@ def g:Test_LspShowSignature()
   # error
   cursor(1, 1)
   :LspShowSignature
+  g:WaitForReplies()
 
   g:LspOptionsSet({showSignature: true, echoSignature: false, showSignatureDocs: false})
   :%bw!
@@ -2465,17 +2511,26 @@ def g:Test_LspSymbolSearch()
 
   cursor(1, 1)
   feedkeys(":LspSymbolSearch lsptest_funcB\<CR>", "xt")
+  g:WaitForReplies()
   assert_equal([5, 6], [line('.'), col('.')])
 
+  # Type in the symbol menu once it shows the symbols of the reply
   cursor(1, 1)
-  feedkeys(":LspSymbolSearch lsptest_func\<CR>\<Down>\<Down>\<CR>", "xt")
+  feedkeys(":LspSymbolSearch lsptest_func\<CR>", "xt")
+  g:WaitForReplies()
+  feedkeys("\<Down>\<Down>\<CR>", "xt")
   assert_equal([9, 6], [line('.'), col('.')])
 
   cursor(1, 1)
-  feedkeys(":LspSymbolSearch lsptest_func\<CR>A\<BS>B\<CR>", "xt")
+  feedkeys(":LspSymbolSearch lsptest_func\<CR>", "xt")
+  g:WaitForReplies()
+  feedkeys("A\<BS>B", "xt")
+  g:WaitForReplies()
+  feedkeys("\<CR>", "xt")
   assert_equal([5, 6], [line('.'), col('.')])
 
-  var output = execute(':LspSymbolSearch lsptest_nonexist')->split("\n")
+  var output = execute([':LspSymbolSearch lsptest_nonexist',
+			'g:WaitForReplies()'])->split("\n")
   assert_equal('Warn: Symbol "lsptest_nonexist" is not found', output[0])
 
   :%bw!
@@ -2500,7 +2555,11 @@ def g:Test_LspSymbolSearch_SpecialFileName()
     g:WaitForServerFileLoad(0)
     :setlocal nomodified
 
-    feedkeys(":LspSymbolSearch xsymsearch_func\<CR>A\<BS>B\<CR>", "xt")
+    feedkeys(":LspSymbolSearch xsymsearch_func\<CR>", "xt")
+    g:WaitForReplies()
+    feedkeys("A\<BS>B", "xt")
+    g:WaitForReplies()
+    feedkeys("\<CR>", "xt")
     assert_equal([fname, 4, 6, 1],
 		 [expand('%:t'), line('.'), col('.'), winnr('$')])
   finally
@@ -2532,6 +2591,7 @@ def g:Test_LspIncomingCalls()
   g:WaitForServerFileLoad(0)
   cursor(1, 6)
   :LspIncomingCalls
+  g:WaitForReplies()
   assert_equal([1, 2], [winnr(), winnr('$')])
   var l = getline(1, '$')
   var [open, closed] = has('gui_running') ? ['▼', '▶'] : ['-', '+']
@@ -2558,6 +2618,7 @@ def g:Test_LspOutline()
   g:WaitForServerFileLoad(0)
   var winid = win_getid()
   :LspOutline
+  g:WaitForReplies()
   assert_equal(2, winnr('$'))
   var bnum = winbufnr(winid + 1)
   assert_equal('LSP-Outline', bufname(bnum))
@@ -2574,6 +2635,7 @@ def g:Test_LspOutline()
   # Validate position vert botright
   g:LspOptionsSet({outlineOnRight: true})
   :LspOutline
+  g:WaitForReplies()
   assert_equal(2, winnr('$'))
   bnum = winbufnr(winid + 2)
   assert_equal('LSP-Outline', bufname(bnum))
@@ -2584,6 +2646,7 @@ def g:Test_LspOutline()
 
   # Validate <mods> position botright (below)
   :botright LspOutline
+  g:WaitForReplies()
   assert_equal(2, winnr('$'))
   bnum = winbufnr(winid + 3)
   assert_equal('LSP-Outline', bufname(bnum))
@@ -2594,6 +2657,7 @@ def g:Test_LspOutline()
   # Validate that outlineWinSize works for LspOutline
   g:LspOptionsSet({outlineWinSize: 40})
   :LspOutline
+  g:WaitForReplies()
   assert_equal(2, winnr('$'))
   bnum = winbufnr(winid + 4)
   assert_equal('LSP-Outline', bufname(bnum))
@@ -2604,6 +2668,7 @@ def g:Test_LspOutline()
 
   # Validate that <count> works for LspOutline
   :37LspOutline
+  g:WaitForReplies()
   assert_equal(2, winnr('$'))
   bnum = winbufnr(winid + 5)
   assert_equal('LSP-Outline', bufname(bnum))
@@ -2626,6 +2691,7 @@ def g:Test_LspOutline_SpecialFileName()
     g:WaitForServerFileLoad(0)
     :setlocal nomodified
     :LspOutline
+    g:WaitForReplies()
     assert_equal(['Function@', '  xFuncOutlineSpecial'],
 		 getbufline('LSP-Outline', 4, '$'))
     # Close the file window so that the jump opens the file again
@@ -2747,22 +2813,21 @@ def g:Test_ScanFindIdent()
 
   # LspGotoDefinition et al
   cursor(5, 10)
-  assert_equal([], execute('LspGotoDefinition')->split("\n"))
+  assert_equal([], execute(['LspGotoDefinition', 'g:WaitForReplies()'])->split("\n"))
   assert_equal([2, 14], [line('.'), col('.')])
 
   cursor(6, 10)
-  assert_equal([], execute('LspGotoDefinition')->split("\n"))
+  assert_equal([], execute(['LspGotoDefinition', 'g:WaitForReplies()'])->split("\n"))
   assert_equal([1, 5], [line('.'), col('.')])
 
   # LspShowReferences
   cursor(6, 10)
-  assert_equal([], execute('LspShowReferences')->split("\n"))
+  assert_equal([], execute(['LspShowReferences', 'g:WaitForReplies()'])->split("\n"))
   :lclose
 
   # LspRename
   cursor(6, 10)
-  assert_equal([], execute('LspRename counterFI')->split("\n"))
-  sleep 100m
+  assert_equal([], execute(['LspRename counterFI', 'g:WaitForReplies()'])->split("\n"))
   assert_equal('int counterFI;', getline(1))
   assert_equal('  return    counterFI + 1;', getline(6))
 
@@ -2782,7 +2847,7 @@ def g:Test_OmniComplete_FirstColumn()
   g:WaitForServerFileLoad(0)
   redraw!
 
-  feedkeys("G0i\<C-X>\<C-O>", 'xt')
+  g:FeedOmniCompleteKeys("G0i\<C-X>\<C-O>")
   assert_equal('Foo_t#define FOO 1', getline('.'))
   :%bw!
 enddef
@@ -2803,7 +2868,7 @@ def g:Test_OmniComplete_Multibyte()
   redraw!
 
   cursor(5, 36)
-  feedkeys("cwthis\<C-X>\<C-O>", 'xt')
+  g:FeedOmniCompleteKeys("cwthis\<C-X>\<C-O>")
   assert_equal('  int len = strlen("©©©©©") + thisVar;', getline('.'))
   :%bw!
 enddef
@@ -2829,11 +2894,14 @@ def g:Test_OmniComplete_Struct()
   g:WaitForServerFileLoad(0)
   redraw!
 
+  # Vim handles a CTRL-N typed while 'omnifunc' waits for the reply before
+  # there are matches, and Vim 9.2.321 loses it.  Behind a <Cmd>, CTRL-N
+  # waits for the matches.
   cursor(10, 12)
-  feedkeys("cwb\<C-X>\<C-O>\<C-N>\<C-Y>", 'xt')
+  g:FeedOmniCompleteKeys("cwb\<C-X>\<C-O>\<Cmd>\<CR>\<C-N>\<C-Y>")
   assert_equal('    myTest.baz = 10;', getline('.'))
   cursor(11, 12)
-  feedkeys("cw\<C-X>\<C-O>\<C-N>\<C-Y>", 'xt')
+  g:FeedOmniCompleteKeys("cw\<C-X>\<C-O>\<Cmd>\<CR>\<C-N>\<C-Y>")
   assert_equal('    pTest->baz = 20;', getline('.'))
   :%bw!
 enddef
@@ -2856,7 +2924,7 @@ def g:Test_OmniComplete_AfterParen()
   cursor(4, 1)
   var save_completeopt = &completeopt
   set completeopt+=noselect,noinsert
-  feedkeys("A\<C-X>\<C-O>\<C-Y>", 'xt')
+  g:FeedOmniCompleteKeys("A\<C-X>\<C-O>\<C-Y>")
   assert_equal('  printf(', getline('.'))
   &completeopt = save_completeopt
   :%bw!
@@ -2882,6 +2950,7 @@ def g:Test_InlayHints()
   assert_equal([], prop_list(7))
 
   :LspInlayHints enable
+  g:WaitForReplies()
   var p = prop_list(7)
   assert_equal([9, 'LspInlayHintsParam'], [p[0].col, p[0].type])
   assert_equal([13, 'LspInlayHintsParam'], [p[1].col, p[1].type])
@@ -2890,6 +2959,8 @@ def g:Test_InlayHints()
   assert_equal([], prop_list(7))
 
   g:LspOptionsSet({showInlayHints: true})
+  g:WaitForReplies()
+  p = prop_list(7)
   assert_equal([9, 'LspInlayHintsParam'], [p[0].col, p[0].type])
   assert_equal([13, 'LspInlayHintsParam'], [p[1].col, p[1].type])
 
@@ -2899,6 +2970,8 @@ def g:Test_InlayHints()
   :hide enew
   :LspInlayHints enable
   :bprev
+  g:WaitForReplies()
+  p = prop_list(7)
   assert_equal([9, 'LspInlayHintsParam'], [p[0].col, p[0].type])
   assert_equal([13, 'LspInlayHintsParam'], [p[1].col, p[1].type])
 
@@ -3106,7 +3179,7 @@ def g:Test_DocumentSymbol()
 
   v:errmsg = ''
   :LspDocumentSymbol
-  sleep 50m
+  g:WaitForReplies()
   feedkeys("x\<CR>", 'xt')
   popup_clear()
   assert_equal('', v:errmsg)
@@ -3125,6 +3198,7 @@ def g:Test_LspDocumentLink()
 
   # Links are shown in a location list by default
   :LspDocumentLink
+  g:WaitForReplies()
   assert_equal('quickfix', getwinvar(winnr('$'), '&buftype'))
   assert_equal('Document Links', getloclist(0, {title: 0}).title)
   var loclist: list<dict<any>> = getloclist(0)
@@ -3136,6 +3210,7 @@ def g:Test_LspDocumentLink()
 
   g:LspOptionsSet({useQuickfixForLocations: true})
   :LspDocumentLink
+  g:WaitForReplies()
   assert_equal('quickfix', getwinvar(winnr('$'), '&buftype'))
   var qfl: list<dict<any>> = getqflist()
   assert_equal(1, qfl->len())
@@ -3145,6 +3220,7 @@ def g:Test_LspDocumentLink()
 
   g:LspOptionsSet({keepFocusInReferences: false})
   :LspDocumentLink
+  g:WaitForReplies()
   assert_equal('', &buftype)
   :lclose
   g:LspOptionsSet({keepFocusInReferences: true})
@@ -3152,13 +3228,15 @@ def g:Test_LspDocumentLink()
   # No link on the cursor line
   cursor(2, 1)
   assert_equal('Warn: No document link found at the cursor position',
-	       execute('LspDocumentLinkOpen')->split("\n")[0])
+	       execute(['LspDocumentLinkOpen', 'g:WaitForReplies()'])
+		 ->split("\n")[0])
   assert_equal(bnr, bufnr())
 
   # Open the link under the cursor and go back with the tag stack
   cursor(1, 15)
   var tagStackLen: number = gettagstack().length
   :LspDocumentLinkOpen
+  g:WaitForReplies()
   assert_equal('Xdoclink.h', expand('%:t'))
   assert_equal([1, 1], [line('.'), col('.')])
   assert_equal(tagStackLen + 1, gettagstack().length)
@@ -3169,6 +3247,7 @@ def g:Test_LspDocumentLink()
   # With the cursor elsewhere on the line, open the link on the line
   cursor(1, 1)
   :vert LspDocumentLinkOpen
+  g:WaitForReplies()
   assert_equal(2, winnr('$'))
   assert_equal('row', winlayout()[0])
   assert_equal('Xdoclink.h', expand('%:t'))

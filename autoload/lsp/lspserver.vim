@@ -68,6 +68,7 @@ def Exit_cb(lspserver: dict<any>, job: job, status: number): void
     lspserver.diagnosticPullTimer = -1
   endif
   ClearMap(lspserver.pendingPullBufnrs)
+  ClearMap(lspserver.pendingRequests)
   lspserver.running = false
   lspserver.ready = false
 enddef
@@ -108,6 +109,7 @@ def StartServer(lspserver: dict<any>, bnr: number): number
   ClearMap(lspserver.workDoneProgressTokens)
   ClearMap(lspserver.pendingPullBufnrs)
   lspserver.diagnosticPullTimer = -1
+  ClearMap(lspserver.pendingRequests)
   ClearMap(lspserver.supersedableRequests)
   # A new server process has no open documents
   ClearMap(lspserver.docBufnrs)
@@ -319,6 +321,7 @@ def StopServer(lspserver: dict<any>): number
     lspserver.diagnosticPullTimer = -1
   endif
   ClearMap(lspserver.pendingPullBufnrs)
+  ClearMap(lspserver.pendingRequests)
   lspserver.running = false
   lspserver.ready = false
   return 0
@@ -619,6 +622,10 @@ enddef
 # is not reported and "RpcCb" gets it, also for a stale request.
 def AsyncRpcCb(lspserver: dict<any>, method: string, RpcCb: func,
 	       handleError: bool, chan: channel, reply: dict<any>)
+  if reply->has_key('id') && lspserver.pendingRequests->has_key(reply.id)
+    lspserver.pendingRequests->remove(reply.id)
+  endif
+
   if lspserver.debug
     lspserver.traceLog($'Got response {reply->json_encode()}')
   endif
@@ -701,18 +708,12 @@ def AsyncRpc(lspserver: dict<any>, method: string, params: any, Cbfunc: func,
   var Fn = function('AsyncRpcCb', [lspserver, method, Cbfunc,
 				   opts->get('handleError', true)])
 
-  if get(g:, 'LSPTest')
-    # When running LSP tests, make this a synchronous RPC call
-    var id = lspserver.nextSyncRpcId
-    Fn(test_null_channel(), Rpc(lspserver, method, params, {handleError: false}))
-    return id
-  endif
-
-  # Otherwise, make an asynchronous RPC call
   var reply = job->ch_sendexpr(req, {callback: Fn})
   if reply->empty()
     return -1
   endif
+  # Until its reply is processed, so that one can wait for that
+  lspserver.pendingRequests[reply.id] = method
 
   if lspserver.debug
     var logreq = {id: reply.id}->extend(req)
@@ -744,7 +745,8 @@ def AsyncRpcSupersede(lspserver: dict<any>, key: string, method: string,
   CancelSupersedableRequest(lspserver, key)
 
   # The callback identifies its request by this Dict and not by the message
-  # id, because in tests the callback is invoked before AsyncRpc() returns.
+  # id, which is known only once rpc_a() returns: a stand-in for it, as in the
+  # tests, can invoke the callback before that.
   var req: dict<number> = {id: -1}
   lspserver.supersedableRequests[key] = req
   var id = lspserver.rpc_a(method, params, (_: dict<any>, reply, error) => {
@@ -3225,6 +3227,8 @@ export def NewLspServer(serverParams: dict<any>): dict<any>
   # when it doesn't use it.
   var messages: list<string> = []
   var syncRpcReplies: dict<dict<any>> = {}
+  # The method of each asynchronous request waiting for its reply, by id
+  var pendingRequests: dict<string> = {}
   var supersedableRequests: dict<dict<number>> = {}
   var diagnosticResultIds: dict<string> = {}
   var pendingPullBufnrs: dict<bool> = {}
@@ -3261,6 +3265,7 @@ export def NewLspServer(serverParams: dict<any>): dict<any>
     completeItemsIsIncomplete: false,
     nextSyncRpcId: SYNC_RPC_FIRST_ID,
     syncRpcReplies: syncRpcReplies,
+    pendingRequests: pendingRequests,
     supersedableRequests: supersedableRequests,
     peekSymbolFilePopup: -1,
     peekSymbolPopup: -1,

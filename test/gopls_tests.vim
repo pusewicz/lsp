@@ -52,22 +52,24 @@ def g:Test_LspGoto()
 
   cursor(9, 10)
   :LspGotoDefinition
+  g:WaitForReplies()
   assert_equal([7, 6], [line('.'), col('.')])
   exe "normal! \<C-t>"
   assert_equal([9, 10], [line('.'), col('.')])
 
   cursor(9, 13)
   :LspGotoImpl
+  g:WaitForReplies()
   assert_equal([4, 9], [line('.'), col('.')])
 
   cursor(13, 13)
   :LspGotoImpl
+  g:WaitForReplies()
   assert_equal([4, 9], [line('.'), col('.')])
 
   # Two implementions needs to be shown in a location list
   cursor(4, 9)
-  assert_equal('', execute('LspGotoImpl'))
-  sleep 200m
+  assert_equal('', execute(['LspGotoImpl', 'g:WaitForReplies()']))
   var loclist: list<dict<any>> = getloclist(0)
   assert_equal('quickfix', getwinvar(winnr('$'), '&buftype'))
   assert_equal(2, loclist->len())
@@ -79,8 +81,7 @@ def g:Test_LspGoto()
   # Two implementions needs to be shown in a quickfix list
   g:LspOptionsSet({ useQuickfixForLocations: true })
   cursor(4, 9)
-  assert_equal('', execute('LspGotoImpl'))
-  sleep 200m
+  assert_equal('', execute(['LspGotoImpl', 'g:WaitForReplies()']))
   var qfl: list<dict<any>> = getqflist()
   assert_equal('quickfix', getwinvar(winnr('$'), '&buftype'))
   assert_equal(2, qfl->len())
@@ -93,7 +94,7 @@ def g:Test_LspGoto()
   # Two implementions needs to be peeked in a popup
   cursor(4, 9)
   :LspPeekImpl
-  sleep 10m
+  g:WaitForReplies()
   var ids = popup_list()
   assert_equal(2, ids->len())
   var filePopupAttrs = ids[0]->popup_getoptions()
@@ -109,12 +110,12 @@ def g:Test_LspGoto()
 
   # Jump to the first implementation
   cursor(4, 9)
-  assert_equal('', execute(':1LspGotoImpl'))
+  assert_equal('', execute([':1LspGotoImpl', 'g:WaitForReplies()']))
   assert_equal([9, 13], [line('.'), col('.')])
 
   # Jump to the second implementation
   cursor(4, 9)
-  assert_equal('', execute(':2LspGotoImpl'))
+  assert_equal('', execute([':2LspGotoImpl', 'g:WaitForReplies()']))
   assert_equal([13, 13], [line('.'), col('.')])
   bw!
 enddef
@@ -141,7 +142,7 @@ def g:Test_LspFold()
   g:WaitForServerFileLoad(0)
 
   :LspFold
-  sleep 50m
+  g:WaitForReplies()
   assert_equal(1, foldlevel(3))
   var r = [0, 0, 1, 1, 0, 1, 1, 0, 0, 0, 0]
   assert_equal(r, range(1, 11)->map((_, v) => foldlevel(v)))
