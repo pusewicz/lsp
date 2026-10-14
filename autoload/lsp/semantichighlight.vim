@@ -229,6 +229,9 @@ enddef
 export def BufferDeInit(bnr: number)
   StopSemanticHighlightTimer(bnr)
   SemanticHighlightCleanup(bnr)
+  if exists('#LspSemanticRefresh')
+    autocmd_delete([{bufnr: bnr, group: 'LspSemanticRefresh'}])
+  endif
 enddef
 
 # Parse the semantic highlight reply from the language server and update the
@@ -307,6 +310,32 @@ def LspUpdateSemanticHighlight(bnr: number)
   var timerId = timer_start(opt.lspOptions.semanticHighlightDelay,
     function('SemanticHighlightTimerCb', [lspserver, bnr]))
   setbufvar(bnr, 'LspSemanticTimer', timerId)
+enddef
+
+# Refresh the semantic highlighting from "lspserver", which asked for it with a
+# "workspace/semanticTokens/refresh" request: now in the buffers shown in a
+# window, and in the other buffers when they are shown in one again.
+export def Refresh(lspserver: dict<any>)
+  if !opt.lspOptions.semanticHighlight
+    return
+  endif
+
+  for bnr in lspserver.docBufnrs->values()
+    var semanticServer: dict<any> = buf.BufLspServerGet(bnr, 'semanticTokens')
+    if semanticServer->empty() || semanticServer.id != lspserver.id
+      continue
+    endif
+    if bnr->win_findbuf()->empty()
+      autocmd_add([{bufnr: bnr,
+		    event: 'BufWinEnter',
+		    group: 'LspSemanticRefresh',
+		    once: true,
+		    replace: true,
+		    cmd: $'LspUpdateSemanticHighlight({bnr})'}])
+    else
+      LspUpdateSemanticHighlight(bnr)
+    endif
+  endfor
 enddef
 
 # Initialize the semantic highlighting for the buffer 'bnr'

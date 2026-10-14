@@ -166,10 +166,18 @@ def g:Test_RequestValidation_InvalidParamsAndMethodNotFound()
     {id: 24, method: 'client/unregisterCapability', params: {unregisterations: {}}}, -32602)
   AssertRequestError(lspserver, responses,
     {id: 25, method: 'window/workDoneProgress/create', params: {}}, -32602)
+  AssertRequestError(lspserver, responses,
+    {id: 26, method: 'workspace/inlayHint/refresh', params: {foo: 1}}, -32602)
+  AssertRequestError(lspserver, responses,
+    {id: 27, method: 'workspace/semanticTokens/refresh', params: {foo: 1}},
+    -32602)
 
   # Unknown method should return MethodNotFound.
   AssertRequestError(lspserver, responses,
-    {id: 26, method: 'workspace/notARealMethod', params: {}}, -32601)
+    {id: 28, method: 'workspace/notARealMethod', params: {}}, -32601)
+  # Inline values are not supported
+  AssertRequestError(lspserver, responses,
+    {id: 29, method: 'workspace/inlineValue/refresh'}, -32601)
 enddef
 
 def g:Test_ProcessRequest_CustomHandlerException_ReturnsInternalError()
@@ -1286,6 +1294,198 @@ def g:Test_DiagnosticRefresh_PullsDocumentsOpenOnTheServer()
     endfor
     :%bw!
   endtry
+enddef
+
+# Returns a running test language server providing inlay hints and semantic
+# tokens, which adds the replies it sends to "responses" and the buffer number
+# of each document it requests the inlay hints or the semantic tokens of to
+# "requested".
+def MakeRefreshTestLspServer(responses: list<dict<any>>,
+			     requested: list<number>): dict<any>
+  var lspserver = MakeTestLspServer([])
+  lspserver.running = true
+  lspserver.ready = true
+  lspserver.isInlayHintProvider = true
+  lspserver.isSemanticTokensProvider = true
+  lspserver.sendResponse = function(CaptureResponse, [responses])
+  lspserver.inlayHintsShow = (bnr: number) => {
+    requested->add(bnr)
+  }
+  lspserver.semanticHighlightUpdate = (bnr: number) => {
+    requested->add(bnr)
+  }
+  return lspserver
+enddef
+
+# Edit three buffers, of which the second one is not shown in a window, and
+# open their documents on "lspserver".  The document of the third buffer is
+# opened on "otherServer" first, which then provides the features for it.
+# Returns the buffer numbers.
+def OpenRefreshTestDocuments(lspserver: dict<any>,
+			     otherServer: dict<any>): list<number>
+  silent! edit XRefresh1.txt
+  silent! new XRefresh2.txt
+  :hide
+  silent! new XRefresh3.txt
+  var bufnrs = ['XRefresh1.txt', 'XRefresh2.txt', 'XRefresh3.txt']
+    ->map((_, name) => bufnr(name))
+  buf.BufLspServerSet(bufnrs[2], otherServer)
+  otherServer.textdocDidOpen(bufnrs[2], 'text')
+  for bnr in bufnrs
+    buf.BufLspServerSet(bnr, lspserver)
+    lspserver.textdocDidOpen(bnr, 'text')
+  endfor
+  return bufnrs
+enddef
+
+# Undo OpenRefreshTestDocuments().
+def CloseRefreshTestDocuments(lspserver: dict<any>, otherServer: dict<any>,
+			      bufnrs: list<number>)
+  for bnr in bufnrs
+    buf.BufLspServerRemove(bnr, lspserver)
+    buf.BufLspServerRemove(bnr, otherServer)
+  endfor
+  :%bw!
+enddef
+
+# Test that a "workspace/inlayHint/refresh" request gets a reply, and then
+# updates the inlay hints from the server right away in the documents shown in
+# a window when in Normal mode, and else after a CursorHold in them.  Not when
+# the inlay hints are not shown, and not the inlay hints of a document from
+# another server.
+def g:Test_InlayHintRefresh_UpdatesShownDocuments()
+  var responses: list<dict<any>> = []
+  var requested: list<number> = []
+  var otherRequested: list<number> = []
+  var lspserver = MakeRefreshTestLspServer(responses, requested)
+  var otherServer = MakeRefreshTestLspServer([], otherRequested)
+  var bufnrs = OpenRefreshTestDocuments(lspserver, otherServer)
+  var NeedsUpdate = () => bufnrs->mapnew((_, bnr) =>
+    bnr->getbufvar('LspInlayHintsNeedsUpdate', true))
+  g:InlayHintRefreshTest = (id: number) => {
+    lspserver.processRequest({jsonrpc: '2.0', id: id,
+			      method: 'workspace/inlayHint/refresh'})
+  }
+  try
+    for bnr in bufnrs
+      setbufvar(bnr, 'LspInlayHintsNeedsUpdate', false)
+    endfor
+    g:InlayHintRefreshTest(1)
+    assert_equal([{id: 1, result: null, error: {}}], responses)
+    assert_equal([false, false, false], NeedsUpdate())
+
+    # Not with g:LspOptionsSet(), which would show the inlay hints in every
+    # buffer.
+    opt.lspOptions.showInlayHints = true
+    feedkeys("i\<Cmd>call g:InlayHintRefreshTest(2)\<CR>\<Esc>", 'xt')
+    assert_equal([], requested)
+    assert_equal([true, true, false], NeedsUpdate())
+
+    g:InlayHintRefreshTest(3)
+    g:WaitForAssert(() => assert_equal([bufnrs[0]], requested))
+    assert_equal([false, true, false], NeedsUpdate())
+    assert_equal([1, 2, 3], responses->mapnew((_, r) => r.id))
+
+    exe $'sbuffer {bufnrs[1]}'
+    inlayhints.BufferInit(lspserver, bufnrs[1])
+    doautocmd CursorHold
+    g:WaitForAssert(() => assert_equal(bufnrs[0 : 1], requested))
+    assert_equal([], otherRequested)
+  finally
+    opt.lspOptions.showInlayHints = false
+    unlet g:InlayHintRefreshTest
+    CloseRefreshTestDocuments(lspserver, otherServer, bufnrs)
+  endtry
+enddef
+
+# Test that a "workspace/semanticTokens/refresh" request gets a reply, and
+# then updates the semantic highlighting from the server in the documents
+# shown in a window, and in the other documents when they are shown in one
+# again.  Not when semantic highlighting is off, and not the semantic
+# highlighting of a document from another server.
+def g:Test_SemanticTokensRefresh_UpdatesShownDocuments()
+  var responses: list<dict<any>> = []
+  var requested: list<number> = []
+  var otherRequested: list<number> = []
+  var lspserver = MakeRefreshTestLspServer(responses, requested)
+  var otherServer = MakeRefreshTestLspServer([], otherRequested)
+  var bufnrs = OpenRefreshTestDocuments(lspserver, otherServer)
+  var Refresh = (id: number) => {
+    lspserver.processRequest({jsonrpc: '2.0', id: id,
+			      method: 'workspace/semanticTokens/refresh'})
+  }
+  var UpdatePending = () => bufnrs->mapnew((_, bnr) =>
+    bnr->getbufvar('LspSemanticTimer', 0) > 0)
+  var RefreshWhenShown = (bnr: number) =>
+    autocmd_get({group: 'LspSemanticRefresh', pattern: $'<buffer={bnr}>'})
+    ->len()
+  try
+    Refresh(1)
+    assert_equal([{id: 1, result: null, error: {}}], responses)
+    assert_equal([false, false, false], UpdatePending())
+
+    g:LspOptionsSet({semanticHighlight: true, semanticHighlightDelay: 1})
+    Refresh(2)
+    assert_equal([2], responses[1 :]->mapnew((_, r) => r.id))
+    assert_equal([true, false, false], UpdatePending())
+    assert_equal([0, 1, 0], bufnrs->mapnew((_, bnr) => RefreshWhenShown(bnr)))
+    g:WaitForAssert(() => assert_equal([bufnrs[0]], requested))
+
+    exe $'sbuffer {bufnrs[1]}'
+    g:WaitForAssert(() => assert_equal(bufnrs[0 : 1], requested))
+    assert_equal(0, RefreshWhenShown(bufnrs[1]))
+    assert_equal([], otherRequested)
+  finally
+    g:LspOptionsSet({semanticHighlight: false, semanticHighlightDelay: 1000})
+    CloseRefreshTestDocuments(lspserver, otherServer, bufnrs)
+  endtry
+enddef
+
+# Test that detaching a buffer from its language servers cancels the update of
+# its semantic highlighting deferred until it is shown in a window.
+def g:Test_SemanticTokensRefresh_DetachCancelsUpdateWhenShown()
+  var lspserver = MakeRefreshTestLspServer([], [])
+  silent! edit XSemanticRefreshDetach1.txt
+  silent! new XSemanticRefreshDetach2.txt
+  var bnr = bufnr()
+  :hide
+  buf.BufLspServerSet(bnr, lspserver)
+  lspserver.textdocDidOpen(bnr, 'text')
+  var acmd = {group: 'LspSemanticRefresh', pattern: $'<buffer={bnr}>'}
+  g:LspOptionsSet({semanticHighlight: true})
+  try
+    lspserver.processRequest({jsonrpc: '2.0', id: 1,
+			      method: 'workspace/semanticTokens/refresh'})
+    assert_equal(1, autocmd_get(acmd)->len())
+    lsp.RemoveFile(bnr)
+    assert_equal([], autocmd_get(acmd))
+  finally
+    g:LspOptionsSet({semanticHighlight: false})
+    buf.BufLspServerRemove(bnr, lspserver)
+    :%bw!
+  endtry
+enddef
+
+# Test that a reply with no inlay hints removes the inlay hints shown in the
+# buffer, and that one without a result, as when the request was cancelled,
+# leaves them as they are.
+def g:Test_InlayHintsReply_RemovesHintsWhenThereAreNone()
+  if prop_type_get('LspInlayHintsType')->empty()
+    inlayhints.InitOnce()
+  endif
+  silent! edit XInlayHintsNone.txt
+  setline(1, ['int x = f(1);'])
+  var lspserver = MakeTestLspServer([])
+  var hint = {position: {line: 0, character: 10}, label: 'a:', kind: 2}
+  var Hints = () => prop_list(1, {types: ['LspInlayHintsParam']})->len()
+
+  inlayhints.InlayHintsReply(lspserver, [hint], {}, bufnr())
+  assert_equal(1, Hints())
+  inlayhints.InlayHintsReply(lspserver, null, {}, bufnr())
+  assert_equal(1, Hints())
+  inlayhints.InlayHintsReply(lspserver, [], {}, bufnr())
+  assert_equal(0, Hints())
+  :%bw!
 enddef
 
 def g:Test_DiagNotification_PushAndPull_AreBothRetained()

@@ -38,7 +38,9 @@ export def InlayHintsReply(lspserver: dict<any>, inlayHints: any,
     return
   endif
 
-  if inlayHints->empty()
+  # Without a result, as when the request was cancelled or the content was
+  # modified, the inlay hints are left as they are.
+  if inlayHints->type() != v:t_list
     return
   endif
 
@@ -127,6 +129,27 @@ enddef
 export def LspInlayHintsUpdateNow(bnr: number)
   setbufvar(bnr, 'LspInlayHintsNeedsUpdate', true)
   LspInlayHintsUpdate(bnr)
+enddef
+
+# Refresh the inlay hints from "lspserver", which asked for it with a
+# "workspace/inlayHint/refresh" request: now in the buffers shown in a window,
+# when in Normal mode, and in the other buffers when the cursor rests in them
+# (CursorHold), as after a change.
+export def Refresh(lspserver: dict<any>)
+  if !opt.lspOptions.showInlayHints
+    return
+  endif
+
+  for bnr in lspserver.docBufnrs->values()
+    var hintServer: dict<any> = buf.BufLspServerGet(bnr, 'inlayHint')
+    if hintServer->empty() || hintServer.id != lspserver.id
+      continue
+    endif
+    LspInlayHintsChanged(bnr)
+    if mode() == 'n' && !bnr->win_findbuf()->empty()
+      LspInlayHintsUpdate(bnr)
+    endif
+  endfor
 enddef
 
 # Stop updating the inlay hints.
