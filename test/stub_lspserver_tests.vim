@@ -407,6 +407,36 @@ def g:Test_ServerState_StaysTyped()
   :%bw!
 enddef
 
+# Test that the exit of the language server is reported with its exit status,
+# or with the signal that killed it, also in the debug log.
+def g:Test_ServerExit_ReportsHow()
+  silent! edit XServerExit.txt
+  var bnr = bufnr()
+  # Start the server asynchronously, as outside the tests.  It exits once it
+  # has read the start of the "initialize" request.
+  g:LSPTest = false
+  try
+    for [cmd, how] in [['read l; exit 3', 'exited with status 3'],
+		       ['read l; kill -SEGV $$', 'was killed by signal SEGV']]
+      var lspserver = MakeTestLspServer([])
+      var traceMsgs: list<string> = []
+      lspserver.traceLog = (msg) => traceMsgs->add(msg)
+      lspserver.path = 'sh'
+      lspserver.args = ['-c', cmd]
+      :messages clear
+
+      lspserver.startServer(bnr)
+      g:WaitForAssert(() => assert_false(lspserver.running))
+      assert_match($'^Warn: .*: LSP server (test) {how}$',
+		   execute('messages')->split("\n")[-1])
+      assert_equal([$'LSP server {how}'], traceMsgs)
+    endfor
+  finally
+    g:LSPTest = true
+    :%bw!
+  endtry
+enddef
+
 # Test that a message from the server isn't kept in the server dict once it is
 # processed, as Vim may go through all of it on every server method call.
 def g:Test_ProcessMessage_DoesNotKeepMessage()
