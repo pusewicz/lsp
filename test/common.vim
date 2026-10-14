@@ -117,13 +117,16 @@ endfunc
 
 # Wait for up to 30 seconds for the current buffer to have "diagCount"
 # diagnostics of "severity" (a key of lsp#lsp#ErrorCount()), and report the
-# diagnostics when it doesn't.
+# diagnostics when it doesn't.  A language server that is not running sends
+# no diagnostics, so stop waiting and report that instead.
 def g:WaitForDiags(diagCount: number, severity: string = 'Error')
-  g:WaitForCommon(() => lsp#lsp#ErrorCount()[severity] == diagCount, v:null,
-		  30000)
+  g:WaitForCommon(() => lsp#lsp#ErrorCount()[severity] == diagCount
+		  || !g:LspServerRunning(&filetype), v:null, 30000)
 
   assert_equal(diagCount, lsp#lsp#ErrorCount()[severity])
-  if lsp#lsp#ErrorCount()[severity] != diagCount
+  if !g:LspServerRunning(&filetype)
+    assert_report($'The language server for "{&filetype}" is not running')
+  elseif lsp#lsp#ErrorCount()[severity] != diagCount
     :LspDiag show
     assert_report(getloclist(0)->string())
     :lclose
