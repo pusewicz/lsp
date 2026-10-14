@@ -8772,6 +8772,38 @@ def g:Test_FoldExpr_UpdatesAllWindows()
   :%bw!
 enddef
 
+# Test that a "workspace/foldingRange/refresh" request gets a reply, and then
+# requests the folding ranges again for the documents whose folds are computed
+# with lsp#lsp#FoldExpr(), and whose folds change with them.  Not for a
+# document whose folds are not.
+def g:Test_FoldExpr_RefreshRequest()
+  var requests: list<dict<any>> = []
+  FoldExprTestEdit('XFoldExprRefresh1.txt', ['a', 'b', 'c'], requests)
+  var bnr = bufnr()
+  var lspserver = buf.BufLspServerGet(bnr)
+  var responses: list<dict<any>> = []
+  lspserver.sendResponse = function(CaptureResponse, [responses])
+  requests[0].Reply([{startLine: 0, endLine: 2}])
+  :silent! new XFoldExprRefresh2.txt
+  buf.BufLspServerSet(bufnr(), lspserver)
+  lsp.BufferInit(lspserver.id, bufnr())
+  assert_equal(0, foldlevel(1))
+
+  lspserver.processRequest({jsonrpc: '2.0', id: 1,
+			    method: 'workspace/foldingRange/refresh'})
+  assert_equal([{id: 1, result: null, error: {}}], responses)
+  g:WaitForAssert(() => assert_equal(2, requests->len()))
+  assert_equal(util.LspBufnrToUri(bnr), requests[1].params.textDocument.uri)
+  requests[1].Reply([{startLine: 1, endLine: 2}])
+  :wincmd w
+  assert_equal([0, 1, 1], ForEachLine('foldlevel'))
+  assert_equal(2, requests->len())
+
+  lsp.RemoveFile(bnr)
+  lsp.RemoveFile(bufnr('XFoldExprRefresh2.txt'))
+  :%bw!
+enddef
+
 # Test that the folding ranges are requested again when the file of a buffer
 # changed outside of Vim and the buffer is reloaded, which listeners don't
 # get.

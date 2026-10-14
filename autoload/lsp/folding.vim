@@ -298,6 +298,18 @@ def RefreshWindowFolds()
   endif
 enddef
 
+# Request the folding ranges again for the documents open on language server
+# "lspserver" whose folds are computed with FoldExpr() from its folding ranges.
+export def Refresh(lspserver: dict<any>)
+  for bnr in lspserver.docBufnrs->values()
+    var state: dict<any> = getbufvar(bnr, 'LspFoldState', null_dict)
+    var foldServer: dict<any> = buf.BufLspServerGet(bnr, 'foldingRange')
+    if state != null && !foldServer->empty() && foldServer.id == lspserver.id
+      ScheduleUpdate(bnr, state, 0)
+    endif
+  endfor
+enddef
+
 # Request the folding ranges of buffer "bnr", if its folds are computed with
 # FoldExpr(), now that its language servers are ready.
 export def BufferInit(bnr: number)
