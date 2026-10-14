@@ -49,6 +49,7 @@ The following language server protocol (LSP) features are supported:
 * Inline completion (ghost text)
 * Visually select symbol block/region
 * Semantic Highlight
+* Notify the language servers of changes to the files that they watch, also the changes made outside Vim (with [fswatch](https://github.com/emcrisostomo/fswatch))
 
 ## Configuration
 
@@ -180,6 +181,7 @@ call LspOptionsSet(#{
         \   condensedCompletionMenu: v:false,
         \   completionLabelMaxWidth: 0,
         \   documentationFormat: ['markdown', 'plaintext'],
+        \   watchFiles: v:true,
 	\ })
 ```
 
@@ -261,7 +263,7 @@ The tests run with the Vim of MacVim against real language servers, as the GitHu
 
 ```sh
 brew install --cask macvim-app
-brew install coreutils llvm go gopls rustup node
+brew install coreutils llvm go gopls rustup node fswatch
 rustup default stable && rustup component add rust-src
 (cd test && npm ci)
 ```

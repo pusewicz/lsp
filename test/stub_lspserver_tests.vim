@@ -21,6 +21,7 @@ import '../autoload/lsp/snippet.vim' as snippet
 import '../autoload/lsp/capabilities.vim' as capabilities
 import '../autoload/lsp/hover.vim' as hover
 import '../autoload/lsp/options.vim' as opt
+import '../autoload/lsp/watchedfiles.vim'
 
 def CaptureNotification(notifications: list<dict<any>>, method: string,
 			params: any = {}): void
@@ -9530,6 +9531,464 @@ def g:Test_InlineCompletion_ConditionalMapping()
     StopInlineCompletionServer(srv)
     :%bw!
   endtry
+enddef
+
+# Returns a running language server with the workspace folders "folders" that
+# keeps the notifications that it is sent in "notifications" and the responses
+# to the requests that it sends in "responses".
+def MakeWatchingLspServer(notifications: list<dict<any>>,
+			  responses: list<dict<any>>,
+			  folders: list<string> = []): dict<any>
+  var lspserver = MakeTestLspServer(notifications)
+  lspserver.sendResponse = function(CaptureResponse, [responses])
+  lspserver.running = true
+  lspserver.ready = true
+  lspserver.workspaceFolders = folders->mapnew((_, dir) => dir->fnamemodify(':p'))
+  return lspserver
+enddef
+
+# Has language server "lspserver" register the file system watchers
+# "watchers" with the registration ID "id", and checks that the registration
+# succeeded.
+def RegisterWatchers(lspserver: dict<any>, responses: list<dict<any>>,
+		     id: string, watchers: list<any>)
+  responses->filter((_, _) => false)
+  var registration = {id: id, method: 'workspace/didChangeWatchedFiles',
+		      registerOptions: {watchers: watchers}}
+  var request = {id: 1, method: 'client/registerCapability',
+		 params: {registrations: [registration]}}
+  lspserver.processRequest(request)
+  assert_equal([{id: 1, result: null, error: {}}], responses)
+enddef
+
+# Returns the changes of the "workspace/didChangeWatchedFiles" notifications
+# in "notifications".
+def WatchedFileChanges(notifications: list<dict<any>>): list<any>
+  return notifications->copy()
+    ->filter((_, notif) => notif.method == 'workspace/didChangeWatchedFiles')
+    ->mapnew((_, notif) => notif.params.changes)->flattennew()
+enddef
+
+# Returns the URI of the file "fname" in a "workspace/didChangeWatchedFiles"
+# notification.  The full path of a file in a directory that is a symbolic
+# link is in the directory that the link points to.
+def WatchedFileUri(fname: string): string
+  return util.LspPathToUri(fname->fnamemodify(':p')
+			      ->substitute('\(.\)/$', '\1', ''))
+enddef
+
+# Returns the types of the changes to the file with URI "uri" in the
+# "workspace/didChangeWatchedFiles" notifications in "notifications".
+def WatchedFileChangeTypes(notifications: list<dict<any>>, uri: string): list<any>
+  return WatchedFileChanges(notifications)
+    ->filter((_, change) => change.uri == uri)->mapnew((_, change) => change.type)
+enddef
+
+# Waits for a change to the file with URI "uri" in the
+# "workspace/didChangeWatchedFiles" notifications in "notifications", and
+# checks that the first one is of type "type".  Later changes can be fswatch
+# reporting the change that Vim made.
+def AssertWatchedFileChange(notifications: list<dict<any>>, uri: string,
+			    type: number)
+  g:WaitForAssert(() => assert_notequal([],
+					WatchedFileChangeTypes(notifications, uri)))
+  assert_equal(type, WatchedFileChangeTypes(notifications, uri)->get(0, 0))
+enddef
+
+# Returns the fswatch jobs that are running.
+def FswatchJobs(): list<job>
+  return job_info()->filter((_, job) => job->job_info().cmd[0] == 'fswatch'
+				       && job->job_status() == 'run')
+enddef
+
+# Test that the file system watchers that a language server registers match
+# the files as their glob patterns say.
+def g:Test_WatchedFiles_GlobPatterns()
+  var notifications: list<dict<any>> = []
+  var responses: list<dict<any>> = []
+  var lspserver = MakeWatchingLspServer(notifications, responses,
+					['/XLspWatchWs'])
+  try
+    RegisterWatchers(lspserver, responses, 'globs', [
+      {globPattern: {baseUri: 'file:///XLspWatch', pattern: '**/*.{go,mod}'}},
+      {globPattern: '/XLspWatch/abs/*.txt'},
+      {globPattern: '**/Cargo.toml'},
+      {globPattern: {baseUri: 'file:///XLspWatch/', pattern: 'n/file.[0-9]'}},
+      {globPattern: {baseUri: 'file:///XLspWatch', pattern: 'n/[!a]x'}},
+      {globPattern: {baseUri: 'file:///XLspWatch', pattern: 'q/?.c'}},
+      {globPattern: {baseUri: 'file:///XLspWatch', pattern: 'lit/a+b$.c~'}},
+      {globPattern: {baseUri: 'file:///XLspWatch', pattern: 'u/{a'}},
+      {globPattern: {baseUri: 'file:///XLspWatch', pattern: 'all/**'}},
+      {globPattern: {baseUri: {uri: 'file:///XLspWatch2', name: 'w2'},
+		     pattern: '*.c'}}
+    ])
+    var matched: list<string> = [
+      '/XLspWatch/a.go', '/XLspWatch/x/y/b.mod', '/XLspWatch/abs/a.txt',
+      '/XLspWatchWs/p/Cargo.toml', '/XLspWatch/n/file.1', '/XLspWatch/n/bx',
+      '/XLspWatch/q/a.c', '/XLspWatch/lit/a+b$.c~', '/XLspWatch/u/{a',
+      '/XLspWatch/all', '/XLspWatch/all/x/y', '/XLspWatch2/a.c']
+    var unmatched: list<string> = [
+      '/XLspWatch/a.rs', '/XLspOther/a.go', '/XLspWatch/abs/sub/a.txt',
+      # Not in a workspace folder
+      '/XLspOther/Cargo.toml',
+      '/XLspWatch/n/file.a', '/XLspWatch/n/ax', '/XLspWatch/q/ab.c',
+      '/XLspWatch/lit/aab$.c~', '/XLspWatch/allx', '/XLspWatch2/s/a.c']
+    for path in unmatched + matched
+      watchedfiles.VimChangedFile(path, watchedfiles.FILE_CHANGED)
+    endfor
+    g:WaitForAssert(() => assert_equal(1, notifications->len()))
+    assert_equal(matched->mapnew((_, path) => ({uri: util.LspPathToUri(path),
+						type: 2})),
+		 WatchedFileChanges(notifications))
+  finally
+    watchedfiles.RemoveServer(lspserver)
+  endtry
+enddef
+
+# Test that a change is sent for the watchers of its kind, and that the
+# changes made to a file before they are sent are merged into one.
+def g:Test_WatchedFiles_ChangeKindsAndMerging()
+  var notifications: list<dict<any>> = []
+  var responses: list<dict<any>> = []
+  var lspserver = MakeWatchingLspServer(notifications, responses)
+  try
+    RegisterWatchers(lspserver, responses, 'kinds', [
+      {globPattern: {baseUri: 'file:///XLspWatch', pattern: '*.del'}, kind: 4},
+      {globPattern: {baseUri: 'file:///XLspWatch', pattern: '*.c'}}])
+    const CREATED = watchedfiles.FILE_CREATED
+    const CHANGED = watchedfiles.FILE_CHANGED
+    const DELETED = watchedfiles.FILE_DELETED
+    for [fname, type] in [
+	['x.del', CREATED], ['y.del', DELETED],
+	['m1.c', CREATED], ['m1.c', DELETED],
+	['m2.c', DELETED], ['m2.c', CREATED],
+	['m3.c', CREATED], ['m3.c', CHANGED],
+	['m4.c', CHANGED], ['m4.c', DELETED],
+	['m5.c', CHANGED], ['m5.c', CHANGED]]
+      watchedfiles.VimChangedFile($'/XLspWatch/{fname}', type)
+    endfor
+    g:WaitForAssert(() => assert_equal(1, notifications->len()))
+    assert_equal([{uri: 'file:///XLspWatch/y.del', type: DELETED},
+		  {uri: 'file:///XLspWatch/m2.c', type: CHANGED},
+		  {uri: 'file:///XLspWatch/m3.c', type: CREATED},
+		  {uri: 'file:///XLspWatch/m4.c', type: DELETED},
+		  {uri: 'file:///XLspWatch/m5.c', type: CHANGED}],
+		 WatchedFileChanges(notifications))
+  finally
+    watchedfiles.RemoveServer(lspserver)
+  endtry
+enddef
+
+# Test that each language server is sent the changes for its own watchers,
+# and that unregistered watchers are no longer used.
+def g:Test_WatchedFiles_RegistrationsPerServer()
+  var notifications1: list<dict<any>> = []
+  var responses1: list<dict<any>> = []
+  var server1 = MakeWatchingLspServer(notifications1, responses1)
+  var notifications2: list<dict<any>> = []
+  var responses2: list<dict<any>> = []
+  var server2 = MakeWatchingLspServer(notifications2, responses2)
+  try
+    RegisterWatchers(server1, responses1, 'a', [{globPattern: '/XLspWatch/*.a'}])
+    RegisterWatchers(server1, responses1, 'b', [{globPattern: '/XLspWatch/*.b'}])
+    RegisterWatchers(server2, responses2, 'a', [{globPattern: '/XLspWatch/*.a'}])
+    assert_true(exists('#LspWatchedFiles#BufWritePost'))
+
+    responses1->filter((_, _) => false)
+    var unregistration = {id: 'a', method: 'workspace/didChangeWatchedFiles'}
+    var request = {id: 2, method: 'client/unregisterCapability',
+		   params: {unregisterations: [unregistration]}}
+    server1.processRequest(request)
+    assert_equal([{id: 2, result: null, error: {}}], responses1)
+
+    watchedfiles.VimChangedFile('/XLspWatch/x.a', watchedfiles.FILE_CHANGED)
+    watchedfiles.VimChangedFile('/XLspWatch/x.b', watchedfiles.FILE_CHANGED)
+    g:WaitForAssert(() => assert_equal(1, notifications2->len()))
+    assert_equal([{uri: 'file:///XLspWatch/x.b', type: 2}],
+		 WatchedFileChanges(notifications1))
+    assert_equal([{uri: 'file:///XLspWatch/x.a', type: 2}],
+		 WatchedFileChanges(notifications2))
+  finally
+    watchedfiles.RemoveServer(server1)
+    watchedfiles.RemoveServer(server2)
+  endtry
+  assert_false(exists('#LspWatchedFiles'))
+enddef
+
+# Test that a registration with a watcher that is not valid fails and
+# registers none of its watchers.
+def g:Test_WatchedFiles_InvalidRegistration()
+  var notifications1: list<dict<any>> = []
+  var responses1: list<dict<any>> = []
+  var server1 = MakeWatchingLspServer(notifications1, responses1)
+  var notifications2: list<dict<any>> = []
+  var responses2: list<dict<any>> = []
+  var server2 = MakeWatchingLspServer(notifications2, responses2)
+  try
+    var valid: dict<any> = {globPattern: '/XLspWatch/*'}
+    for registration in [
+	{id: 'r', method: 'workspace/didChangeWatchedFiles'},
+	{method: 'workspace/didChangeWatchedFiles',
+	 registerOptions: {watchers: [valid]}},
+	{id: 'r', method: 'workspace/didChangeWatchedFiles',
+	 registerOptions: {watchers: {}}},
+	{id: 'r', method: 'workspace/didChangeWatchedFiles',
+	 registerOptions: {watchers: [valid, {}]}},
+	{id: 'r', method: 'workspace/didChangeWatchedFiles',
+	 registerOptions: {watchers: [valid, {globPattern: 1}]}},
+	{id: 'r', method: 'workspace/didChangeWatchedFiles',
+	 registerOptions: {watchers: [valid, {globPattern: {pattern: '*'}}]}},
+	{id: 'r', method: 'workspace/didChangeWatchedFiles',
+	 registerOptions: {watchers: [valid, {globPattern: '*', kind: '7'}]}}]
+      AssertRequestError(server1, responses1,
+	{id: 3, method: 'client/registerCapability',
+	 params: {registrations: [registration]}}, -32602)
+    endfor
+
+    RegisterWatchers(server2, responses2, 'r', [valid])
+    watchedfiles.VimChangedFile('/XLspWatch/x', watchedfiles.FILE_CHANGED)
+    g:WaitForAssert(() => assert_equal(1, notifications2->len()))
+    assert_equal([], notifications1)
+  finally
+    watchedfiles.RemoveServer(server1)
+    watchedfiles.RemoveServer(server2)
+  endtry
+enddef
+
+# Test that the client offers to watch files only when the "watchFiles" option
+# is set and fswatch is found, and that watchers registered without the option
+# are ignored.
+def g:Test_WatchedFiles_WatchFilesOption()
+  var notifications1: list<dict<any>> = []
+  var responses1: list<dict<any>> = []
+  var server1 = MakeWatchingLspServer(notifications1, responses1)
+  var notifications2: list<dict<any>> = []
+  var responses2: list<dict<any>> = []
+  var server2 = MakeWatchingLspServer(notifications2, responses2)
+  var watcher: dict<any> = {globPattern: '/XLspWatch/*'}
+  try
+    var workspaceCaps: dict<any> = capabilities.GetClientCaps().workspace
+    assert_equal(executable('fswatch'),
+		 workspaceCaps->has_key('didChangeWatchedFiles'))
+    if executable('fswatch')
+      assert_equal({dynamicRegistration: true, relativePatternSupport: true},
+		   capabilities.GetClientCaps().workspace.didChangeWatchedFiles)
+    endif
+
+    g:LspOptionsSet({watchFiles: false})
+    assert_false(
+      capabilities.GetClientCaps().workspace->has_key('didChangeWatchedFiles'))
+    RegisterWatchers(server1, responses1, 'r', [watcher])
+
+    g:LspOptionsSet({watchFiles: true})
+    RegisterWatchers(server2, responses2, 'r', [watcher])
+    watchedfiles.VimChangedFile('/XLspWatch/x', watchedfiles.FILE_CHANGED)
+    g:WaitForAssert(() => assert_equal(1, notifications2->len()))
+    assert_equal([], notifications1)
+  finally
+    g:LspOptionsSet({watchFiles: true})
+    watchedfiles.RemoveServer(server1)
+    watchedfiles.RemoveServer(server2)
+  endtry
+enddef
+
+# Test that the changes to files that Vim writes are sent.
+def g:Test_WatchedFiles_VimWrites()
+  var dir = 'XWatchedFilesVimWrites'
+  mkdir(dir)
+  var notifications: list<dict<any>> = []
+  var responses: list<dict<any>> = []
+  var lspserver = MakeWatchingLspServer(notifications, responses, [dir])
+  try
+    RegisterWatchers(lspserver, responses, 'txt', [{globPattern: '**/*.txt'}])
+    var fname = $'{dir}/new.txt'
+    var copy = $'{dir}/copy.txt'
+    var part = $'{dir}/part.txt'
+    var other = $'{dir}/other.log'
+
+    exe $'edit {fname}'
+    setline(1, ['one', 'two'])
+    :write
+    AssertWatchedFileChange(notifications, WatchedFileUri(fname),
+			    watchedfiles.FILE_CREATED)
+
+    notifications->filter((_, _) => false)
+    setline(1, 'three')
+    :write
+    AssertWatchedFileChange(notifications, WatchedFileUri(fname),
+			    watchedfiles.FILE_CHANGED)
+
+    notifications->filter((_, _) => false)
+    exe $'write {copy}'
+    AssertWatchedFileChange(notifications, WatchedFileUri(copy),
+			    watchedfiles.FILE_CREATED)
+
+    notifications->filter((_, _) => false)
+    exe $'write >> {copy}'
+    AssertWatchedFileChange(notifications, WatchedFileUri(copy),
+			    watchedfiles.FILE_CHANGED)
+
+    notifications->filter((_, _) => false)
+    exe $'write {other}'
+    exe $':1write {part}'
+    AssertWatchedFileChange(notifications, WatchedFileUri(part),
+			    watchedfiles.FILE_CREATED)
+    assert_equal([], WatchedFileChangeTypes(notifications,
+					    WatchedFileUri(other)))
+  finally
+    watchedfiles.RemoveServer(lspserver)
+    :%bwipe!
+    delete(dir, 'rf')
+  endtry
+enddef
+
+# Test that the files that a workspace edit creates, renames and deletes are
+# sent as changes.
+def g:Test_WatchedFiles_WorkspaceEdit()
+  var dir = 'XWatchedFilesWorkspaceEdit'
+  var sub = $'{dir}/sub'
+  mkdir(sub, 'p')
+  var notifications: list<dict<any>> = []
+  var responses: list<dict<any>> = []
+  var lspserver = MakeWatchingLspServer(notifications, responses, [dir])
+  try
+    RegisterWatchers(lspserver, responses, 'files',
+		     [{globPattern: '**/*.txt'}, {globPattern: '**/sub'}])
+    var fname = $'{dir}/a.txt'
+    var renamed = $'{dir}/b.txt'
+
+    ApplyResourceOp({kind: 'create', uri: util.LspFileToUri(fname)})
+    AssertWatchedFileChange(notifications, WatchedFileUri(fname),
+			    watchedfiles.FILE_CREATED)
+
+    notifications->filter((_, _) => false)
+    var fnameUri = WatchedFileUri(fname)
+    ApplyResourceOp(MakeRename(fname, renamed))
+    AssertWatchedFileChange(notifications, fnameUri, watchedfiles.FILE_DELETED)
+    AssertWatchedFileChange(notifications, WatchedFileUri(renamed),
+			    watchedfiles.FILE_CREATED)
+
+    notifications->filter((_, _) => false)
+    var renamedUri = WatchedFileUri(renamed)
+    ApplyResourceOp(MakeDelete(renamed))
+    AssertWatchedFileChange(notifications, renamedUri,
+			    watchedfiles.FILE_DELETED)
+
+    # fswatch can report that the directory was created, which it was before
+    # the watcher was registered, before it reports that it was deleted.
+    var subUri = WatchedFileUri(sub)
+    ApplyResourceOp(MakeDelete(sub, {recursive: true}))
+    g:WaitForAssert(() => assert_equal(watchedfiles.FILE_DELETED,
+		      WatchedFileChangeTypes(notifications, subUri)->get(-1, 0)))
+  finally
+    watchedfiles.RemoveServer(lspserver)
+    :%bwipe!
+    delete(dir, 'rf')
+  endtry
+enddef
+
+# Test that fswatch watches the workspace folders for the glob patterns that
+# are strings, also absolute ones, and the base directories of the relative
+# patterns, but not a directory in another one or one that is never a
+# workspace root.
+def g:Test_WatchedFiles_WatchedDirectories()
+  if !executable('fswatch')
+    # The tests run with fswatch in CI.
+    assert_equal('', $CI, 'fswatch is not installed')
+    return
+  endif
+  var workspace = 'XWatchedFilesWorkspace'
+  var outside = 'XWatchedFilesOutside'
+  var base = 'XWatchedFilesBase'
+  mkdir($'{workspace}/nested', 'p')
+  mkdir(outside)
+  mkdir(base)
+  var notifications: list<dict<any>> = []
+  var responses: list<dict<any>> = []
+  var lspserver = MakeWatchingLspServer(notifications, responses, [workspace])
+  try
+    RegisterWatchers(lspserver, responses, 'dirs', [
+      {globPattern: '**/*.txt'},
+      {globPattern: $'{fnamemodify(outside, ':p')}*.txt'},
+      {globPattern: {baseUri: WatchedFileUri(base), pattern: '*.txt'}},
+      {globPattern: {baseUri: WatchedFileUri($'{workspace}/nested'),
+		     pattern: '*.txt'}},
+      {globPattern: {baseUri: WatchedFileUri($HOME), pattern: '*.txt'}}])
+    var jobs: list<job> = FswatchJobs()
+    assert_equal(1, jobs->len())
+    var dirs: list<string> = [workspace, base]
+      ->mapnew((_, dir) => dir->fnamemodify(':p')->resolve()->substitute('/$', '', ''))
+      ->sort()
+    assert_equal(dirs, jobs[0]->job_info().cmd[-2 :])
+    assert_equal('--', jobs[0]->job_info().cmd[-3])
+  finally
+    watchedfiles.RemoveServer(lspserver)
+    delete(workspace, 'rf')
+    delete(outside, 'rf')
+    delete(base, 'rf')
+  endtry
+enddef
+
+# Test that the changes that other programs make to files are sent, as
+# fswatch reports them.  A file in a watched directory that is a symbolic link
+# is sent by its path in that directory.
+def g:Test_WatchedFiles_ExternalChanges()
+  if !executable('fswatch')
+    # The tests run with fswatch in CI.
+    assert_equal('', $CI, 'fswatch is not installed')
+    return
+  endif
+  var dir = 'XWatchedFilesExternal'
+  var link = 'XWatchedFilesExternalLink'
+  mkdir(dir)
+  system($'ln -s {dir} {link}')
+  var notifications: list<dict<any>> = []
+  var responses: list<dict<any>> = []
+  var lspserver = MakeWatchingLspServer(notifications, responses)
+  var linkUri = WatchedFileUri(link)
+  try
+    RegisterWatchers(lspserver, responses, 'go',
+		     [{globPattern: {baseUri: linkUri, pattern: '**/*.go'}}])
+    assert_equal(1, FswatchJobs()->len())
+
+    # Wait until fswatch watches the directory.
+    var watching = false
+    for i in range(50)
+      writefile([string(i)], $'{dir}/probe.go')
+      if g:WaitForCommon(() => !WatchedFileChanges(notifications)->empty(),
+			 v:null, 200) >= 0
+	watching = true
+	break
+      endif
+    endfor
+    assert_true(watching)
+    assert_equal([], WatchedFileChanges(notifications)
+      ->filter((_, change) => change.uri != $'{linkUri}/probe.go'))
+
+    var uri = $'{linkUri}/new.go'
+    notifications->filter((_, _) => false)
+    writefile(['package x'], $'{dir}/new.go')
+    AssertWatchedFileChange(notifications, uri, watchedfiles.FILE_CREATED)
+
+    notifications->filter((_, _) => false)
+    writefile(['// more'], $'{dir}/new.go', 'a')
+    AssertWatchedFileChange(notifications, uri, watchedfiles.FILE_CHANGED)
+
+    notifications->filter((_, _) => false)
+    delete($'{dir}/new.go')
+    AssertWatchedFileChange(notifications, uri, watchedfiles.FILE_DELETED)
+
+    notifications->filter((_, _) => false)
+    mkdir($'{dir}/sub')
+    writefile(['package sub'], $'{dir}/sub/sub.go')
+    AssertWatchedFileChange(notifications, $'{linkUri}/sub/sub.go',
+			    watchedfiles.FILE_CREATED)
+  finally
+    watchedfiles.RemoveServer(lspserver)
+    delete(link)
+    delete(dir, 'rf')
+  endtry
+  g:WaitForAssert(() => assert_equal([], FswatchJobs()))
 enddef
 
 # Only here to because the test runner needs it
