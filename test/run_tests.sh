@@ -8,11 +8,28 @@ if [[ ! -x "$VIMPRG" ]]; then
   exit 1
 fi
 
+# GNU coreutils' "timeout", installed without or with the "g" prefix
+TIMEOUT_CMD=""
+for cmd in timeout gtimeout; do
+  if command -v "$cmd" > /dev/null; then
+    TIMEOUT_CMD=$cmd
+    break
+  fi
+done
+if [[ -z "$TIMEOUT_CMD" ]]; then
+  echo "ERROR: timeout not found.  Install GNU coreutils with \`brew install coreutils\`."
+  exit 1
+fi
+
 # Clean up results from a previous crashed run
 rm -f results.txt
 
 # --- Configuration ---
 VIM_CMD="$VIMPRG -u NONE -U NONE -i NONE --noplugin -N --not-a-term"
+
+# Kill Vim when the tests in one file take longer than this many seconds, as
+# when Vim waits for a key at a prompt, which the input below never gives it.
+TEST_TIMEOUT="${LSP_TEST_TIMEOUT:-600}"
 
 # Vim checks its input for typed keys while a test waits (":sleep",
 # complete_check()) and exits when the input is at end of file, as when stdin
@@ -59,12 +76,27 @@ RunTestsInFile() {
 
   # Vim draws its screen on stdout, which is only noise in the output of the
   # run.  Keep it in a file, to see where Vim was when a test failed.
-  $VIM_CMD -c "let g:TestName='$testfile'" -S runner.vim <&3 > "$screen_file"
+  # While Vim runs a test it turns the other signals into an interrupt, which
+  # only fails that test, so it has to be killed.  "--foreground" keeps Vim in
+  # the foreground process group, where a CTRL-C typed in a terminal reaches
+  # it.
+  "$TIMEOUT_CMD" --foreground -s KILL "$TEST_TIMEOUT" \
+    $VIM_CMD -c "let g:TestName='$testfile'" -S runner.vim <&3 > "$screen_file"
   local vim_status=$?
 
   # Standardizing the results file name if runner.vim always outputs 'results.txt'
   if [[ -f results.txt ]]; then
     mv results.txt "$res_file"
+  fi
+
+  # timeout returns 128 + 9 when it killed Vim.  The results so far tell which
+  # test Vim got stuck in.
+  if [[ $vim_status -eq 137 ]]; then
+    if [[ -f "$res_file" ]]; then
+      cat "$res_file"
+    fi
+    echo "RESULT: Vim timed out while running $testfile."
+    return 2
   fi
 
   if [[ ! -f "$res_file" ]]; then

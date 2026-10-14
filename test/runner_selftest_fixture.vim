@@ -1,9 +1,12 @@
 vim9script
 # Test file for runner_selftest.sh, not part of the test suite.  Each test pass
 # is named after the hook that fails in it.  The language server only pretends
-# to run, and a test pass that finds it still running fails.
+# to run, and a test pass that finds it still running fails.  Quitting Vim
+# fails too.
 
 g:LSPTest_passes = ['setup', 'start', 'notready', 'stop', 'none']
+
+autocmd VimLeavePre * throw 'quit failed'
 
 var curPass: string
 var serverRunning: bool = false

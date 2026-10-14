@@ -22,6 +22,14 @@ def HookException(hook: string, inPass: string): string
   return $'FAIL: {hook} threw{inPass}: {v:exception} at {v:throwpoint}'
 enddef
 
+# Append a FAIL line to results.txt for the last error message given while
+# quitting Vim, if any.  Called from the VimLeave autocommand.
+def RecordQuitError()
+  if v:errmsg != ''
+    AddResults([$'FAIL: Error while quitting Vim: {v:errmsg}'])
+  endif
+enddef
+
 # Run the test function "f" and append its "pass" or "FAIL" line to
 # results.txt, after the errors it reported.
 def RunTest(f: string)
@@ -153,6 +161,11 @@ catch
   AddResults([$'FAIL: Global exception in {g:TestName}: {v:exception} at {v:throwpoint}'])
 endtry
 
-qall!
+# Quitting runs autocommands, e.g. BufUnload for the buffers still loaded, and
+# an error in one would stop Vim at the hit-enter prompt, which waits forever
+# for a key.  Quit without messages and record the last error instead.
+v:errmsg = ''
+autocmd VimLeave * RecordQuitError()
+:silent! qall!
 
 # vim: tabstop=8 shiftwidth=2 softtabstop=2 noexpandtab

@@ -252,7 +252,7 @@ The tests run with the Vim of MacVim against real language servers, as the GitHu
 
 ```sh
 brew install --cask macvim-app
-brew install llvm go gopls rustup node
+brew install coreutils llvm go gopls rustup node
 rustup default stable && rustup component add rust-src
 (cd test && npm ci)
 ```
@@ -264,9 +264,9 @@ cd test && ./run_tests.sh
 cd test && ./run_tests.sh clangd_tests.vim markdown_tests.vim
 ```
 
-Set `VIMPRG` to run the tests with another Vim. Set `LSP_DEBUG` to have the language servers log their messages to `lsp-<server>.log` and `lsp-<server>.err` in the temporary directory, as `:LspServer debug on` does; CI does that and keeps these logs of a failed run as an artifact.
+Set `VIMPRG` to run the tests with another Vim. Set `LSP_DEBUG` to have the language servers log their messages to `lsp-<server>.log` and `lsp-<server>.err` in the temporary directory, as `:LspServer debug on` does; CI does that and keeps these logs of a failed run as an artifact. Vim is killed when the tests in one file take longer than `LSP_TEST_TIMEOUT` seconds (default 600), e.g. when it waits for a key at a prompt.
 
-`cd test && ./runner_selftest.sh` checks the test runner itself with a test file whose setup and teardown hooks fail; CI runs it before the suite.
+`cd test && ./runner_selftest.sh` checks the test runner itself with test files whose setup and teardown hooks fail, that fail when Vim quits, or that wait for a key; CI runs it before the suite.
 
 ## Similar Vim LSP Plugins
 

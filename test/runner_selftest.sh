@@ -1,16 +1,18 @@
 #!/bin/bash
 
-# Check that runner.vim keeps the results of a test file whose test pass hooks
-# fail, reports each failure naming the hook and the test pass, stops the
-# language server after a failed start and goes on with the next test pass.
-# The test file, runner_selftest_fixture.vim, runs through run_tests.sh like
-# any other.
+# Check that the test runner keeps going and reports the failure when a test
+# can't:
+# - runner_selftest_fixture.vim: runner.vim keeps the results of a test file
+#   whose test pass hooks fail, reports each failure naming the hook and the
+#   test pass, stops the language server after a failed start, goes on with the
+#   next test pass, and reports an error while quitting Vim instead of stopping
+#   at the hit-enter prompt.
+# - runner_selftest_timeout.vim: run_tests.sh kills Vim when a test waits for a
+#   key, and keeps the results so far.
+# The test files run through run_tests.sh like any other.
 
 cd "$(dirname "$0")" || exit 1
 
-FIXTURE=runner_selftest_fixture.vim
-RES_FILE="results_${FIXTURE}_utf-8.txt"
-SCREEN_FILE="screen_${FIXTURE}_utf-8.log"
 TIMEOUT_SECS=60
 
 # Where a "timeout" command is available, a runner that hangs fails after
@@ -24,22 +26,66 @@ for cmd in timeout gtimeout; do
   fi
 done
 
-output=$("${TIMEOUT_CMD[@]}" ./run_tests.sh "$FIXTURE" 2>&1)
-status=$?
+FAILED=0
 
-# timeout returns 124 when the command timed out, or 137 as it kills itself
-# together with the command.
-if [[ ${#TIMEOUT_CMD[@]} -gt 0 && ($status -eq 124 || $status -eq 137) ]]; then
-  echo "$output"
-  echo "FAIL: run_tests.sh did not finish within $TIMEOUT_SECS seconds."
-  echo "The results so far:"
-  cat results.txt
-  rm -f results.txt
-  exit 1
-fi
+# Run the test file "fixture" through run_tests.sh, which kills Vim after
+# "vim_timeout" seconds, and check that run_tests.sh returns "expected_status",
+# prints a line "expected_line" and that the results file has the lines
+# "expected_results", without the " at {throwpoint}" that ends the exception
+# messages.  Sets FAILED to 1 when a check fails.
+CheckRun() {
+  local fixture=$1
+  local vim_timeout=$2
+  local expected_status=$3
+  local expected_line=$4
+  local expected_results=$5
 
-# The exception messages end with " at {throwpoint}", which is left out.
-expected="[setup]
+  local res_file="results_${fixture}_utf-8.txt"
+  local screen_file="screen_${fixture}_utf-8.log"
+
+  local output status
+  output=$(LSP_TEST_TIMEOUT=$vim_timeout "${TIMEOUT_CMD[@]}" ./run_tests.sh "$fixture" 2>&1)
+  status=$?
+
+  # timeout returns 124 when the command timed out, or 137 as it kills itself
+  # together with the command.
+  if [[ ${#TIMEOUT_CMD[@]} -gt 0 && ($status -eq 124 || $status -eq 137) ]]; then
+    echo "$output"
+    echo "FAIL: run_tests.sh $fixture did not finish within $TIMEOUT_SECS seconds."
+    echo "The results so far:"
+    cat results.txt
+    rm -f results.txt
+    FAILED=1
+    return
+  fi
+
+  local actual
+  actual=$(sed 's/ at .*//' "$res_file" 2>/dev/null)
+  rm -f "$res_file" "$screen_file"
+
+  local errors=()
+  if [[ $status -ne $expected_status ]]; then
+    errors+=("run_tests.sh $fixture returned $status instead of $expected_status")
+  fi
+  if ! grep -qxF "$expected_line" <<< "$output"; then
+    errors+=("run_tests.sh $fixture did not print \"$expected_line\"")
+  fi
+  if [[ "$actual" != "$expected_results" ]]; then
+    errors+=("unexpected results of $fixture:
+$(diff <(echo "$expected_results") <(echo "$actual"))")
+  fi
+
+  if (( ${#errors[@]} > 0 )); then
+    echo "$output"
+    printf 'FAIL: %s\n' "${errors[@]}"
+    FAILED=1
+  fi
+}
+
+# run_tests.sh returns 3 when a test failed.
+CheckRun runner_selftest_fixture.vim 30 3 \
+  "RESULT: Some tests in runner_selftest_fixture.vim FAILED." \
+  "[setup]
 FAIL: g:LSPTest_setupPass() threw in the test pass setup: setup failed
 [start]
 FAIL: g:StartLangServer() threw in the test pass start: start failed
@@ -51,27 +97,19 @@ Test_Second: pass
 FAIL: g:StopLangServer() threw in the test pass stop: stop failed
 [none]
 Test_First: pass
-Test_Second: pass"
-actual=$(sed 's/ at .*//' "$RES_FILE" 2>/dev/null)
-rm -f "$RES_FILE" "$SCREEN_FILE"
+Test_Second: pass
+FAIL: Error while quitting Vim: E605: Exception not caught: quit failed"
 
-errors=()
-# run_tests.sh returns 3 when a test failed.
-if [[ $status -ne 3 ]]; then
-  errors+=("run_tests.sh returned $status instead of 3")
-fi
-if [[ "$actual" != "$expected" ]]; then
-  errors+=("unexpected results:
-$(diff <(echo "$expected") <(echo "$actual"))")
-fi
+# run_tests.sh returns 2 when Vim did not finish.
+CheckRun runner_selftest_timeout.vim 5 2 \
+  "RESULT: Vim timed out while running runner_selftest_timeout.vim." \
+  "Test_First: pass"
 
-if (( ${#errors[@]} > 0 )); then
-  echo "$output"
-  printf 'FAIL: %s\n' "${errors[@]}"
+if (( FAILED )); then
   exit 1
 fi
 
-echo "SUCCESS: The test runner reported the failing hooks."
+echo "SUCCESS: The test runner reported the failures."
 exit 0
 
 # vim: tabstop=2 shiftwidth=2 softtabstop=2 expandtab
