@@ -1414,6 +1414,17 @@ def g:Test_WillSaveCapability()
 	       capabilities.GetClientCaps().textDocument.synchronization)
 enddef
 
+# Test that the client advertises the diagnostic tags that it displays and the
+# related information of the diagnostics, for both the published and the
+# pulled diagnostics
+def g:Test_DiagnosticTagsAndRelatedInfoCapability()
+  var caps: dict<any> = capabilities.GetClientCaps().textDocument
+  for kind in ['publishDiagnostics', 'diagnostic']
+    assert_equal({valueSet: [1, 2]}, caps[kind].tagSupport, kind)
+    assert_true(caps[kind].relatedInformation, kind)
+  endfor
+enddef
+
 # Test that the client advertises the workspace edits that it applies: text
 # document edits for a version of a document and the file operations, up to
 # the first change that fails, but not the change annotations, which it

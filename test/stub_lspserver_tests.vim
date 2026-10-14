@@ -1869,6 +1869,36 @@ def g:Test_AleSupport_DiagsSentPerServer()
   :%bw!
 enddef
 
+# The related information of a diagnostic sent to ALE is in the detail of its
+# entry, after the message, for ":ALEDetail".  An entry without related
+# information has no detail.
+def g:Test_AleSupport_RelatedInformationInDetail()
+  var aleStub = InstallAleStub()
+  var otherFname = WriteRelatedInfoFile('XAleRelatedOther.c')
+  silent! edit XAleRelated.c
+  setline(1, ['int x;', 'int x;'])
+  var bnr = bufnr()
+  var clangd = MakeDiagServer('clangd')
+  buf.BufLspServerSet(bnr, clangd)
+  try
+    var diags: list<dict<any>> = [
+      RelatedInfoDiag(bnr, otherFname, 32),
+      MakeLineDiag(0, 'no related information')
+    ]
+    diag.DiagNotification(clangd, util.LspBufnrToUri(bnr), diags, 'push')
+    var loclist: list<dict<any>> = g:LspTestAleCalls[-1][4]
+    assert_equal(["redefinition of 'x'",
+		  'XAleRelated.c:1:5: previous definition is here',
+		  'XAleRelatedOther.c:2:17: other'],
+		 loclist[1].detail->split("\n"))
+    assert_false(loclist[0]->has_key('detail'))
+  finally
+    delete(otherFname)
+    RemoveAleStub(aleStub)
+    :%bw!
+  endtry
+enddef
+
 # The diagnostics of a buffer that ALE doesn't track (e.g. one it dropped on
 # BufDelete) are not cleared in ALE, which would make ALE track the buffer.
 def g:Test_AleSupport_DeletedBufferNotSentToAle()
@@ -2119,6 +2149,198 @@ def g:Test_DiagVirtualTextMostSevere()
   assert_equal([], DiagVirtualTexts())
   diag.DiagRemoveFile(bnr)
   :%bw!
+enddef
+
+# Return the [lnum, col, length] of the text properties of type "propType" in
+# the current buffer.
+def PropLocations(propType: string): list<list<number>>
+  return prop_list(1, {end_lnum: line('$'), types: [propType]})
+    ->mapnew((_, p) => [p.lnum, p.col, p.length])
+enddef
+
+# A diagnostic with the Unnecessary or the Deprecated tag highlights its text
+# with "LspDiagInlineUnnecessary" or "LspDiagInlineDeprecated", in addition to
+# the highlight for its severity.  A hint with a tag gets only those
+# highlights: no sign, no virtual text and no highlight for its severity,
+# unless "highlightDiagInline" is off.  Unsupported tags are ignored.
+def g:Test_DiagTags_Visuals()
+  DiagInitOnce()
+  silent! edit XDiagTags.txt
+  setline(1, ['int unused, xyz;', 'old_api();', 'int yyy;', 'int zzz;'])
+  var bnr = bufnr()
+  g:LspOptionsSet({showDiagWithVirtualText: true,
+		   diagVirtualTextMostSevere: true})
+  var lspserver = MakeDiagServer('srv')
+  var diags: list<dict<any>> = [
+    MakeDiag(0, 4, 4, 'unused')->extend({tags: [1]}),
+    MakeDiag(0, 12, 4, 'plain hint'),
+    MakeDiag(1, 0, 2, 'deprecated')->extend({tags: [2, 1, 2]}),
+    MakeDiag(2, 4, 4, 'unsupported tag')->extend({tags: [99, 'a']}),
+    MakeDiag(3, 4, 4, 'null tags')->extend({tags: v:null})
+  ]
+  diag.DiagNotification(lspserver, util.LspBufnrToUri(bnr), diags, 'push')
+
+  var Signs = () => sign_getplaced(bnr, {group: 'LSPDiag'})[0].signs
+    ->mapnew((_, s) => [s.lnum, s.name])->sort()
+  assert_equal([[1, 'LspDiagHint'], [2, 'LspDiagWarning'],
+		[3, 'LspDiagHint'], [4, 'LspDiagHint']], Signs())
+  assert_equal([[1, 13, 3], [3, 5, 3], [4, 5, 3]],
+	       PropLocations('LspDiagInlineHint'))
+  assert_equal([[2, 1, 3]], PropLocations('LspDiagInlineWarning'))
+  assert_equal([[1, 5, 3], [2, 1, 3]],
+	       PropLocations('LspDiagInlineUnnecessary'))
+  assert_equal([[2, 1, 3]], PropLocations('LspDiagInlineDeprecated'))
+  # The most severe diagnostic on a line is chosen from the other ones
+  assert_equal([[1, '┌─ plain hint'], [2, '┌─ deprecated'],
+		[3, '┌─ unsupported tag'], [4, '┌─ null tags']],
+	       DiagVirtualTexts()->mapnew((_, v) => [v[0], v[2]]))
+
+  g:LspOptionsSet({diagVirtualTextMostSevere: false})
+  assert_equal([1, 2, 3, 4], DiagVirtualTexts()->mapnew((_, v) => v[0]))
+
+  g:LspOptionsSet({highlightDiagInline: false})
+  assert_equal([[1, 'LspDiagHint'], [1, 'LspDiagHint'], [2, 'LspDiagWarning'],
+		[3, 'LspDiagHint'], [4, 'LspDiagHint']], Signs())
+  assert_equal(0, PropCount('^LspDiagInline'))
+  assert_equal([1, 1, 2, 3, 4],
+	       DiagVirtualTexts()->mapnew((_, v) => v[0])->sort('n'))
+
+  g:LspOptionsSet({highlightDiagInline: true})
+  assert_equal(4, Signs()->len())
+  assert_equal([[1, 5, 3], [2, 1, 3]],
+	       PropLocations('LspDiagInlineUnnecessary'))
+
+  g:LspOptionsSet({showDiagWithVirtualText: false})
+  diag.DiagRemoveFile(bnr)
+  :%bw!
+enddef
+
+# The "LspDiagInlineUnnecessary" highlight group is linked to "Comment" and
+# "LspDiagInlineDeprecated" strikes through the text.  The latter is set again
+# for a color scheme that clears it, but a definition of its own is kept.
+def g:Test_DiagTags_Highlights()
+  DiagInitOnce()
+  const strikethrough: dict<any> = {term: {strikethrough: true},
+				    cterm: {strikethrough: true},
+				    gui: {strikethrough: true}}
+  var Deprecated = (): dict<any> => hlget('LspDiagInlineDeprecated')[0]
+  assert_equal('Comment', hlget('LspDiagInlineUnnecessary')[0].linksto)
+  assert_equal(strikethrough, Deprecated()->filter((k, _) => k =~ 'term\|gui'))
+
+  try
+    :highlight clear LspDiagInlineDeprecated
+    assert_true(Deprecated()->get('cleared', false))
+    :doautocmd <nomodeline> ColorScheme
+    assert_equal(strikethrough,
+		 Deprecated()->filter((k, _) => k =~ 'term\|gui'))
+
+    :highlight! link LspDiagInlineDeprecated Comment
+    :doautocmd <nomodeline> ColorScheme
+    assert_equal('Comment', Deprecated()->get('linksto', ''))
+  finally
+    :highlight! link LspDiagInlineDeprecated NONE
+    :doautocmd <nomodeline> ColorScheme
+  endtry
+  assert_equal(strikethrough, Deprecated()->filter((k, _) => k =~ 'term\|gui'))
+enddef
+
+# Write the file "fname" for the related information of a diagnostic, with a
+# multibyte character before the location on its second line.  Returns its
+# full path.
+def WriteRelatedInfoFile(fname: string): string
+  writefile(['/* other */', 'int 😊_x; int other;'], fname)
+  return fname->fnamemodify(':p')
+enddef
+
+# Returns a redefinition diagnostic on line 2 of buffer "bnr" with related
+# information: the previous definition on line 1 of the buffer, and a location
+# in the file "otherFname" on line 2, after a character that takes two UTF-16
+# code units.  The offsets are in "posEncoding".
+def RelatedInfoDiag(bnr: number, otherFname: string,
+		    posEncoding: number): dict<any>
+  var otherStart: number = posEncoding == 16 ? 14 : 13
+  return {
+    range: {start: {line: 1, character: 4}, end: {line: 1, character: 5}},
+    severity: 1,
+    message: "redefinition of 'x'",
+    relatedInformation: [
+      {location: {uri: util.LspBufnrToUri(bnr),
+		  range: {start: {line: 0, character: 4},
+			  end: {line: 0, character: 5}}},
+       message: 'previous definition is here'},
+      {location: {uri: util.LspFileToUri(otherFname),
+		  range: {start: {line: 1, character: otherStart},
+			  end: {line: 1, character: otherStart + 5}}},
+       message: 'other'}
+    ]
+  }
+enddef
+
+# The related information of a diagnostic is displayed after its message by
+# ":LspDiag current", in a popup or in the message area, with the location of
+# each item as compilers print it.  Its items follow the diagnostic in the
+# diagnostics location list.  The positions are decoded from the encoding of
+# the server, and encoded back for a code action request, without loading
+# the files that aren't in a buffer.
+def g:Test_DiagRelatedInformation()
+  g:LspOptionsSet({autoHighlightDiags: false})
+  var otherFname = WriteRelatedInfoFile('XDiagRelatedOther.c')
+  silent! edit XDiagRelated.c
+  setline(1, ['int x;', 'int x;'])
+  var bnr = bufnr()
+  var winid = win_getid()
+  var lspserver = MakeDiagServer('srv')
+  lspserver.posEncoding = 16
+  lspserver.needOffsetEncoding = true
+  try
+    diag.DiagNotification(lspserver, util.LspBufnrToUri(bnr),
+			  [RelatedInfoDiag(bnr, otherFname, 16)], 'push')
+    assert_false(otherFname->bufexists())
+    assert_equal(RelatedInfoDiag(bnr, otherFname, 32).relatedInformation,
+		 diag.GetDiagsForBuf(bnr)[0].relatedInformation)
+
+    var expected = ["redefinition of 'x'",
+		    'XDiagRelated.c:1:5: previous definition is here',
+		    'XDiagRelatedOther.c:2:17: other']
+    g:LspOptionsSet({showDiagInPopup: false})
+    cursor(2, 5)
+    assert_equal(expected, execute('LspDiag current')->split("\n"))
+    g:LspOptionsSet({showDiagInPopup: true})
+    :LspDiag current
+    var ids = popup_list()
+    assert_equal(1, ids->len())
+    assert_equal(expected, getbufline(ids[0]->winbufnr(), 1, '$'))
+    popup_clear()
+
+    diag.ShowAllDiags()
+    :lclose
+    var items = getloclist(winid)
+    assert_equal([
+	[bnr, 2, 5, 2, 6, "redefinition of 'x'"],
+	[bnr, 1, 5, 1, 6, 'previous definition is here'],
+	[otherFname, 2, 17, 2, 22, 'other']
+      ], items->mapnew((_, item) =>
+	[item.bufnr == bnr ? bnr : item.bufnr->bufname()->fnamemodify(':p'),
+	 item.lnum, item.col, item.end_lnum, item.end_col, item.text]))
+    assert_equal(['', 'previous definition is here', 'other'],
+		 items->mapnew((_, item) => item.user_data
+		   ->get('relatedInformation', {})->get('message', '')))
+    assert_equal(["redefinition of 'x'"],
+		 items->mapnew((_, item) => item.user_data.diagnostic.message)
+		   ->uniq())
+    assert_false(otherFname->bufloaded())
+
+    var stored = diag.GetDiagsForBuf(bnr)[0]
+    assert_equal(RelatedInfoDiag(bnr, otherFname, 16).relatedInformation,
+		 codeaction.ContextDiag(lspserver, bnr, stored)
+		   .relatedInformation)
+    assert_equal(stored, diag.GetDiagsForBuf(bnr)[0])
+  finally
+    popup_clear()
+    g:LspOptionsSet({showDiagInPopup: true})
+    delete(otherFname)
+    DiagLocListTestCleanup([bnr])
+  endtry
 enddef
 
 # Seed the current buffer with a diagnostic spanning lines 1-3, a diagnostic

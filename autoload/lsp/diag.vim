@@ -4,6 +4,7 @@ vim9script
 
 import './options.vim' as opt
 import './buffer.vim' as buf
+import './offset.vim'
 import './util.vim'
 
 # [bnr] = {
@@ -77,6 +78,25 @@ export def InitOnce()
 		 priority: 7,
 		 override: override})
 
+  # Diag tag highlight groups and text property types.  The text properties
+  # combine with the ones for the severity of the diagnostic.
+  hlset([
+    {name: 'LspDiagInlineUnnecessary', default: true, linksto: 'Comment'}
+  ])
+  DeprecatedHighlightSet()
+  autocmd_add([{group: 'LspCmds',
+		event: 'ColorScheme',
+		pattern: '*',
+		cmd: 'DeprecatedHighlightSet()'}])
+  prop_type_add('LspDiagInlineUnnecessary',
+		{highlight: 'LspDiagInlineUnnecessary',
+		 priority: 6,
+		 override: override})
+  prop_type_add('LspDiagInlineDeprecated',
+		{highlight: 'LspDiagInlineDeprecated',
+		 priority: 6,
+		 override: override})
+
   # Diag virtual text highlight groups and text property types
   hlset([
     {name: 'LspDiagVirtualTextError', default: true, linksto: 'SpellBad'},
@@ -112,6 +132,21 @@ export def InitOnce()
   endif
 
   appliedOptions = DisplayOptionsGet()
+enddef
+
+# Define the "LspDiagInlineDeprecated" highlight group to strike through the
+# text, unless it is already defined (e.g. in a vimrc or by a color scheme).
+# No standard highlight group has that attribute to link to, and unlike a
+# default link, ":highlight clear" doesn't keep default attributes, so this is
+# done again when a color scheme is loaded.  hlset() with "default" would
+# replace a link, so the group is only set when it is cleared.
+def DeprecatedHighlightSet()
+  if !hlget('LspDiagInlineDeprecated')->get(0, {})->get('cleared', true)
+    return
+  endif
+  hlset([{name: 'LspDiagInlineDeprecated', default: true,
+	  term: {strikethrough: true}, cterm: {strikethrough: true},
+	  gui: {strikethrough: true}}])
 enddef
 
 # Define the signs placed for diagnostics, using the sign texts set in the
@@ -314,6 +349,39 @@ def DiagSevToSymbolText(severity: number): string
   return typeMap[severity - 1]
 enddef
 
+# The text property types highlighting the diagnostic tags, indexed by the
+# DiagnosticTag value minus one: Unnecessary (1) and Deprecated (2).
+const tagPropTypes: list<string> = [
+  'LspDiagInlineUnnecessary',
+  'LspDiagInlineDeprecated'
+]
+
+# Returns the text property types highlighting the tags of "diag", ignoring
+# the tags that aren't supported.
+def DiagTagPropTypes(diag: dict<any>): list<string>
+  var tags: any = diag->get('tags', [])
+  if tags->type() != v:t_list
+    return []
+  endif
+  return tags->copy()
+    ->filter((_, tag) => tag->type() == v:t_number
+			  && tag >= 1 && tag <= tagPropTypes->len())
+    ->sort('n')
+    ->uniq()
+    ->mapnew((_, tag) => tagPropTypes[tag - 1])
+enddef
+
+# Returns true if "diag" is displayed only by highlighting its text for its
+# tags: a hint with a tag, such as an unused variable or a deprecated
+# function, gets no sign, no virtual text and no highlight for its severity,
+# as in other clients.  Without the inline highlights, it is displayed like
+# any other hint.
+def DiagIsTagOnly(diag: dict<any>): bool
+  return opt.lspOptions.highlightDiagInline
+    && diag->get('severity', 1) == 4
+    && !DiagTagPropTypes(diag)->empty()
+enddef
+
 # Remove signs and text properties for diagnostics in buffer
 def RemoveDiagVisualsForBuffer(bnr: number, all: bool = false)
   var lspOpts = opt.lspOptions
@@ -336,6 +404,9 @@ def RemoveDiagVisualsForBuffer(bnr: number, all: bool = false)
     prop_remove({type: 'LspDiagInlineWarning', bufnr: bnr, all: true})
     prop_remove({type: 'LspDiagInlineInfo', bufnr: bnr, all: true})
     prop_remove({type: 'LspDiagInlineHint', bufnr: bnr, all: true})
+    for propType in tagPropTypes
+      prop_remove({type: propType, bufnr: bnr, all: true})
+    endfor
   endif
 enddef
 
@@ -434,18 +505,22 @@ export def DiagsRefresh(bnr: number)
 
   var mostSevereOnly: bool = lspOpts.showDiagWithVirtualText
 	&& lspOpts.diagVirtualTextMostSevere
-  var virtualTextDiags: dict<dict<any>> =
-	mostSevereOnly ? MostSevereDiagByLine(diags) : {}
+  var virtualTextDiags: dict<dict<any>> = mostSevereOnly
+	? MostSevereDiagByLine(diags->copy()
+				 ->filter((_, d) => !DiagIsTagOnly(d)))
+	: {}
 
   var signs: list<dict<any>> = []
   var inlineHLprops: list<list<list<number>>> = [[], [], [], [], []]
+  var tagHLprops: dict<list<list<number>>> = {}
   for diag in diags
     var d_range = diag.range
     var d_start = d_range.start
     var d_end = d_range.end
     var lnum = d_start.line + 1
     const d_severity = diag->get('severity', 1)
-    if lspOpts.showDiagWithSign
+    const tagOnly: bool = DiagIsTagOnly(diag)
+    if lspOpts.showDiagWithSign && !tagOnly
       signs->add({id: 0, buffer: bnr, group: 'LSPDiag',
 		  lnum: lnum, name: DiagSevToSignName(d_severity),
 		  priority: 10 - d_severity})
@@ -457,10 +532,18 @@ export def DiagsRefresh(bnr: number)
 	  lnum, util.GetLineByteFromPos(bnr, d_start) + 1,
 	  d_end.line + 1, util.GetLineByteFromPos(bnr, d_end) + 1
 	]
-	inlineHLprops[d_severity]->add(propLocation)
+	if !tagOnly
+	  inlineHLprops[d_severity]->add(propLocation)
+	endif
+	for propType in DiagTagPropTypes(diag)
+	  if !tagHLprops->has_key(propType)
+	    tagHLprops[propType] = []
+	  endif
+	  tagHLprops[propType]->add(propLocation)
+	endfor
       endif
 
-      if lspOpts.showDiagWithVirtualText
+      if lspOpts.showDiagWithVirtualText && !tagOnly
 	  && (!mostSevereOnly || virtualTextDiags[lnum] is diag)
         var padding: number
         var symbol: string = diag_symbol
@@ -496,11 +579,80 @@ export def DiagsRefresh(bnr: number)
 	endtry
       endif
     endfor
+    for [propType, propLocations] in tagHLprops->items()
+      try
+	prop_add_list({bufnr: bnr, type: propType}, propLocations)
+      catch /E966\|E964/ # Invalid lnum | Invalid col
+      endtry
+    endfor
   endif
 
   if lspOpts.showDiagWithSign
     signs->sign_placelist()
   endif
+enddef
+
+# Returns the related information of "diag": the locations, with a message
+# for each, that the diagnostic refers to (e.g. the previous definition for a
+# redefinition error).  Returns an empty List if it has none.
+def DiagRelatedInfo(diag: dict<any>): list<any>
+  var related: any = diag->get('relatedInformation', [])
+  return related->type() == v:t_list ? related : []
+enddef
+
+# Returns the byte index of the UTF-32 character index "charIdx" in its line,
+# as util.GetLineByteFromPos() does in a buffer.  "lines" has the text of the
+# line, as util.FileLineGet() returns it.  An index past the end of the line
+# is at the end of the line, and one on a line that isn't available is
+# returned unchanged.
+def LineByteFromCharIdx(lines: list<string>, charIdx: number): number
+  if charIdx <= 0 || lines->empty()
+    return charIdx
+  endif
+  var byteIdx: number = lines[0]->byteidxcomp(charIdx)
+  return byteIdx == -1 ? lines[0]->strlen() : byteIdx
+enddef
+
+# Returns the location list item for "related", an item of the related
+# information of "diag".  Its 'user_data' has the diagnostic and the related
+# information item.  The file of the location is not loaded in a buffer, see
+# util.FileLineGet().
+def RelatedInfoLocListItem(diag: dict<any>, related: dict<any>): dict<any>
+  var fname: string = util.LspUriToFile(related.location.uri)
+  var range: dict<dict<number>> = related.location.range
+  var startLines: list<string> = util.FileLineGet(fname, range.start.line + 1)
+  var endLines: list<string> = range.end.line == range.start.line
+    ? startLines : util.FileLineGet(fname, range.end.line + 1)
+  var item: dict<any> = {
+    lnum: range.start.line + 1,
+    col: LineByteFromCharIdx(startLines, range.start.character) + 1,
+    end_lnum: range.end.line + 1,
+    end_col: LineByteFromCharIdx(endLines, range.end.character) + 1,
+    text: related.message->substitute("\n\\+", "\n", 'g'),
+    user_data: {diagnostic: diag, relatedInformation: related}
+  }
+  var bnr: number = util.BufnrExact(fname)
+  if bnr == -1
+    item.filename = fname
+  else
+    item.bufnr = bnr
+  endif
+  return item
+enddef
+
+# Returns the text of "diag" to display: its message, followed by a line for
+# each item of its related information, with the location of the item as
+# compilers print it: "{file}:{lnum}:{col}: {message}".
+def DiagDisplayText(diag: dict<any>): string
+  var lines: list<string> = [diag.message]
+  for related in DiagRelatedInfo(diag)
+    var item: dict<any> = RelatedInfoLocListItem(diag, related)
+    var fname: string = item->has_key('bufnr')
+      ? item.bufnr->bufname() : item.filename
+    lines->add($'{fname->fnamemodify(":~:.")}:{item.lnum}:{item.col}: '
+	       .. related.message)
+  endfor
+  return lines->join("\n")
 enddef
 
 # Returns the names of the language servers attached to buffer "bnr", used as
@@ -515,7 +667,8 @@ enddef
 # Returns the ALE loclist entry for diagnostic "diag" in buffer "bnr", as
 # returned by DiagInBuf().  ALE highlights up to and including "end_col", so
 # the end of the entry is the last byte in the diagnostic range.  An empty
-# range highlights the character at its start.
+# range highlights the character at its start.  The related information of
+# the diagnostic is in the detail of the entry, which ":ALEDetail" displays.
 def AleLocListItem(bnr: number, diag: dict<any>): dict<any>
   var range = diag.range
   var lnum = range.start.line + 1
@@ -534,8 +687,13 @@ def AleLocListItem(bnr: number, diag: dict<any>): dict<any>
   if endLnum < lnum || (endLnum == lnum && endCol < col)
     [endLnum, endCol] = [lnum, col]
   endif
-  return {text: diag.message, lnum: lnum, col: col, end_lnum: endLnum,
-	  end_col: endCol, type: "EWIH"[get(diag, "severity", 1) - 1]}
+  var item: dict<any> = {text: diag.message, lnum: lnum, col: col,
+    end_lnum: endLnum, end_col: endCol,
+    type: "EWIH"[get(diag, "severity", 1) - 1]}
+  if !DiagRelatedInfo(diag)->empty()
+    item.detail = DiagDisplayText(diag)
+  endif
+  return item
 enddef
 
 # Sends the diagnostics of every language server attached to buffer "bnr" to
@@ -694,6 +852,7 @@ export def DiagNotification(lspserver: dict<any>, uri: string, diags_arg: list<d
     # Decode the position encoding in all the diags
     newDiags->map((_, dval) => {
 	lspserver.decodeRange(bnr, dval.range)
+	offset.DecodeRelatedInfo(lspserver, dval)
 	return dval
       })
   endif
@@ -827,13 +986,20 @@ def DiagLocListItem(bnr: number, diag: dict<any>): dict<any>
   }
 enddef
 
-# Returns the location list items for the diagnostics in buffer "bnr".
+# Returns the location list items for the diagnostics in buffer "bnr".  The
+# item of a diagnostic is followed by the items of its related information.
 def DiagsLocListItems(bnr: number): list<dict<any>>
   if !diagsMap->has_key(bnr)
     return []
   endif
-  return diagsMap[bnr].sortedDiagnostics
-    ->mapnew((_, diag) => DiagLocListItem(bnr, diag))
+  var items: list<dict<any>> = []
+  for diag in diagsMap[bnr].sortedDiagnostics
+    items->add(DiagLocListItem(bnr, diag))
+    for related in DiagRelatedInfo(diag)
+      items->add(RelatedInfoLocListItem(diag, related))
+    endfor
+  endfor
+  return items
 enddef
 
 # Set the items of the diagnostics location list of window "winid" to
@@ -935,7 +1101,7 @@ def ShowDiagInPopup(diag: dict<any>)
   endif
 
   # Display a popup right below the diagnostics position
-  var msg = diag.message->split("\n")
+  var msg = DiagDisplayText(diag)->split("\n")
   var msglen = msg->reduce((acc, val) => max([acc, val->strcharlen()]), 0)
 
   var popupAttrs = opt.PopupConfigure('Diag', {
@@ -955,14 +1121,15 @@ def ShowDiagInPopup(diag: dict<any>)
   popup_create(msg, popupAttrs)
 enddef
 
-# Display the "diag" message in a popup or in the status message area
+# Display the "diag" message and its related information in a popup or in the
+# status message area
 def DisplayDiag(diag: dict<any>)
   if opt.lspOptions.showDiagInPopup
     # Display the diagnostic message in a popup window.
     ShowDiagInPopup(diag)
   else
     # Display the diagnostic message in the status message area
-    :echo diag.message
+    :echo DiagDisplayText(diag)
   endif
 enddef
 
@@ -1235,7 +1402,7 @@ def g:LspDiagExpr(): any
   endif
 
   # return the found diagnostic
-  return diagFound.message->split("\n")
+  return DiagDisplayText(diagFound)->split("\n")
 enddef
 
 # Redraw the diagnostics in every buffer with the current options, removing

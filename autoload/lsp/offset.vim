@@ -180,4 +180,59 @@ export def DecodeLocation(lspserver: dict<any>, location: dict<any>)
   endif
 enddef
 
+# Convert the character offsets of the positions in the locations of the
+# related information of the diagnostic "diag" in place with "Convert", called
+# with the text of the line of a position and its offset.  The related
+# information may be in files that aren't loaded in a buffer: they aren't
+# loaded for this, see util.FileLineGet().  A position on a line that isn't
+# available is left unchanged.
+def RelatedInfoConvert(diag: dict<any>,
+		       Convert: func(string, number): number)
+  var relatedInfo: any = diag->get('relatedInformation', [])
+  if relatedInfo->type() != v:t_list
+    return
+  endif
+  for related in relatedInfo
+    var fname: string = util.LspUriToFile(related.location.uri)
+    var range: dict<dict<number>> = related.location.range
+    var startLines: list<string> =
+      util.FileLineGet(fname, range.start.line + 1)
+    var endLines: list<string> = range.end.line == range.start.line
+      ? startLines : util.FileLineGet(fname, range.end.line + 1)
+    for [pos, lines] in [[range.start, startLines], [range.end, endLines]]
+      if !lines->empty()
+	pos.character = Convert(lines[0], pos.character)
+      endif
+    endfor
+  endfor
+enddef
+
+# Encode the UTF-32 character offsets in the related information of the
+# diagnostic "diag" to the encoding negotiated with the language server.
+#
+# Modifies in-place the UTF-32 offsets in the ranges of the locations in
+# diag.relatedInformation to UTF-8 or UTF-16 or UTF-32 offsets.
+export def EncodeRelatedInfo(lspserver: dict<any>, diag: dict<any>)
+  if lspserver.posEncoding == 32
+    return
+  endif
+
+  RelatedInfoConvert(diag, (text: string, character: number): number =>
+    EncodeCharacter(lspserver, text, character))
+enddef
+
+# Decode the character offsets in the related information of the diagnostic
+# "diag" to UTF-32.
+#
+# Modifies in-place the offsets in the ranges of the locations in
+# diag.relatedInformation to UTF-32 offsets.
+export def DecodeRelatedInfo(lspserver: dict<any>, diag: dict<any>)
+  if lspserver.posEncoding == 32
+    return
+  endif
+
+  RelatedInfoConvert(diag, (text: string, character: number): number =>
+    DecodeCharacter(lspserver, text, character))
+enddef
+
 # vim: tabstop=8 shiftwidth=2 softtabstop=2 noexpandtab

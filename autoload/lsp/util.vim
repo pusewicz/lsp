@@ -168,6 +168,22 @@ export def BufnrExact(fname: string): number
   return fname->bufexists() ? fname->bufadd() : -1
 enddef
 
+# Returns the text of line "lnum" of the file "fname" in a List, or an empty
+# List when the file has no such line.  The text is taken from the buffer of
+# the file when it is loaded, as it may have changes that aren't written, or
+# else read from the file.  The buffer isn't loaded for this: that would open
+# the file on the language servers.
+export def FileLineGet(fname: string, lnum: number): list<string>
+  var bnr: number = BufnrExact(fname)
+  if bnr != -1 && bnr->bufloaded()
+    return bnr->getbufline(lnum)
+  endif
+  if lnum < 1 || !fname->filereadable()
+    return []
+  endif
+  return fname->readfile('', lnum)[lnum - 1 : ]
+enddef
+
 # Returns if the URI refers to a remote file (e.g. ssh://)
 # Credit: vim-lsp plugin
 export def LspUriRemote(uri: string): bool

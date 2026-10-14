@@ -994,11 +994,18 @@ def g:Test_LspHighlightDiagInline()
   props = prop_list(2)
   assert_equal(0, props->len())
   props = prop_list(3)
-  assert_equal(2, props->len())
+  assert_equal(1, props->len())
   assert_equal([
-    {'id': 0, 'col': 12, 'type_bufnr': 0, 'end': 1, 'type': 'LspDiagInlineInfo', 'length': 3, 'start': 1},
     {'id': 0, 'col': 16, 'type_bufnr': 0, 'end': 1, 'type': 'LspDiagInlineError', 'length': 3, 'start': 1}
   ], props)
+  # The note on the forward declaration is related information of the error,
+  # not a diagnostic of its own
+  var related: list<dict<any>> = lsp#diag#GetDiagsForBuf()
+    ->filter((_, d) => d.range.start.line == 2)[0].relatedInformation
+  assert_equal([{start: {line: 2, character: 11},
+		 end: {line: 2, character: 14}}],
+	       related->mapnew((_, r) => r.location.range))
+  assert_equal("Forward declaration of 'struct obj'", related[0].message)
   props = prop_list(4)
   assert_equal(0, props->len())
   props = prop_list(5)
