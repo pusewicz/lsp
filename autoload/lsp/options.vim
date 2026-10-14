@@ -289,6 +289,10 @@ export var lspOptions: dict<any> = {
   # incremental text document sync with the server
   incrementalSync: false,
 
+  # Send the language servers the changes to the files that they watch, made
+  # in Vim and by other programs.  Needs the fswatch program.
+  watchFiles: true,
+
   # list of directories that should never be used as workspace root
   workspaceIgnoredPaths: ['/', $"{$HOME}", $"{$HOME}/.cargo", $"{$HOME}/.cargo/**", $"{$HOME}/.rustup", $"{$HOME}/.rustup/**", $"{$HOME}/pkg/mod", $"{$HOME}/pkg/mod/**"]
 }
