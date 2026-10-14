@@ -1257,6 +1257,16 @@ def g:Test_LspRename()
     }
   END
   assert_equal(expected2, getline(1, '$'))
+
+  # clangd refuses to rename a keyword, so there is no prompt, which would
+  # read the <Esc>
+  cursor(1, 1)
+  feedkeys("\<Esc>", 't')
+  :LspRename
+  g:WaitForAssert(() => assert_match('^Error: Cannot rename symbol: ',
+				     execute('messages')->split("\n")[-1]))
+  assert_equal("\<Esc>", getcharstr(0))
+  assert_equal(expected2, getline(1, '$'))
   sleep 100m
   bw!
 

@@ -4,6 +4,10 @@ vim9script
 
 import './options.vim' as opt
 
+# PrepareSupportDefaultBehavior.Identifier: the client selects the identifier
+# at the position according to the language's syntax rule.
+const PREPARE_SUPPORT_DEFAULT_BEHAVIOR_IDENTIFIER = 1
+
 # Process the server capabilities
 #   interface ServerCapabilities
 export def ProcessServerCaps(lspserver: dict<any>, caps: dict<any>)
@@ -288,11 +292,15 @@ export def ProcessServerCaps(lspserver: dict<any>, caps: dict<any>)
   if lspserver.caps->has_key('renameProvider')
     if lspserver.caps.renameProvider->type() == v:t_bool
       lspserver.isRenameProvider = lspserver.caps.renameProvider
+      lspserver.isRenamePrepareProvider = false
     else
       lspserver.isRenameProvider = true
+      lspserver.isRenamePrepareProvider =
+	lspserver.caps.renameProvider->get('prepareProvider', false)
     endif
   else
     lspserver.isRenameProvider = false
+    lspserver.isRenamePrepareProvider = false
   endif
 
   # foldingRangeProvider
@@ -589,7 +597,8 @@ export def GetClientCaps(): dict<any>
       },
       rename: {
 	dynamicRegistration: false,
-	prepareSupport: false,
+	prepareSupport: true,
+	prepareSupportDefaultBehavior: PREPARE_SUPPORT_DEFAULT_BEHAVIOR_IDENTIFIER
       },
       selectionRange: {
 	dynamicRegistration: false,
