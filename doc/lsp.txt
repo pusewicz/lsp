@@ -546,6 +546,7 @@ file is formatted before what follows, e.g. writing it.
 			apply the selected action.
 :LspCodeLens		Display all the code lens commands available for the
 			current file and apply the selected command.
+:LspCodeLensRun		Run the code lens command for the current line.
 :LspDiag current	Display the diagnostic message for the current line.
 :LspDiag first		Jump to the first diagnostic message for the current
 			buffer.
@@ -1259,6 +1260,16 @@ Commands to modify, rename, or format your code using the language server.
 :LspCodeLens		Display a list of code lens commands available for the
 			current buffer and apply the selected code lens
 			command.
+
+							*:LspCodeLensRun*
+:LspCodeLensRun		Run the command of the code lens on the cursor line.
+			When the line has several code lenses, display a list
+			of them and run the selected one.  This doesn't need
+			the code lenses to be shown (|lsp-opt-showCodeLens|).
+			You may want to map a key to it: >
+
+			    nnoremap <buffer> <Leader>l <Cmd>LspCodeLensRun<CR>
+<
 
 							*:LspFold*
 :LspFold		Create folds for the current buffer.
@@ -2126,6 +2137,21 @@ semanticHighlightDelay	|Number| option.  Delay in milliseconds for semantic
 			A lower value updates highlighting sooner but can send
 			more requests to the language server.
 			By default this is set to 1000.
+
+						*lsp-opt-showCodeLens*
+showCodeLens		|Boolean| option.  Show the code lenses from the
+			language server, like the number of references to a
+			function or a "Run test" command, as virtual text
+			above the line they belong to, indented like it.  The
+			code lenses of a line are shown on one line, separated
+			by "|", and highlighted with |LspCodeLens|.  They are
+			shown only in normal mode.  After a change, they are
+			requested again when the cursor has not moved for
+			|'updatetime'| milliseconds (|CursorHold|), and when
+			the language server asks for them to be refreshed,
+			right away in the buffers shown in a window.  Use
+			|:LspCodeLensRun| to run the code lens on the cursor
+			line.  By default this is set to false.
 
 						*lsp-opt-showDiagInBalloon*
 showDiagInBalloon	|Boolean| option.  When the mouse is over a range of
@@ -3044,6 +3070,10 @@ The following highlight groups are used by the LSP plugin.  You can define
 these highlight groups in your .vimrc file before sourcing this plugin to
 override them.
 
+*LspCodeLens*			Used to highlight the code lenses shown above
+				their lines (|lsp-opt-showCodeLens|).  By
+				default, linked to the "Comment" highlight
+				group.
 *LspDiagInlineError*		Used to highlight inline error diagnostics.
 				By default, linked to the "SpellBad" highlight
 				group.
@@ -3754,7 +3784,9 @@ callHierarchy			Used by the |:LspIncomingCalls| and the
 						*lsp-features-codeAction*
 codeAction			Used by the |:LspCodeAction| command.
 						*lsp-features-codeLens*
-codeLens			Used by the |:LspCodeLens| command.
+codeLens			Used by the |:LspCodeLens| and the
+				|:LspCodeLensRun| commands, and to show the
+				code lenses (|lsp-opt-showCodeLens|).
 						*lsp-features-completion*
 completion			Used by 24/7 Completion and 'omnifunc'
 						*lsp-features-declaration*
