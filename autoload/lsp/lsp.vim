@@ -26,6 +26,7 @@ import './inlayhints.vim'
 import './documentcolor.vim'
 import './semantichighlight.vim'
 import './ontypeformat.vim'
+import './folding.vim'
 
 # filetype to LSP server map
 var ftypeServerMap: dict<list<dict<any>>> = {}
@@ -740,6 +741,8 @@ export def BufferInit(lspserverId: number, bnr: number): void
       endif
     endfor
 
+    folding.BufferInit(bnr)
+
     AddBufFeatureAutocmds(bnr)
 
     if exists('#User#LspAttached')
@@ -871,6 +874,7 @@ export def RemoveFile(bnr: number): void
     documentcolor.BufferDeInit(bnr)
     semantichighlight.BufferDeInit(bnr)
     codelens.BufferDeInit(bnr)
+    folding.BufferDeInit(bnr)
     diag.BufferDeInit(bnr)
   endif
   # Iterate over a copy because BufLspServerRemove mutates the underlying list.
@@ -971,6 +975,8 @@ export def BufferExternallyChanged(bnr: number): void
       endif
     endif
   endfor
+
+  folding.BufferReloaded(bnr)
 enddef
 
 # 'endofline', 'fixendofline' or 'binary' was set for buffer "bnr", which is
@@ -1794,6 +1800,16 @@ export def FoldDocument()
 
   var fname: string = @%
   lspserver.foldRange(fname)
+enddef
+
+# Function to use with the 'foldexpr' option.
+export def FoldExpr(): any
+  return folding.FoldExpr()
+enddef
+
+# Function to use with the 'foldtext' option.
+export def FoldText(): string
+  return folding.FoldText()
 enddef
 
 # Enable diagnostic highlighting for all the buffers
