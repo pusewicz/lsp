@@ -2,8 +2,6 @@ vim9script
 # Unit tests for LSP rust-analyzer client
 
 source common.vim
-source term_util.vim
-source screendump.vim
 
 var lspOpts = {autoComplete: false}
 g:LspOptionsSet(lspOpts)
