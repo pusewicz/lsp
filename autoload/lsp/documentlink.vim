@@ -106,31 +106,6 @@ def OpenFileUri(uri: string, cmdmods: string)
 			 cmdmods)
 enddef
 
-# Open "uri" with the default handler of the system.  Uses dist#vim9#Open()
-# from the Vim runtime when available, which honors the "g:Openprg" variable.
-def OpenExternalUri(uri: string)
-  try
-    dist#vim9#Open(uri)
-    return
-  catch /^Vim\%((\a\+)\)\=:E117:.*dist#vim9#Open/
-  endtry
-
-  var cmd: list<string>
-  if has('win32')
-    cmd = ['rundll32', 'url.dll,FileProtocolHandler', uri]
-  elseif executable('xdg-open')
-    cmd = ['xdg-open', uri]
-  elseif executable('open')
-    cmd = ['open', uri]
-  else
-    util.ErrMsg($'No program found to open "{uri}"')
-    return
-  endif
-
-  job_start(cmd, {stoponexit: '', in_io: 'null', out_io: 'null',
-		  err_io: 'null'})
-enddef
-
 # Open the target of the link under the cursor from the document "links" in
 # the current buffer.  A "file:" target is opened in Vim using the window
 # command modifiers in "cmdmods"; any other target is opened with the default
@@ -167,7 +142,7 @@ def OpenLinkTarget(link: dict<any>, cmdmods: string)
   if target =~? '^file:'
     OpenFileUri(target, cmdmods)
   else
-    OpenExternalUri(target)
+    util.OpenExternalUri(target)
   endif
 enddef
 

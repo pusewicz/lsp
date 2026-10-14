@@ -6832,6 +6832,129 @@ def g:Test_DocumentLinkOpen_ExternalUri()
   endtry
 enddef
 
+# Send a "window/showDocument" request with "params" from the language server
+# "lspserver" made by MakeRequestTestLspServer() with "responses", and return
+# the result of the reply.
+def ShowDocument(lspserver: dict<any>, responses: list<dict<any>>,
+		 params: dict<any>): any
+  responses->filter('0')
+  lspserver.processRequest({jsonrpc: '2.0', id: 1,
+			    method: 'window/showDocument', params: params})
+  assert_equal(1, responses->len())
+  assert_equal({}, responses[0].error)
+  return responses[0].result
+enddef
+
+# Test that a "window/showDocument" request without a URI, or with a selection
+# that is not a range, gets an InvalidParams error.
+def g:Test_ShowDocument_InvalidParams()
+  var responses: list<dict<any>> = []
+  var lspserver = MakeRequestTestLspServer(responses)
+  AssertRequestError(lspserver, responses,
+    {id: 1, method: 'window/showDocument', params: {}}, -32602)
+  AssertRequestError(lspserver, responses,
+    {id: 2, method: 'window/showDocument',
+     params: {uri: 'file:///tmp/x', selection: []}}, -32602)
+enddef
+
+# Test that a "window/showDocument" request shows a file in a window and puts
+# the cursor at the start of the selection, decoded from the position
+# encoding, and that by default the window takes the focus.  The cursor
+# location is pushed onto the tag stack, as for a jump to a definition.
+def g:Test_ShowDocument_TakesFocus()
+  writefile(['one', "\U1F60A ab"], 'XShowDocTarget.txt')
+  silent! edit XShowDocSrc.txt
+  setline(1, ['src'])
+  :write
+  var responses: list<dict<any>> = []
+  var lspserver = MakeRequestTestLspServer(responses)
+  lspserver.posEncoding = 16
+  var uri = util.LspFileToUri('XShowDocTarget.txt')
+  try
+    # "a" is after the emoji (2 UTF-16 code units) and the space
+    var selection = {start: {line: 1, character: 3},
+		     end: {line: 1, character: 5}}
+    assert_equal({success: true}, ShowDocument(lspserver, responses,
+					       {uri: uri, selection: selection}))
+    assert_equal(1, winnr('$'))
+    assert_equal('XShowDocTarget.txt', expand('%:t'))
+    assert_equal([2, 6], [line('.'), col('.')])
+    assert_equal('XShowDocSrc.txt',
+		 gettagstack().items[-1].bufnr->bufname())
+
+    # Without a selection the cursor stays where it is
+    cursor(1, 2)
+    assert_equal({success: true}, ShowDocument(lspserver, responses,
+					       {uri: uri, takeFocus: true}))
+    assert_equal([1, 2], [line('.'), col('.')])
+  finally
+    :%bw!
+    delete('XShowDocTarget.txt')
+    delete('XShowDocSrc.txt')
+  endtry
+enddef
+
+# Test that a "window/showDocument" request that asks not to take the focus
+# shows a file in a window split from the current one, or in the window
+# already showing it, and puts the cursor in that window at the start of the
+# selection, while the cursor stays in the current window.
+def g:Test_ShowDocument_KeepsFocus()
+  writefile(['one', 'two', 'three'], 'XShowDocTarget.txt')
+  silent! edit XShowDocSrc.txt
+  setline(1, ['src'])
+  var srcWinid = win_getid()
+  var responses: list<dict<any>> = []
+  var lspserver = MakeRequestTestLspServer(responses)
+  var uri = util.LspFileToUri('XShowDocTarget.txt')
+  var Selection = (lnum: number): dict<any> => ({
+    start: {line: lnum, character: 1}, end: {line: lnum, character: 1}})
+  try
+    for lnum in [1, 2]
+      assert_equal({success: true},
+		   ShowDocument(lspserver, responses,
+				{uri: uri, selection: Selection(lnum),
+				 takeFocus: false}))
+      assert_equal(srcWinid, win_getid())
+      assert_equal(2, winnr('$'))
+      var targetWinid = bufnr('XShowDocTarget.txt')->bufwinid()
+      assert_equal([lnum + 1, 2],
+		   getcurpos(targetWinid)[1 : 2], $'lnum: {lnum}')
+    endfor
+  finally
+    :%bw!
+    delete('XShowDocTarget.txt')
+  endtry
+enddef
+
+# Test that a "window/showDocument" request shows a URI externally with the
+# opener from the Vim runtime when the server asks for it, and that it reports
+# a failure for a URI that it cannot show in Vim.
+def g:Test_ShowDocument_External()
+  writefile(['#!/bin/sh', 'printf "%s" "$1" > XShowDocOpened'],
+	    'XShowDocOpener')
+  setfperm('XShowDocOpener', 'rwx------')
+  g:Openprg = './XShowDocOpener'
+  var responses: list<dict<any>> = []
+  var lspserver = MakeRequestTestLspServer(responses)
+  var uri = 'https://example.com/doc'
+  try
+    assert_equal({success: false},
+		 ShowDocument(lspserver, responses, {uri: uri}))
+    assert_match('Cannot show "https://example.com/doc" in Vim',
+		 execute('messages'))
+    assert_false(filereadable('XShowDocOpened'))
+
+    assert_equal({success: true},
+		 ShowDocument(lspserver, responses, {uri: uri, external: true}))
+    g:WaitFor(() => filereadable('XShowDocOpened')
+		      && readfile('XShowDocOpened') == [uri])
+  finally
+    unlet g:Openprg
+    delete('XShowDocOpener')
+    delete('XShowDocOpened')
+  endtry
+enddef
+
 # Returns a running language server with the document symbols and the call
 # hierarchy of the function in "XScratchSrc.c".
 def MakeScratchServer(): dict<any>

@@ -1390,6 +1390,12 @@ def g:Test_StaleRequestSupportCapability()
 	       capabilities.GetClientCaps().general.staleRequestSupport)
 enddef
 
+# Test that the client advertises the "window/showDocument" request
+def g:Test_ShowDocumentCapability()
+  assert_equal({support: true},
+	       capabilities.GetClientCaps().window.showDocument)
+enddef
+
 # Test for the "willSave" and "willSaveWaitUntil" text document sync server
 # capabilities and the synchronization client capability
 def g:Test_WillSaveCapability()
