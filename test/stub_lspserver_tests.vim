@@ -8524,6 +8524,259 @@ def g:Test_DocumentColors_ColorScheme()
   :%bw!
 enddef
 
+# Returns a running language server that provides folding ranges, attached to
+# the current buffer as when it gets ready.  The folding range requests it is
+# sent are added to "requests", a Dict for each with its "params" and the
+# function "Reply" that delivers the folding ranges passed to it as the reply.
+def MakeFoldingServer(requests: list<dict<any>>): dict<any>
+  var lspserver = MakeCapsServer({textDocumentSync: {openClose: true, change: 2},
+				  foldingRangeProvider: true}, [])
+  lspserver.rpc_a = (method, params, Cb, _: dict<any> = {}) => {
+    if method == 'textDocument/foldingRange'
+      requests->add({params: params->deepcopy(), Reply: (ranges: any) => {
+	Cb(lspserver, ranges, {})
+      }})
+    endif
+    return requests->len()
+  }
+  buf.BufLspServerSet(bufnr(), lspserver)
+  lsp.BufferInit(lspserver.id, bufnr())
+  return lspserver
+enddef
+
+# Edit file "fname" with the lines "lines" and the folds computed with
+# lsp#lsp#FoldExpr(), from the folding ranges of the test language server made
+# with MakeFoldingServer(), and wait for its request for them.
+def FoldExprTestEdit(fname: string, lines: list<string>,
+		     requests: list<dict<any>>)
+  exe $'silent edit {fname}'
+  setline(1, lines)
+  MakeFoldingServer(requests)
+  :setlocal foldmethod=expr foldexpr=lsp#lsp#FoldExpr() foldlevel=0
+  assert_equal(0, foldlevel(1))
+  g:WaitForAssert(() => assert_equal(1, requests->len()))
+enddef
+
+# Returns the result of the function "fname" for each line of the current
+# buffer, as foldlevel() gets it.
+def ForEachLine(fname: string): list<any>
+  return range(1, line('$'))->mapnew((_, lnum) => call(fname, [lnum]))
+enddef
+
+# Test that lsp#lsp#FoldExpr() and lsp#lsp#FoldText() make the folds of a
+# buffer from the folding ranges of the language server, which are requested
+# when its folds are first computed.  A range that ends after the buffer ends
+# with it, and a range on a single line and a duplicate one are left out.
+def g:Test_FoldExpr_FoldsFromFoldingRanges()
+  var requests: list<dict<any>> = []
+  FoldExprTestEdit('XFoldExprRanges.txt',
+		   range(1, 12)->mapnew((_, n) => $'line {n}'), requests)
+  :setlocal foldtext=lsp#lsp#FoldText()
+  assert_equal({textDocument: {uri: util.LspBufnrToUri(bufnr())}},
+	       requests[0].params)
+
+  var ranges = [
+    {startLine: 1, endLine: 3, collapsedText: 'A'},
+    {startLine: 4, endLine: 9, collapsedText: 'B'},
+    {startLine: 4, endLine: 6, collapsedText: 'C'},
+    {startLine: 7, endLine: 8},
+    {startLine: 7, endLine: 8},
+    {startLine: 10, endLine: 10},
+    {startLine: 10, endLine: 20}
+  ]
+  requests[0].Reply(ranges)
+  assert_equal([0, 1, 1, 1, 2, 2, 2, 2, 2, 1, 1, 1], ForEachLine('foldlevel'))
+  assert_equal([-1, 2, 2, 2, 5, 5, 5, 5, 5, 5, 11, 11],
+	       ForEachLine('foldclosed'))
+  assert_equal([-1, 4, 4, 4, 10, 10, 10, 10, 10, 10, 12, 12],
+	       ForEachLine('foldclosedend'))
+  assert_equal('A', foldtextresult(2))
+  assert_equal('B', foldtextresult(5))
+
+  :5foldopen
+  assert_equal([-1, 2, 2, 2, 5, 5, 5, 8, 8, -1, 11, 11],
+	       ForEachLine('foldclosed'))
+  assert_equal('C', foldtextresult(5))
+
+  # Without a collapsed text, the closed fold shows what foldtext() returns
+  :setlocal foldtext&
+  var defaultTexts = [foldtextresult(8), foldtextresult(11)]
+  :setlocal foldtext=lsp#lsp#FoldText()
+  assert_equal(defaultTexts, [foldtextresult(8), foldtextresult(11)])
+
+  lsp.RemoveFile(bufnr())
+  :%bw!
+enddef
+
+# Test that the folds computed with lsp#lsp#FoldExpr() follow the lines when
+# lines are added and deleted, until the folding ranges are requested again
+# after the changes.  The folds that are still there stay open or closed, a
+# new fold is closed unless it has the cursor line, and a reply about an older
+# text of the buffer is dropped.
+def g:Test_FoldExpr_FollowsChanges()
+  var requests: list<dict<any>> = []
+  FoldExprTestEdit('XFoldExprChanges.txt',
+		   range(1, 10)->mapnew((_, n) => $'line {n}'), requests)
+  requests[0].Reply([{startLine: 1, endLine: 3}, {startLine: 5, endLine: 7}])
+  :2foldopen
+  assert_equal([-1, 6], [foldclosed(2), foldclosed(6)])
+  g:optionSetCount = 0
+  augroup FoldExprTest
+    autocmd!
+    autocmd OptionSet foldmethod g:optionSetCount += 1
+  augroup END
+
+  append(0, ['added 1', 'added 2'])
+  :5delete _
+  assert_equal([0, 0, 0, 1, 1, 0, 1, 1, 1, 0, 0], ForEachLine('foldlevel'))
+  assert_equal([-1, -1, -1, -1, -1, -1, 7, 7, 7, -1, -1],
+	       ForEachLine('foldclosed'))
+  g:WaitForAssert(() => assert_equal(2, requests->len()))
+
+  setline(11, 'changed')
+  requests[1].Reply([{startLine: 0, endLine: 10}])
+  assert_equal([0, 0, 0, 1, 1, 0, 1, 1, 1, 0, 0], ForEachLine('foldlevel'))
+  g:WaitForAssert(() => assert_equal(3, requests->len()))
+
+  cursor(10, 1)
+  var ranges = [
+    {startLine: 0, endLine: 1},
+    {startLine: 3, endLine: 4},
+    {startLine: 6, endLine: 8},
+    {startLine: 9, endLine: 10}
+  ]
+  requests[2].Reply(ranges)
+  assert_equal([1, 1, 0, 1, 1, 0, 1, 1, 1, 1, 1], ForEachLine('foldlevel'))
+  assert_equal([1, 1, -1, -1, -1, -1, 7, 7, 7, -1, -1],
+	       ForEachLine('foldclosed'))
+  assert_equal('expr', &foldmethod)
+  assert_equal(0, g:optionSetCount)
+
+  augroup FoldExprTest
+    autocmd!
+  augroup END
+  augroup! FoldExprTest
+  unlet g:optionSetCount
+  lsp.RemoveFile(bufnr())
+  :%bw!
+enddef
+
+# Test that the folding ranges are requested again after the text typed in
+# Insert mode only when Insert mode is left, so that the folds don't change
+# around the text while it is typed.
+def g:Test_FoldExpr_WaitsUntilInsertModeIsLeft()
+  var requests: list<dict<any>> = []
+  FoldExprTestEdit('XFoldExprInsert.txt', ['a', 'b', 'c'], requests)
+  requests[0].Reply([{startLine: 0, endLine: 2}])
+
+  var requestsInInsertMode = -1
+  timer_start(1000, (_) => {
+    requestsInInsertMode = requests->len()
+    feedkeys("\<Esc>", 't')
+  })
+  feedkeys('Atyped', 'xt!')
+  assert_equal(1, requestsInInsertMode)
+  g:WaitForAssert(() => assert_equal(2, requests->len()))
+
+  lsp.RemoveFile(bufnr())
+  :%bw!
+enddef
+
+# Test that the folding ranges of a buffer whose folds are computed with
+# lsp#lsp#FoldExpr() before its language server is ready are requested when
+# it is, and again when the buffer is attached again after it was detached.
+def g:Test_FoldExpr_RequestsWhenServerReady()
+  silent! edit XFoldExprReady.txt
+  setline(1, ['a', 'b', 'c'])
+  :setlocal foldmethod=expr foldexpr=lsp#lsp#FoldExpr() foldlevel=0
+  assert_equal(0, foldlevel(2))
+
+  var requests: list<dict<any>> = []
+  MakeFoldingServer(requests)
+  g:WaitForAssert(() => assert_equal(1, requests->len()))
+  requests[0].Reply([{startLine: 0, endLine: 2}])
+  assert_equal([1, 1, 1], ForEachLine('foldlevel'))
+
+  # Detached, the folding ranges are forgotten and no longer requested
+  lsp.RemoveFile(bufnr())
+  assert_equal({levels: [], texts: [], adjusted: true, listenerId: 0,
+		timerId: 0, changed: false}, b:LspFoldState)
+  setline(1, 'changed')
+  assert_equal(0, b:LspFoldState.timerId)
+
+  MakeFoldingServer(requests)
+  g:WaitForAssert(() => assert_equal(2, requests->len()))
+  requests[1].Reply([{startLine: 1, endLine: 2}])
+  assert_equal([0, 1, 1], ForEachLine('foldlevel'))
+
+  lsp.RemoveFile(bufnr())
+  :%bw!
+enddef
+
+# Test that the folds of all the windows that show a buffer, also in another
+# tab page, are computed again with its new folding ranges.  A new fold that
+# has the cursor line of a window is open in it, and a closed fold that has it
+# stays closed.
+def g:Test_FoldExpr_UpdatesAllWindows()
+  var requests: list<dict<any>> = []
+  FoldExprTestEdit('XFoldExprWindows.txt', ['a', 'b', 'c', 'd', 'e'],
+		   requests)
+  cursor(5, 1)
+  :split
+  :tab split
+  requests[0].Reply([{startLine: 0, endLine: 2}])
+  assert_equal([1, 1, 1, -1, -1], ForEachLine('foldclosed'))
+  :tabprevious
+  assert_equal([1, 1, 1, -1, -1], ForEachLine('foldclosed'))
+  :wincmd w
+  assert_equal([1, 1, 1, -1, -1], ForEachLine('foldclosed'))
+
+  cursor(1, 1)
+  append(0, 'x')
+  g:WaitForAssert(() => assert_equal(2, requests->len()))
+  requests[1].Reply([{startLine: 1, endLine: 3}, {startLine: 4, endLine: 5}])
+  assert_equal(2, line('.'))
+  assert_equal([-1, 2, 2, 2, 5, 5], ForEachLine('foldclosed'))
+  :wincmd w
+  assert_equal(6, line('.'))
+  assert_equal([-1, 2, 2, 2, -1, -1], ForEachLine('foldclosed'))
+  :tabnext
+  assert_equal([-1, 2, 2, 2, -1, -1], ForEachLine('foldclosed'))
+
+  lsp.RemoveFile(bufnr())
+  :%bw!
+enddef
+
+# Test that the folding ranges are requested again when the file of a buffer
+# changed outside of Vim and the buffer is reloaded, which listeners don't
+# get.
+def g:Test_FoldExpr_FileChangedOutsideVim()
+  var fname = 'XFoldExprReload.txt'
+  writefile(['a', 'b'], fname)
+  var requests: list<dict<any>> = []
+  try
+    exe $'silent edit {fname}'
+    MakeFoldingServer(requests)
+    :setlocal foldmethod=expr foldexpr=lsp#lsp#FoldExpr()
+    assert_equal(0, foldlevel(1))
+    g:WaitForAssert(() => assert_equal(1, requests->len()))
+    requests[0].Reply([{startLine: 0, endLine: 1}])
+    assert_equal([1, 1], ForEachLine('foldlevel'))
+
+    :setlocal autoread
+    writefile(['a', 'b', 'c', 'd'], fname)
+    :checktime
+    assert_equal(['a', 'b', 'c', 'd'], getline(1, '$'))
+    g:WaitForAssert(() => assert_equal(2, requests->len()))
+    requests[1].Reply([{startLine: 2, endLine: 3}])
+    assert_equal([0, 0, 1, 1], ForEachLine('foldlevel'))
+  finally
+    lsp.RemoveFile(bufnr())
+    :%bw!
+    delete(fname)
+  endtry
+enddef
+
 # Only here to because the test runner needs it
 def g:StartLangServer(): bool
   return true

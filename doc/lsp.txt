@@ -28,19 +28,20 @@ CONTENTS                                                     *lsp-contents*
      8. Diagnostics ................................ |lsp-diagnostics|
      9. Tag Function ............................... |lsp-tagfunc|
     10. LSP Formatting ............................. |lsp-format|
-    11. Call Hierarchy ............................. |lsp-call-hierarchy|
-    12. Autocommands ............................... |lsp-autocmds|
-    13. Highlight Groups ........................... |lsp-highlight-groups|
-    14. Semantic Highlighting ...................... |lsp-semantic-highlighting|
-    15. Debugging .................................. |lsp-debug|
-    16. Custom Command Handlers .................... |lsp-custom-commands|
-    17. Custom LSP Requests ........................ |lsp-custom-requests|
-    18. Custom LSP Completion Kinds ................ |lsp-custom-kinds|
-    19. Custom Popup Styles ........................ |lsp-custom-popup-styles|
-    20. Custom Locations Request ................... |lsp-custom-locations|
-    21. Multiple Language Servers for a buffer ..... |lsp-multiple-servers|
-    22. Language Servers Features .................. |lsp-features|
-    23. License .................................... |lsp-license|
+    11. Folding .................................... |lsp-folding|
+    12. Call Hierarchy ............................. |lsp-call-hierarchy|
+    13. Autocommands ............................... |lsp-autocmds|
+    14. Highlight Groups ........................... |lsp-highlight-groups|
+    15. Semantic Highlighting ...................... |lsp-semantic-highlighting|
+    16. Debugging .................................. |lsp-debug|
+    17. Custom Command Handlers .................... |lsp-custom-commands|
+    18. Custom LSP Requests ........................ |lsp-custom-requests|
+    19. Custom LSP Completion Kinds ................ |lsp-custom-kinds|
+    20. Custom Popup Styles ........................ |lsp-custom-popup-styles|
+    21. Custom Locations Request ................... |lsp-custom-locations|
+    22. Multiple Language Servers for a buffer ..... |lsp-multiple-servers|
+    23. Language Servers Features .................. |lsp-features|
+    24. License .................................... |lsp-license|
 
 ==============================================================================
 							*lsp-overview*
@@ -1296,6 +1297,10 @@ Commands to modify, rename, or format your code using the language server.
 
 			If 'foldcolumn' is 0, this command sets it to 2 so
 			the created folds are visible.
+
+			The folds don't follow later changes to the folding
+			ranges.  To keep them in sync with the buffer, see
+			|lsp-folding|.
 
 							*:LspFormat*
 :LspFormat		Format the current file using the language server. The
@@ -2868,8 +2873,45 @@ as it waits for the reply to other requests (two seconds).  When a language
 server doesn't reply in time, the buffer is written without its changes.
 
 ==============================================================================
+							*lsp-folding*
+11. Folding~
+							*lsp#lsp#FoldExpr()*
+The |:LspFold| command creates folds from the folding ranges of the language
+server once.  To fold with the folding ranges and keep the folds in sync with
+the buffer, set the 'foldmethod' option to "expr" and the 'foldexpr' option to
+the lsp#lsp#FoldExpr() function, for example when a language server is
+attached to a buffer: >
+
+    autocmd User LspAttached {
+	setlocal foldmethod=expr foldexpr=lsp#lsp#FoldExpr()
+    }
+<
+The folding ranges of a buffer are requested when its folds are first
+computed, and again after it is changed, once it isn't changed for a moment
+and Insert mode is left in it.  Until they arrive, the buffer has no folds, and
+after a change, the folds move with the lines that are added and deleted.
+
+When the folding ranges change, a fold that is still there stays open or
+closed.  A new fold is closed or open as 'foldlevel' says (see also
+'foldlevelstart'), except that a new fold with the cursor line in it is open,
+so that it doesn't hide the text being edited.
+
+A buffer without a language server that supports |lsp-features-foldingRange|
+has no folds.  A folding range on a single line makes no fold.
+
+							*lsp#lsp#FoldText()*
+A language server can give the text to show for a closed fold, like "..." for
+the body of a function.  To show it, set the 'foldtext' option to the
+lsp#lsp#FoldText() function: >
+
+    setlocal foldtext=lsp#lsp#FoldText()
+<
+For a closed fold without such text, lsp#lsp#FoldText() returns what
+|foldtext()| returns.
+
+==============================================================================
 							*lsp-call-hierarchy*
-11. Call Hierarchy~
+12. Call Hierarchy~
 
 The |:LspIncomingCalls| and the |:LspOutgoingCalls| commands can be used to
 display the call hierarchy of a symbol.  For example, the functions calling a
@@ -2924,7 +2966,7 @@ displayed instead of opening the hierarchy window.
 
 ==============================================================================
 							*lsp-autocmds*
-12. Autocommands~
+13. Autocommands~
 
 							*LspSetup*
 LspSetup			A |User| autocommand fired when the LSP plugin
@@ -3072,7 +3114,7 @@ g:LspProgress			A |Dictionary| containing the current progress
 <
 ==============================================================================
 							*lsp-highlight-groups*
-13. Highlight Groups~
+14. Highlight Groups~
 
 The following highlight groups are used by the LSP plugin.  You can define
 these highlight groups in your .vimrc file before sourcing this plugin to
@@ -3168,7 +3210,7 @@ or >
 <
 ==============================================================================
 						*lsp-semantic-highlighting*
-14. Semantic Highlighting~
+15. Semantic Highlighting~
 
 Semantic highlighting uses the LSP semantic tokens feature to apply more
 precise highlighting than plain syntax highlighting.  For example, a language
@@ -3266,7 +3308,7 @@ ignored unless the plugin is extended to handle them.
 
 ==============================================================================
 							*lsp-debug*
-15. Debugging~
+16. Debugging~
 
 To debug this plugin, you can log the Language Server Protocol (LSP) messages
 sent and received by the plugin from the language server.  The following
@@ -3322,7 +3364,7 @@ use the ":LspServer trace" command to set the server trace value: >
 <
 ==============================================================================
 							*lsp-custom-commands*
-16. Custom Command Handlers~
+17. Custom Command Handlers~
 
 						*LspRegisterCmdHandler()*
 						*g:LspRegisterCmdHandler()*
@@ -3356,7 +3398,7 @@ message and continues running.
 
 ==============================================================================
 							*lsp-custom-requests*
-17. Custom LSP Requests~
+18. Custom LSP Requests~
 
 The lsp.Server() function can be used to get the LSP server for the current
 buffer. It returns an empty dict if there is no LSP server.
@@ -3485,7 +3527,7 @@ sent.
 
 ==============================================================================
 							*lsp-custom-kinds*
-18. Custom LSP Completion Kinds~
+19. Custom LSP Completion Kinds~
 
 When a completion popup is triggered, the LSP client will use a default kind
 list to show in the completion "kind" section, to customize it, you need to
@@ -3590,7 +3632,7 @@ Visual Studio Code: >
 <
 ==============================================================================
 						*lsp-custom-popup-styles*
-19. Custom Popup Styles~
+20. Custom Popup Styles~
 
 The plugin provides the possibility to style popups according to one's liking.
 By default, popups do not have borders configured, and use the |hl-Pmenu|
@@ -3638,7 +3680,7 @@ For styling the completion menu please refer to |hl-pmenu|.
 
 ==============================================================================
 							*lsp-custom-locations*
-20. Custom Locations Request~
+21. Custom Locations Request~
 
 				    *LspFindLocations()* *g:LspFindLocations()*
 A Language server may support non-standard locations request. To display the
@@ -3677,7 +3719,7 @@ It behaves like |:LspPeekReferences| and |:LspShowReferences|.  For example: >
 
 ==============================================================================
 							*lsp-multiple-servers*
-21. Multiple Language Servers for a buffer~
+22. Multiple Language Servers for a buffer~
 
 It's possible to run multiple language servers for a given buffer.
 
@@ -3779,7 +3821,7 @@ everything else: >
 <
 ==============================================================================
 							*lsp-features*
-22. Language Server Features~
+23. Language Server Features~
 
 When using multiple language servers for a given file type, by providing the
 configuration |lsp-cfg-features| it is possible to specify which language
@@ -3825,7 +3867,9 @@ documentLink			Used by the |:LspDocumentLink| and the
 documentSymbol			Used by the |:LspDocumentSymbol| and the
 				|:LspOutline| commands.
 						*lsp-features-foldingRange*
-foldingRange			Used by the |:LspFold| command.
+foldingRange			Used by the |:LspFold| command, and the
+				|lsp#lsp#FoldExpr()| and |lsp#lsp#FoldText()|
+				functions.
 						*lsp-features-hover*
 hover				Used by the |:LspHover| command.
 						*lsp-features-implementation*
@@ -3864,7 +3908,7 @@ workspaceSymbol			Used by the |:LspSymbolSearch| command.
 
 ==============================================================================
 							*lsp-license*
-23. License~
+24. License~
 
 License: MIT License
 Copyright (c) 2020-2026 Yegappan Lakshmanan
