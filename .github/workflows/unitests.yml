@@ -10,21 +10,37 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 jobs:
-  macvim:
-    name: macvim
+  tests:
     runs-on: macos-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # The test groups of run_tests.sh, each installing only what it needs
+        tests: [clangd, others]
     env:
       HOMEBREW_NO_AUTO_UPDATE: 1
       HOMEBREW_NO_INSTALL_CLEANUP: 1
     steps:
       - name: Checkout LSP plugin Code
         uses: actions/checkout@v7.0.1
-      - name: Install MacVim and the language servers
+      - name: Install MacVim
         run: |
           set -euo pipefail
           brew install --cask macvim-app
-          brew install llvm go gopls coreutils
+          brew install coreutils
+          /Applications/MacVim.app/Contents/MacOS/Vim --version
+      - name: Install clangd
+        if: matrix.tests == 'clangd'
+        run: |
+          set -euo pipefail
+          brew install llvm
+          "$(brew --prefix llvm)/bin/clangd" --version
+      - name: Install gopls and rust-analyzer
+        if: matrix.tests == 'others'
+        run: |
+          set -euo pipefail
+          brew install go gopls
           rustup component add rust-src
           arch=$(uname -m)
           if [[ $arch == arm64 ]]; then
@@ -36,35 +52,43 @@ jobs:
             | gunzip -c - > ~/.local/bin/rust-analyzer
           chmod +x ~/.local/bin/rust-analyzer
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          ~/.local/bin/rust-analyzer --version
       - name: Setup Node
+        if: matrix.tests == 'others'
         uses: actions/setup-node@v7.0.0
         with:
           node-version: 22
       - name: Install the TypeScript language server
+        if: matrix.tests == 'others'
         working-directory: test
         run: npm ci
       - name: Test the test runner
+        if: matrix.tests == 'others'
         working-directory: test
         run: ./runner_selftest.sh
       - name: Run Tests
         env:
           LSP_DEBUG: 1
+        working-directory: test
         run: |
-          set -euo pipefail
           sw_vers
-          "$(brew --prefix llvm)/bin/clangd" --version
-          rust-analyzer --version
-          /Applications/MacVim.app/Contents/MacOS/Vim --version
-          cd test
-          ./run_tests.sh
+          ./run_tests.sh ${{ matrix.tests }}
       - name: Upload the language server logs
         if: failure()
         uses: actions/upload-artifact@v7.0.2
         with:
-          name: test-logs
+          name: test-logs-${{ matrix.tests }}
           path: |
             /tmp/lsp-*.log
             /tmp/lsp-*.err
             test/results_*.txt
             test/screen_*.log
           if-no-files-found: ignore
+  # The status check that the main branch requires
+  macvim:
+    needs: tests
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check that all the tests passed
+        run: test "${{ needs.tests.result }}" = success
