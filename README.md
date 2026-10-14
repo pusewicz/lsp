@@ -47,6 +47,7 @@ The following language server protocol (LSP) features are supported:
 * Inlay hints
 * Document colors
 * Inline completion (ghost text)
+* Linked editing (e.g. renaming an HTML tag also renames its closing tag)
 * Visually select symbol block/region
 * Semantic Highlight
 * Notify the language servers of changes to the files that they watch, also the changes made outside Vim (with [fswatch](https://github.com/emcrisostomo/fswatch))
@@ -139,6 +140,7 @@ call LspOptionsSet(#{
         \   inlineCompletionDelay: 100,
         \   keepFocusInDiags: v:true,
         \   keepFocusInReferences: v:true,
+        \   linkedEditing: v:false,
         \   completionTextEdit: v:true,
         \   diagVirtualTextAlign: 'above',
         \   diagVirtualTextWrap: 'default',

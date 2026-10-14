@@ -13,6 +13,7 @@ import '../autoload/lsp/symbol.vim' as symbol
 import '../autoload/lsp/util.vim' as util
 import '../autoload/lsp/buffer.vim' as buf
 import '../autoload/lsp/ontypeformat.vim' as ontypeformat
+import '../autoload/lsp/linkedediting.vim' as linkedediting
 import '../autoload/lsp/textedit.vim' as textedit
 import '../autoload/lsp/inlayhints.vim' as inlayhints
 import '../autoload/lsp/documentcolor.vim' as documentcolor
@@ -9989,6 +9990,390 @@ def g:Test_WatchedFiles_ExternalChanges()
     delete(dir, 'rf')
   endtry
   g:WaitForAssert(() => assert_equal([], FswatchJobs()))
+enddef
+
+# Test that a JavaScript regular expression, like the word pattern of linked
+# editing ranges, is converted to a Vim regexp that matches the same text,
+# and that one that uses something without a Vim equivalent here is not.
+def g:Test_LinkedEditing_JsRegexpToVim()
+  # The pattern of the TypeScript language server for JSX tag names
+  var ts = linkedediting.JsRegexpToVim('[a-zA-Z0-9:\-\._$]*')
+  assert_equal('\C\v[a-zA-Z0-9:\-._$]*', ts)
+  for [text, matches] in [['my-el', true], ['svg:rect', true],
+			  ['Foo.Bar', true], ['', true], ['div class', false],
+			  ['div>', false]]
+    assert_equal(matches, text->matchstr(ts) ==# text, text)
+  endfor
+
+  # The word pattern of VS Code for HTML
+  var html = linkedediting.JsRegexpToVim(
+    '(-?\d*\.\d\w*)|([^\`\~\!\@\$\^\&\*\(\)\=\+\[\{\]\}\\\|\;\:\''\"\,\.\<\>\/\s]+)')
+  for [text, matches] in [['my-element', true], ['h1', true], ['1.5', true],
+			  ['a b', false], ['a.b', false], ['a]', false],
+			  ['a\', false], ['a"', false]]
+    assert_equal(matches, text->matchstr(html) ==# text, text)
+  endfor
+
+  assert_equal('\C\va{-2,3}b{-1,}c{-}d{-0,1}',
+	       linkedediting.JsRegexpToVim('a{2,3}?b+?c*?d??'))
+  assert_equal('\C\va[{]b%(c|d)', linkedediting.JsRegexpToVim('a{b(?:c|d)'))
+  assert_equal('\C\v[0-9A-Za-z_\-]+', linkedediting.JsRegexpToVim('[\w-]+'))
+  assert_equal('\C\v[^\x41-\x43\x5b]', linkedediting.JsRegexpToVim('[^\x41-\x43[]'))
+  assert_equal('é', 'é'->matchstr(linkedediting.JsRegexpToVim('é')))
+  assert_equal('', 'A'->matchstr(linkedediting.JsRegexpToVim('a')))
+
+  for unsupported in ['(?<=<)\w+', '(?=a)', '\bdiv', '(\w)\1', '\p{L}+',
+		      '[]', '[^]', '[\d-z]', '[a', 'a\', '\x4']
+    assert_equal('', linkedediting.JsRegexpToVim(unsupported), unsupported)
+  endfor
+enddef
+
+# Returns the line, the column and the length of each linked editing range in
+# buffer "bnr".
+def LinkedRanges(bnr: number): list<list<number>>
+  return prop_list(1, {bufnr: bnr, end_lnum: -1,
+		       types: ['LspLinkedEditingRange']})
+    ->mapnew((_, p) => [p.lnum, p.col, p.length])
+enddef
+
+# Returns an LSP Range from character "schar" to character "echar" of line
+# "line".
+def OneLineRange(line: number, schar: number, echar: number): dict<any>
+  return {start: {line: line, character: schar},
+	  end: {line: line, character: echar}}
+enddef
+
+# Edits the buffer "fname" with the lines "lines", for linked editing with a
+# language server that is attached to it.  Returns the language server, which
+# counts its requests for the linked ranges in "requests".
+def LinkedEditingEdit(fname: string, lines: list<string>,
+		      requests: list<number>): dict<any>
+  linkedediting.InitOnce()
+  g:LspOptionsSet({linkedEditing: true})
+  exe $'silent! edit {fname}'
+  setline(1, lines)
+  # Start a new undo block, as a typed command does
+  &undolevels = &undolevels
+  var srv = MakeCapsServer({linkedEditingRangeProvider: true}, [])
+  srv.linkedEditingRangesUpdate = () => {
+    requests->add(bufnr())
+  }
+  buf.BufLspServerSet(bufnr(), srv)
+  linkedediting.BufferInit(srv, bufnr())
+  return srv
+enddef
+
+# Stops linked editing in the current buffer, edited with LinkedEditingEdit()
+# with the language server "srv".
+def LinkedEditingStop(srv: dict<any>)
+  linkedediting.BufferDeInit(bufnr())
+  buf.BufLspServerRemove(bufnr(), srv)
+  g:LspOptionsSet({linkedEditing: false})
+  :%bw!
+enddef
+
+# The keys that TypeAfterChanges() types
+var typeAhead: list<string> = []
+
+# Type the next key in "typeAhead".
+def TypeNextKey()
+  if !typeAhead->empty()
+    feedkeys(typeAhead->remove(0), 't')
+  endif
+enddef
+
+# Run the Normal mode command "cmd", which starts Insert mode, and type the
+# "keys" one at a time, each after Vim handled the text change of the one
+# before, as when typing, and then <Esc>.  Vim triggers TextChangedI and
+# TextChangedP only when the typeahead is empty.  The timer only ends Insert
+# mode if the text isn't changed.
+def TypeAfterChanges(cmd: string, keys: list<string>)
+  typeAhead = keys + ["\<Esc>"]
+  autocmd_add([{group: 'TestTypeAfterChanges', pattern: '*',
+		event: ['TextChangedI', 'TextChangedP'], cmd: 'TypeNextKey()'}])
+  var timer = timer_start(5000, (_) => feedkeys("\<Esc>", 't'))
+  try
+    feedkeys(cmd, 'xt!')
+  finally
+    timer_stop(timer)
+    autocmd_delete([{group: 'TestTypeAfterChanges'}])
+    typeAhead = []
+  endtry
+enddef
+
+# Test that the ranges that the language server links are linked only when
+# there are two or more of them, each in a line, with the same text, without
+# overlapping, and the cursor is in one of them.
+def g:Test_LinkedEditing_RangesSet()
+  var requests: list<number> = []
+  var srv = LinkedEditingEdit('XLinkedRangesSet.txt',
+			      ['<div><p></p></div>', '<div>', '</div>', 'aaa'],
+			      requests)
+  var bnr = bufnr()
+  try
+    for [ranges, cursorPos] in [
+	[[OneLineRange(0, 1, 4)], [1, 2]],
+	[[OneLineRange(0, 1, 4), OneLineRange(0, 7, 8)], [1, 2]],
+	[[OneLineRange(3, 0, 2), OneLineRange(3, 1, 3)], [4, 2]],
+	[[{start: {line: 1, character: 1}, end: {line: 2, character: 3}},
+	  OneLineRange(0, 1, 4)], [1, 2]],
+	[[OneLineRange(0, 1, 4), OneLineRange(0, 14, 17)], [1, 6]],
+	[[OneLineRange(0, 1, 4), OneLineRange(5, 2, 5)], [1, 2]]]
+      cursor(cursorPos)
+      linkedediting.RangesSet(bnr, ranges, '')
+      assert_equal([], LinkedRanges(bnr), ranges->string())
+    endfor
+
+    # The cursor is at the end of the second range
+    cursor(3, 6)
+    linkedediting.RangesSet(bnr, [OneLineRange(1, 1, 4), OneLineRange(2, 2, 5)], '')
+    assert_equal([[2, 2, 3], [3, 3, 3]], LinkedRanges(bnr))
+    assert_equal('MatchParen', hlget('LspLinkedEditingRange')[0].linksto)
+  finally
+    LinkedEditingStop(srv)
+  endtry
+enddef
+
+# Test that a change typed in a linked editing range is made to the other
+# ranges after each key, and is undone with them.
+def g:Test_LinkedEditing_InsertMode()
+  var requests: list<number> = []
+  var srv = LinkedEditingEdit('XLinkedInsert.txt',
+			      ['<div>', '  <p>x</p>', '</div>'], requests)
+  var bnr = bufnr()
+  try
+    cursor(1, 3)
+    linkedediting.RangesSet(bnr, [OneLineRange(0, 1, 4), OneLineRange(2, 2, 5)], '')
+    TypeAfterChanges('ciws', ['p', 'a', 'n'])
+    assert_equal(['<span>', '  <p>x</p>', '</span>'], getline(1, '$'))
+    assert_equal([[1, 2, 4], [3, 3, 4]], LinkedRanges(bnr))
+    assert_equal([], requests)
+
+    :normal! u
+    assert_equal(['<div>', '  <p>x</p>', '</div>'], getline(1, '$'))
+    doautocmd TextChanged
+    assert_equal([[1, 2, 3], [3, 3, 3]], LinkedRanges(bnr))
+
+    # Deleting the whole text of a range deletes the text of the others
+    cursor(3, 4)
+    :normal! diw
+    doautocmd TextChanged
+    assert_equal(['<>', '  <p>x</p>', '</>'], getline(1, '$'))
+    assert_equal([[1, 2, 0], [3, 3, 0]], LinkedRanges(bnr))
+  finally
+    LinkedEditingStop(srv)
+  endtry
+enddef
+
+# Test that a change made in Normal mode to a linked editing range is made to
+# the other ranges, and that one undo undoes it in all of them.
+def g:Test_LinkedEditing_NormalMode()
+  var requests: list<number> = []
+  var srv = LinkedEditingEdit('XLinkedNormal.txt', ['<div>x</div>'], requests)
+  var bnr = bufnr()
+  try
+    cursor(1, 9)
+    linkedediting.RangesSet(bnr, [OneLineRange(0, 1, 4), OneLineRange(0, 8, 11)], '')
+    :normal! x
+    doautocmd TextChanged
+    assert_equal('<iv>x</iv>', getline(1))
+    :normal! u
+    assert_equal('<div>x</div>', getline(1))
+    doautocmd TextChanged
+    assert_equal([[1, 2, 3], [1, 9, 3]], LinkedRanges(bnr))
+  finally
+    LinkedEditingStop(srv)
+  endtry
+enddef
+
+# Test that a change to a linked editing range that is after a range in the
+# same line keeps the cursor at the text it was at, also for moving to
+# another line.
+def g:Test_LinkedEditing_KeepsCursor()
+  var requests: list<number> = []
+  var srv = LinkedEditingEdit('XLinkedCursor.txt', ['<a>x</a>', '1234567890'],
+			      requests)
+  var bnr = bufnr()
+  try
+    cursor(1, 7)
+    linkedediting.RangesSet(bnr, [OneLineRange(0, 1, 2), OneLineRange(0, 6, 7)], '')
+    TypeAfterChanges('cwb', ['c'])
+    assert_equal('<bc>x</bc>', getline(1))
+    assert_equal([1, 9], [line('.'), col('.')])
+
+    :normal! x
+    doautocmd TextChanged
+    assert_equal('<b>x</b>', getline(1))
+    assert_equal([1, 8], [line('.'), col('.')])
+    :normal! j
+    assert_equal([2, 8], [line('.'), col('.')])
+  finally
+    LinkedEditingStop(srv)
+  endtry
+enddef
+
+# Test that a change that leaves a text that doesn't match the word pattern in
+# a linked editing range, or that changes the ranges in other ways, is not
+# made to the other ranges, which are no longer linked.
+def g:Test_LinkedEditing_StopsLinking()
+  var requests: list<number> = []
+  var srv = LinkedEditingEdit('XLinkedStop.txt', ['<div>', '</div>'], requests)
+  var bnr = bufnr()
+  try
+    # White space with the default word pattern
+    cursor(1, 4)
+    linkedediting.RangesSet(bnr, [OneLineRange(0, 1, 4), OneLineRange(1, 2, 5)], '')
+    TypeAfterChanges('a ', ['c'])
+    assert_equal(['<div c>', '</div>'], getline(1, '$'))
+    assert_equal([], LinkedRanges(bnr))
+
+    # A character that the word pattern of the language server doesn't allow
+    setline(1, '<div>')
+    cursor(1, 4)
+    linkedediting.RangesSet(bnr, [OneLineRange(0, 1, 4), OneLineRange(1, 2, 5)],
+			    '[a-z]*')
+    TypeAfterChanges('aX', [])
+    assert_equal(['<divX>', '</div>'], getline(1, '$'))
+    assert_equal([], LinkedRanges(bnr))
+
+    # A new line in a range
+    setline(1, '<div>')
+    cursor(1, 3)
+    linkedediting.RangesSet(bnr, [OneLineRange(0, 1, 4), OneLineRange(1, 2, 5)], '')
+    TypeAfterChanges("i\<CR>", [])
+    assert_equal(['<d', 'iv>', '</div>'], getline(1, '$'))
+    assert_equal([], LinkedRanges(bnr))
+
+    # A deleted range
+    :%d _
+    setline(1, ['<div>', '</div>'])
+    cursor(1, 3)
+    linkedediting.RangesSet(bnr, [OneLineRange(0, 1, 4), OneLineRange(1, 2, 5)], '')
+    :2delete _
+    doautocmd TextChanged
+    assert_equal([], LinkedRanges(bnr))
+  finally
+    LinkedEditingStop(srv)
+  endtry
+enddef
+
+# The closing tags that Test_LinkedEditing_CompletionMenu() saw
+var closingTags: list<string> = []
+
+# Test that typing in a linked editing range with the completion popup menu
+# shown changes the other ranges right away, unless one of them is before the
+# cursor in the cursor line: then they are changed after the menu is closed.
+def g:Test_LinkedEditing_CompletionMenu()
+  var requests: list<number> = []
+  var srv = LinkedEditingEdit('XLinkedPopup.txt',
+    ['<div>x</div>', 'divine dividend', '<div>', '</div>'], requests)
+  var bnr = bufnr()
+  var save_completeopt = &completeopt
+  set completeopt=menu,menuone
+  # The text of the other range while the menu is shown
+  closingTags = []
+  autocmd_add([{group: 'TestLinkedPopup', event: 'TextChangedP', pattern: '*',
+		cmd: 'closingTags->add(getline(4)->matchstr(''</\zs\w*''))'}])
+  try
+    cursor(3, 2)
+    linkedediting.RangesSet(bnr, [OneLineRange(2, 1, 4), OneLineRange(3, 2, 5)], '')
+    TypeAfterChanges('cwd', ["\<C-N>", "\<C-N>", "\<C-Y>"])
+    var tag = getline(3)->matchstr('<\zs\w*')
+    assert_match('^divi', tag)
+    assert_equal($'</{tag}>', getline(4))
+    assert_equal(2, closingTags->len())
+    assert_notequal('d', closingTags[0])
+
+    cursor(1, 9)
+    linkedediting.RangesSet(bnr, [OneLineRange(0, 1, 4), OneLineRange(0, 8, 11)], '')
+    TypeAfterChanges('cwd', ["\<C-N>", "\<C-N>", "\<C-Y>"])
+    tag = getline(1)->matchstr('</\zs\w*')
+    assert_match('^divi', tag)
+    assert_equal($'<{tag}>x</{tag}>', getline(1))
+  finally
+    autocmd_delete([{group: 'TestLinkedPopup'}])
+    &completeopt = save_completeopt
+    LinkedEditingStop(srv)
+  endtry
+enddef
+
+# Test that the language server is asked for the linked editing ranges when
+# the cursor moves out of the linked ranges, which are then no longer linked,
+# and not while it moves in them, and that the ranges are linked when the
+# reply arrives.
+def g:Test_LinkedEditing_CursorMoved()
+  linkedediting.InitOnce()
+  g:LspOptionsSet({linkedEditing: true})
+  silent! edit XLinkedCursorMoved.txt
+  setline(1, ['<div>x</div>'])
+  var bnr = bufnr()
+  try
+    var lspserver = MakeAsyncReplyingLspServer([{
+      ranges: [OneLineRange(0, 1, 4), OneLineRange(0, 8, 11)],
+      wordPattern: '[a-z]+'
+    }])
+    lspserver.isLinkedEditingRangeProvider = true
+    linkedediting.BufferInit(lspserver, bnr)
+    cursor(1, 3)
+    doautocmd CursorMoved
+    g:WaitForAssert(() => assert_equal([[1, 2, 3], [1, 9, 3]],
+				       LinkedRanges(bnr)))
+    cursor(1, 4)
+    doautocmd CursorMoved
+    assert_equal({}, lspserver.supersedableRequests)
+    assert_equal([[1, 2, 3], [1, 9, 3]], LinkedRanges(bnr))
+
+    cursor(1, 6)
+    doautocmd CursorMoved
+    assert_equal([], LinkedRanges(bnr))
+    assert_equal(1, lspserver.supersedableRequests->len())
+
+    # Resetting the option stops linked editing
+    cursor(1, 3)
+    linkedediting.RangesSet(bnr, [OneLineRange(0, 1, 4), OneLineRange(0, 8, 11)], '')
+    g:LspOptionsSet({linkedEditing: false})
+    doautocmd CursorMoved
+    assert_equal([], LinkedRanges(bnr))
+    StopAsyncReplyingLspServer(lspserver, bnr)
+  finally
+    linkedediting.BufferDeInit(bnr)
+    g:LspOptionsSet({linkedEditing: false})
+    :%bw!
+  endtry
+enddef
+
+# Test that linked editing is initialized for the language server that
+# provides it, and that detaching the buffer from the language servers stops
+# it.
+def g:Test_LinkedEditing_InitAndDetach()
+  linkedediting.InitOnce()
+  g:LspOptionsSet({linkedEditing: true})
+  try
+    var sync = {textDocumentSync: {openClose: true, change: 1}}
+    var srv1 = MakeCapsServer(sync, [])
+    var srv2 = MakeCapsServer(sync->extendnew({linkedEditingRangeProvider: true}), [])
+    :silent edit XLinkedInit.txt
+    setline(1, ['<div>x</div>'])
+    var bnr = bufnr()
+    buf.BufLspServerSet(bnr, srv1)
+    buf.BufLspServerSet(bnr, srv2)
+    lsp.BufferInit(srv1.id, bnr)
+    lsp.BufferInit(srv2.id, bnr)
+    var Events = () => autocmd_get({group: 'LspLinkedEditing', bufnr: bnr})
+			  ->mapnew((_, a) => a.event)->sort()
+    assert_equal(['CursorMoved', 'CursorMovedI', 'TextChanged', 'TextChangedI',
+		  'TextChangedP'], Events())
+    cursor(1, 3)
+    linkedediting.RangesSet(bnr, [OneLineRange(0, 1, 4), OneLineRange(0, 8, 11)], '')
+    assert_equal(2, LinkedRanges(bnr)->len())
+
+    lsp.RemoveFile(bnr)
+    assert_equal([], Events())
+    assert_equal([], LinkedRanges(bnr))
+  finally
+    g:LspOptionsSet({linkedEditing: false})
+    :%bw!
+  endtry
 enddef
 
 # Only here to because the test runner needs it

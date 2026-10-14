@@ -584,6 +584,9 @@ export def GetClientCaps(): dict<any>
       inlineCompletion: {
 	dynamicRegistration: false
       },
+      linkedEditingRange: {
+	dynamicRegistration: false
+      },
       onTypeFormatting: {
 	dynamicRegistration: false
       },

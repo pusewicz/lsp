@@ -109,6 +109,11 @@ export var lspOptions: dict<any> = {
   # Focus on the location list window after LspShowReferences
   keepFocusInReferences: true,
 
+  # Make a change to a range of text, e.g. the name of an HTML tag, to the
+  # ranges that the language server links to it, e.g. the name of the closing
+  # tag.  Opt-in because it edits the buffer while you are typing.
+  linkedEditing: false,
+
   # If true, apply the LSP server supplied text edits after a completion.
   # If a snippet plugin is going to apply the text edits, then set this to
   # false to avoid applying the text edits twice.

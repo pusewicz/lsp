@@ -28,6 +28,7 @@ import './inlinecompletion.vim'
 import './semantichighlight.vim'
 import './ontypeformat.vim'
 import './folding.vim'
+import './linkedediting.vim'
 
 # filetype to LSP server map
 var ftypeServerMap: dict<list<dict<any>>> = {}
@@ -63,6 +64,7 @@ def LspInitOnce()
   symbol.InitOnce()
   semantichighlight.InitOnce()
   ontypeformat.InitOnce()
+  linkedediting.InitOnce()
 
   lspInitializedOnce = true
 enddef
@@ -747,6 +749,11 @@ export def BufferInit(lspserverId: number, bnr: number): void
       if !onTypeFormatServer->empty() && serverId == onTypeFormatServer.id
 	ontypeformat.BufferInit(lspsrv, bnr)
       endif
+
+      var linkedEditingServer = buf.BufLspServerGet(bnr, 'linkedEditingRange')
+      if !linkedEditingServer->empty() && serverId == linkedEditingServer.id
+	linkedediting.BufferInit(lspsrv, bnr)
+      endif
     endfor
 
     folding.BufferInit(bnr)
@@ -877,6 +884,7 @@ export def RemoveFile(bnr: number): void
     RemoveBufLocalAutocmds(bnr)
     RemoveBufListener(bnr)
     ontypeformat.BufferDeInit(bnr)
+    linkedediting.BufferDeInit(bnr)
     signature.BufferDeInit(bnr)
     inlayhints.BufferDeInit(bnr)
     documentcolor.BufferDeInit(bnr)

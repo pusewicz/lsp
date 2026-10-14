@@ -56,6 +56,7 @@ var SupportedCheckFns = {
   inlayHint: (lspserver: dict<any>) => lspserver.isInlayHintProvider ||
 					lspserver.isClangdInlayHintsProvider,
   inlineCompletion: (lspserver: dict<any>) => lspserver.isInlineCompletionProvider,
+  linkedEditingRange: (lspserver: dict<any>) => lspserver.isLinkedEditingRangeProvider,
   references: (lspserver: dict<any>) => lspserver.isReferencesProvider,
   rename: (lspserver: dict<any>) => lspserver.isRenameProvider,
   selectionRange: (lspserver: dict<any>) => lspserver.isSelectionRangeProvider,
