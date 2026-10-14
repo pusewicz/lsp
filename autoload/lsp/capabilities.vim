@@ -660,6 +660,9 @@ export def GetClientCaps(): dict<any>
       diagnostics: {
 	refreshSupport: true
       },
+      foldingRange: {
+	refreshSupport: true
+      },
       inlayHint: {
 	refreshSupport: true
       },

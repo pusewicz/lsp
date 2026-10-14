@@ -1459,7 +1459,8 @@ enddef
 # handles, and not the one for inline values, which it doesn't support.
 def g:Test_RefreshCapabilities()
   var workspaceCaps: dict<any> = capabilities.GetClientCaps().workspace
-  for feature in ['codeLens', 'diagnostics', 'inlayHint', 'semanticTokens']
+  for feature in ['codeLens', 'diagnostics', 'foldingRange', 'inlayHint',
+		  'semanticTokens']
     assert_equal({refreshSupport: true}, workspaceCaps->get(feature), feature)
   endfor
   assert_false(workspaceCaps->has_key('inlineValue'))
