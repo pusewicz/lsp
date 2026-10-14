@@ -515,7 +515,13 @@ export def GetClientCaps(): dict<any>
       },
       diagnostic: {
 	dynamicRegistration: false,
-	relatedDocumentSupport: false
+	relatedDocumentSupport: false,
+	relatedInformation: true,
+	tagSupport: {
+	  valueSet: [1, 2]
+	},
+	codeDescriptionSupport: true,
+	dataSupport: true
       },
       definition: {
 	dynamicRegistration: false,
@@ -565,7 +571,10 @@ export def GetClientCaps(): dict<any>
 	dynamicRegistration: false
       },
       publishDiagnostics: {
-	relatedInformation: false,
+	relatedInformation: true,
+	tagSupport: {
+	  valueSet: [1, 2]
+	},
 	versionSupport: true,
 	codeDescriptionSupport: true,
 	dataSupport: true
