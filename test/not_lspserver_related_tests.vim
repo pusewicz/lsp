@@ -1414,6 +1414,30 @@ def g:Test_WillSaveCapability()
 	       capabilities.GetClientCaps().textDocument.synchronization)
 enddef
 
+# Test for the renameProvider server capability and the rename client
+# capability, which leaves the name to rename to the client when the server
+# replies to "textDocument/prepareRename" with "defaultBehavior".
+def g:Test_RenameCapability()
+  var lspserver: dict<any> = {forceOffsetEncoding: ''}
+  for [caps, expected] in [
+      [{}, [false, false]],
+      [{renameProvider: false}, [false, false]],
+      [{renameProvider: true}, [true, false]],
+      [{renameProvider: {}}, [true, false]],
+      [{renameProvider: {prepareProvider: false}}, [true, false]],
+      [{renameProvider: {prepareProvider: true}}, [true, true]]]
+    lspserver.caps = caps
+    capabilities.ProcessServerCaps(lspserver, lspserver.caps)
+    assert_equal(expected,
+		 [lspserver.isRenameProvider, lspserver.isRenamePrepareProvider],
+		 string(caps))
+  endfor
+
+  assert_equal({dynamicRegistration: false, prepareSupport: true,
+		prepareSupportDefaultBehavior: 1},
+	       capabilities.GetClientCaps().textDocument.rename)
+enddef
+
 # Test that the client advertises the workspace edits that it applies: text
 # document edits for a version of a document and the file operations, up to
 # the first change that fails, but not the change annotations, which it

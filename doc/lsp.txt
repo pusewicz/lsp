@@ -1306,9 +1306,20 @@ Commands to modify, rename, or format your code using the language server.
 
 			When [newName] is not given, then you will be prompted
 			to enter the new name for the symbol.  The prompt is
-			pre-filled with the current word under the cursor.
+			pre-filled with the current name of the symbol.
 			You can press <Esc> or enter an empty string in the
 			prompt to cancel the operation.
+
+			When the language server supports it, it is first
+			asked whether the symbol under the cursor can be
+			renamed.  If it cannot, a message tells why and
+			nothing is renamed.  Otherwise the server tells the
+			current name, which can differ from the word under the
+			cursor, e.g. for a Rust lifetime or a PHP variable
+			with its "$".  The prompt appears, or the symbol is
+			renamed to [newName], when the reply arrives, see
+			|lsp-async|.  Without that support, the current name
+			is the word under the cursor.
 
 			This command requires a server that supports
 			|lsp-features-rename|.  If rename is unsupported,
