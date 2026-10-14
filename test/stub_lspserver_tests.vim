@@ -8377,7 +8377,9 @@ def g:Test_SignatureHelp_TriggerKinds()
       [false, 'a(', [[2, '(']]],
       [false, 'a)', [[1, '']]],
       [true, 'a,', [[2, ',']]],
-      [true, 'a)', [[2, ')']]]
+      [true, 'a)', [[2, ')']]],
+      # A trigger character in an expression doesn't insert itself
+      [false, "a\<C-R>=toupper('x')\<CR>", [[1, '']]]
     ]
     for [shown, keys, expected] in cases
       setline(1, 'f(a')
