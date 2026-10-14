@@ -1390,6 +1390,12 @@ def g:Test_StaleRequestSupportCapability()
 	       capabilities.GetClientCaps().general.staleRequestSupport)
 enddef
 
+# Test that the client advertises the "window/showDocument" request
+def g:Test_ShowDocumentCapability()
+  assert_equal({support: true},
+	       capabilities.GetClientCaps().window.showDocument)
+enddef
+
 # Test for the "willSave" and "willSaveWaitUntil" text document sync server
 # capabilities and the synchronization client capability
 def g:Test_WillSaveCapability()
@@ -1423,6 +1429,28 @@ def g:Test_DiagnosticTagsAndRelatedInfoCapability()
     assert_equal({valueSet: [1, 2]}, caps[kind].tagSupport, kind)
     assert_true(caps[kind].relatedInformation, kind)
   endfor
+# Test for the renameProvider server capability and the rename client
+# capability, which leaves the name to rename to the client when the server
+# replies to "textDocument/prepareRename" with "defaultBehavior".
+def g:Test_RenameCapability()
+  var lspserver: dict<any> = {forceOffsetEncoding: ''}
+  for [caps, expected] in [
+      [{}, [false, false]],
+      [{renameProvider: false}, [false, false]],
+      [{renameProvider: true}, [true, false]],
+      [{renameProvider: {}}, [true, false]],
+      [{renameProvider: {prepareProvider: false}}, [true, false]],
+      [{renameProvider: {prepareProvider: true}}, [true, true]]]
+    lspserver.caps = caps
+    capabilities.ProcessServerCaps(lspserver, lspserver.caps)
+    assert_equal(expected,
+		 [lspserver.isRenameProvider, lspserver.isRenamePrepareProvider],
+		 string(caps))
+  endfor
+
+  assert_equal({dynamicRegistration: false, prepareSupport: true,
+		prepareSupportDefaultBehavior: 1},
+	       capabilities.GetClientCaps().textDocument.rename)
 enddef
 
 # Test that the client advertises the workspace edits that it applies: text
@@ -1434,6 +1462,16 @@ def g:Test_WorkspaceEditCapability()
 		resourceOperations: ['rename', 'create', 'delete'],
 		failureHandling: 'abort'},
 	       capabilities.GetClientCaps().workspace.workspaceEdit)
+enddef
+
+# Test that the client advertises the "workspace/*/refresh" requests that it
+# handles, and not the one for inline values, which it doesn't support.
+def g:Test_RefreshCapabilities()
+  var workspaceCaps: dict<any> = capabilities.GetClientCaps().workspace
+  for feature in ['codeLens', 'diagnostics', 'inlayHint', 'semanticTokens']
+    assert_equal({refreshSupport: true}, workspaceCaps->get(feature), feature)
+  endfor
+  assert_false(workspaceCaps->has_key('inlineValue'))
 enddef
 
 # Test for parsing the line and column fragment in a document link file URI

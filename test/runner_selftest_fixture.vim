@@ -1,9 +1,12 @@
 vim9script
 # Test file for runner_selftest.sh, not part of the test suite.  Each test pass
 # is named after the hook that fails in it.  The language server only pretends
-# to run, and a test pass that finds it still running fails.
+# to run, and a test pass that finds it still running fails.  One of the tests
+# and quitting Vim fail too.
 
 g:LSPTest_passes = ['setup', 'start', 'notready', 'stop', 'none']
+
+autocmd VimLeavePre * throw 'quit failed'
 
 var curPass: string
 var serverRunning: bool = false
@@ -28,8 +31,10 @@ def g:LSPTest_setupPass(pass: string, results: list<string>): bool
 enddef
 
 # Pretend to start a language server, which doesn't get ready in the
-# "notready" test pass.
+# "notready" test pass.  Its message is given outside of the tests, so no test
+# reports it.
 def g:StartLangServer(): bool
+  echomsg $'Starting the language server for the test pass {curPass}'
   serverRunning = true
   ThrowIn('start')
   return curPass != 'notready'
@@ -39,6 +44,12 @@ enddef
 def g:StopLangServer()
   serverRunning = false
   ThrowIn('stop')
+enddef
+
+# A test that fails after giving a message.
+def g:Test_Failing()
+  echomsg 'A message of the failing test'
+  v:errors->add('Failed')
 enddef
 
 # A test that passes.

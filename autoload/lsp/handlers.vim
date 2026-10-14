@@ -5,7 +5,10 @@ vim9script
 # for the Language Server Protocol (LSP) specification.
 
 import './util.vim'
+import './codelens.vim'
 import './diag.vim'
+import './inlayhints.vim'
+import './semantichighlight.vim'
 import './textedit.vim'
 
 # process a diagnostic notification message from the LSP server
@@ -375,16 +378,70 @@ def ProcessShowMessageRequest(lspserver: dict<any>, req: dict<any>)
   endif
 enddef
 
-# process the workspace/diagnostic/refresh LSP server request
-# Request: "workspace/diagnostic/refresh"
+# process the window/showDocument LSP server request: open a "file:" URI in a
+# window, or any URI with the default handler of the system when the server
+# asks to show it externally.
+# Request: "window/showDocument"
+# Param: ShowDocumentParams
+def ProcessShowDocumentReq(lspserver: dict<any>, request: dict<any>)
+  if !ValidateObjectParams(lspserver, request, 'window/showDocument')
+    return
+  endif
+
+  var params: dict<any> = request.params
+  if params->get('uri')->type() != v:t_string
+    SendInvalidParamsError(lspserver, request,
+      'window/showDocument params.uri must be a string')
+    return
+  endif
+  if params->has_key('selection') && params.selection->type() != v:t_dict
+    SendInvalidParamsError(lspserver, request,
+      'window/showDocument params.selection must be an object')
+    return
+  endif
+
+  var uri: string = params.uri
+  var success = false
+  if params->get('external', false)
+    success = util.OpenExternalUri(uri)
+  elseif uri =~? '^file:'
+    try
+      var location = {uri: uri,
+		      range: params->get('selection', {})->deepcopy()}
+      if !location.range->empty()
+	lspserver.decodeLocation(location)
+      endif
+      util.ShowFile(util.LspUriToFile(uri), location.range,
+		    params->get('takeFocus', true))
+      success = true
+    catch
+      util.ErrMsg($'Failed to show "{uri}": {v:exception}')
+    endtry
+  else
+    util.ErrMsg($'Cannot show "{uri}" in Vim')
+  endif
+  lspserver.sendResponse(request, {success: success}, {})
+enddef
+
+# process a request from the LSP server to refresh what it provides for the
+# open documents, because that changed without an edit (e.g. the server
+# finished indexing): reply, and then call "Refresh" with the server to request
+# it again.
+# Request: "workspace/codeLens/refresh", "workspace/diagnostic/refresh",
+#	   "workspace/inlayHint/refresh" or "workspace/semanticTokens/refresh"
 # Param: none
-# Re-pull diagnostics for all open buffers served by this server.
-def ProcessDiagnosticRefreshReq(lspserver: dict<any>, request: dict<any>)
-  if !ValidateNoParams(lspserver, request, 'workspace/diagnostic/refresh')
+def ProcessRefreshReq(Refresh: func(dict<any>), lspserver: dict<any>,
+		      request: dict<any>)
+  if !ValidateNoParams(lspserver, request, request.method)
     return
   endif
 
   lspserver.sendResponse(request, null, {})
+  Refresh(lspserver)
+enddef
+
+# Pull the diagnostics of every document open on "lspserver".
+def PullAllDiagnostics(lspserver: dict<any>)
   for bnr in lspserver.docBufnrs->values()
     lspserver.pullDiagnostics(bnr)
   endfor
@@ -500,16 +557,19 @@ const lsp_request_handlers: dict<func> =
     'client/registerCapability': ProcessClientRegisterCap,
     'client/unregisterCapability': ProcessClientUnregisterCap,
     'window/workDoneProgress/create': ProcessWorkDoneProgressCreate,
+    'window/showDocument': ProcessShowDocumentReq,
     'window/showMessageRequest': ProcessShowMessageRequest,
     'workspace/applyEdit': ProcessApplyEditReq,
     'workspace/configuration': ProcessWorkspaceConfiguration,
-    'workspace/diagnostic/refresh': ProcessDiagnosticRefreshReq,
+    'workspace/codeLens/refresh':
+      function(ProcessRefreshReq, [codelens.Refresh]),
+    'workspace/diagnostic/refresh':
+      function(ProcessRefreshReq, [PullAllDiagnostics]),
+    'workspace/inlayHint/refresh':
+      function(ProcessRefreshReq, [inlayhints.Refresh]),
+    'workspace/semanticTokens/refresh':
+      function(ProcessRefreshReq, [semantichighlight.Refresh]),
     'workspace/workspaceFolders': ProcessWorkspaceFoldersReq
-    # TODO: Handle the following requests from the server:
-    #     workspace/codeLens/refresh
-    #     workspace/inlayHint/refresh
-    #     workspace/inlineValue/refresh
-    #     workspace/semanticTokens/refresh
   }
 
 # Explicitly ignored requests

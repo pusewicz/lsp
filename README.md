@@ -38,12 +38,14 @@ The following language server protocol (LSP) features are supported:
 * Display type and documentation on hover
 * Signature help
 * Code action
+* Code lens
 * Display Call hierarchy
 * Display Type hierarchy
 * Highlight current symbol references
 * Formatting code
 * Folding code
 * Inlay hints
+* Document colors
 * Visually select symbol block/region
 * Semantic Highlight
 
@@ -152,11 +154,13 @@ call LspOptionsSet(#{
         \   popupHighlight: 'Normal',
         \   popupOpacity: 100,
         \   semanticHighlight: v:true,
+        \   showCodeLens: v:false,
         \   showDiagInBalloon: v:true,
         \   showDiagInPopup: v:true,
         \   showDiagOnStatusLine: v:false,
         \   showDiagWithSign: v:true,
         \   showDiagWithVirtualText: v:false,
+        \   showDocumentColors: v:false,
         \   showInlayHints: v:false,
         \   showSignature: v:true,
         \   showSignatureDocs: v:false,
@@ -200,6 +204,7 @@ Command|Description
 `:LspFixAll`|Request source.fixAll code actions for the current file from all eligible language servers, then apply the selected action.
 `:LspOrganizeImports`|Request source.organizeImports code actions for the current file from all eligible language servers, then apply the selected action.
 `:LspCodeLens`|Display a list of code lens commands and apply a selected code lens command to the current file.
+`:LspCodeLensRun`|Run the code lens command for the current line, or a selected one when the line has several.
 `:LspDiag current`|Display the diagnostic message for the current line.
 `:LspDiag first`|Jump to the first diagnostic message for the current buffer.
 `:LspDiag here`|Jump to the next diagnostic message in the current line.
@@ -253,21 +258,22 @@ The tests run with the Vim of MacVim against real language servers, as the GitHu
 
 ```sh
 brew install --cask macvim-app
-brew install llvm go gopls rustup node
+brew install coreutils llvm go gopls rustup node
 rustup default stable && rustup component add rust-src
 (cd test && npm ci)
 ```
 
-The clangd tests need clangd 22 or later, which they take from Homebrew's `llvm`. The Rust tests use the `rust-analyzer` on `PATH`; CI pins it to the [2024-06-24 release](https://github.com/rust-lang/rust-analyzer/releases/tag/2024-06-24). Then run the whole suite, or only some test files:
+The clangd tests need clangd 22 or later, which they take from Homebrew's `llvm`. The Rust tests use the `rust-analyzer` on `PATH`; CI pins it to the [2024-06-24 release](https://github.com/rust-lang/rust-analyzer/releases/tag/2024-06-24). Then run the whole suite, only some test files, or a group of them: `clangd` for the files that need clangd, `others` for the rest. CI runs each group in the terminal and in the MacVim GUI, in parallel jobs.
 
 ```sh
 cd test && ./run_tests.sh
 cd test && ./run_tests.sh clangd_tests.vim markdown_tests.vim
+cd test && ./run_tests.sh others
 ```
 
-Set `VIMPRG` to run the tests with another Vim. Set `LSP_DEBUG` to have the language servers log their messages to `lsp-<server>.log` and `lsp-<server>.err` in the temporary directory, as `:LspServer debug on` does; CI does that and keeps these logs of a failed run as an artifact.
+Set `VIMPRG` to run the tests with another Vim, and `LSP_TEST_GUI` to run them in the GUI (`vim -g`), which opens a MacVim window for each test file. Set `LSP_DEBUG` to have the language servers log their messages to `lsp-<server>.log` and `lsp-<server>.err` in the temporary directory, as `:LspServer debug on` does; CI does that and keeps these logs of a failed run as an artifact. Vim is killed when the tests in one file take longer than `LSP_TEST_TIMEOUT` seconds (default 600), e.g. when it waits for a key at a prompt.
 
-`cd test && ./runner_selftest.sh` checks the test runner itself with a test file whose setup and teardown hooks fail; CI runs it before the suite.
+`cd test && ./runner_selftest.sh` checks the test runner itself with test files whose setup and teardown hooks fail, that fail when Vim quits, or that wait for a key; CI runs it before the suite.
 
 ## Similar Vim LSP Plugins
 

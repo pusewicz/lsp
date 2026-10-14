@@ -458,9 +458,62 @@ enddef
 # (e.g. topleft) are in "cmdmods".
 export def JumpToLspLocation(location: dict<any>, cmdmods: string)
   var [uri, range] = LspLocationParse(location)
-  var fname = LspUriToFile(uri)
+  GotoFileWindow(LspUriToFile(uri), cmdmods)
+  CursorToLspPos(win_getid(), range.start)
+enddef
 
-  # jump to the file and line containing the symbol
+# Show the file "fname" in a window, with the cursor at the start of the LSP
+# "range" when it is not empty.  When "takeFocus" is true, go to the window,
+# as JumpToLspLocation() does.  Otherwise the cursor stays in the current
+# window, and the file is shown in a window split from it, unless a window in
+# the current tab page shows it already.
+export def ShowFile(fname: string, range: dict<any>, takeFocus: bool)
+  var wid: number
+  if takeFocus
+    PushCursorToTagStack()
+    GotoFileWindow(fname, '')
+    wid = win_getid()
+  else
+    wid = BufnrExact(fname)->bufwinid()
+    if wid == -1
+      var curwid = win_getid()
+      exe $'belowright split {fname->fnameescape()}'
+      wid = win_getid()
+      curwid->win_gotoid()
+    endif
+  endif
+
+  if !range->empty()
+    CursorToLspPos(wid, range.start)
+  endif
+enddef
+
+# Put the cursor in the window "wid" at the LSP position "pos", and open the
+# folds to show it.
+def CursorToLspPos(wid: number, pos: dict<number>)
+  var col = GetCharIdxWithoutCompChar(wid->winbufnr(), pos) + 1
+  win_execute(wid, [$'setcursorcharpos({pos.line + 1}, {col})', 'normal! zv'])
+enddef
+
+# Open "uri" with the default handler of the system, with dist#vim9#Open()
+# from the Vim runtime, which honors the "g:Openprg" variable.  Returns true
+# if the handler was started.
+export def OpenExternalUri(uri: string): bool
+  try
+    dist#vim9#Open(uri)
+  catch
+    ErrMsg($'Failed to open "{uri}": {v:exception}')
+    return false
+  endtry
+  return true
+enddef
+
+# Go to a window showing the file "fname": the current window or one already
+# showing it in the current tab page, or else edit the file in the current
+# window, or in a window split from it when the current buffer cannot be
+# abandoned.  With the user specified window command modifiers (e.g. topleft)
+# in "cmdmods", show it in a split window instead, as 'switchbuf' says.
+def GotoFileWindow(fname: string, cmdmods: string)
   var bnr: number = BufnrExact(fname)
   if cmdmods->empty()
     if bnr == bufnr()
@@ -503,10 +556,6 @@ export def JumpToLspLocation(location: dict<any>, cmdmods: string)
       exe $'{cmdmods} sbuffer {bnr}'
     endif
   endif
-  var rstart = range.start
-  setcursorcharpos(rstart.line + 1,
-		   GetCharIdxWithoutCompChar(bufnr(), rstart) + 1)
-  :normal! zv
 enddef
 
 # Find the nearest root directory containing a file or directory name from the

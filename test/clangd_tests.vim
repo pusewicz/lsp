@@ -36,6 +36,7 @@ enddef
 
 g:LSPTest_modifyDiags = false
 g:LSPTest_fileStatusDelay = 0
+g:LSPTest_slowFileStatusCount = 0
 
 var clangdPath: string = g:ClangdPath()
 
@@ -60,6 +61,7 @@ var lspServers = [{
             # Handle the notification slowly.  Vim reads the messages that
             # arrive meanwhile and invokes the channel callbacks for them.
             exe $'sleep {g:LSPTest_fileStatusDelay}m'
+            g:LSPTest_slowFileStatusCount += 1
           endif
         }
       },
@@ -1263,6 +1265,16 @@ def g:Test_LspRename()
 	count = 5;
     }
   END
+  assert_equal(expected2, getline(1, '$'))
+
+  # clangd refuses to rename a keyword, so there is no prompt, which would
+  # read the <Esc>
+  cursor(1, 1)
+  feedkeys("\<Esc>", 't')
+  :LspRename
+  g:WaitForAssert(() => assert_match('^Error: Cannot rename symbol: ',
+				     execute('messages')->split("\n")[-1]))
+  assert_equal("\<Esc>", getcharstr(0))
   assert_equal(expected2, getline(1, '$'))
   sleep 100m
   bw!
@@ -2529,10 +2541,11 @@ def g:Test_LspIncomingCalls()
   :LspIncomingCalls
   assert_equal([1, 2], [winnr(), winnr('$')])
   var l = getline(1, '$')
+  var [open, closed] = has('gui_running') ? ['▼', '▶'] : ['-', '+']
   assert_equal('# Incoming calls to "xFuncIncoming"', l[0])
-  assert_match('- xFuncIncoming (XLspIncomingCalls.c \[.*\])', l[1])
-  assert_match('  + aFuncIncoming (XLspIncomingCalls.c \[.*\])', l[2])
-  assert_match('  + bFuncIncoming (XLspIncomingCalls.c \[.*\])', l[3])
+  assert_match($'{open} xFuncIncoming (XLspIncomingCalls.c \[.*\])', l[1])
+  assert_match($'  {closed} aFuncIncoming (XLspIncomingCalls.c \[.*\])', l[2])
+  assert_match($'  {closed} bFuncIncoming (XLspIncomingCalls.c \[.*\])', l[3])
   :%bw!
 enddef
 
@@ -3183,7 +3196,10 @@ def g:Test_LspDocumentLink()
 enddef
 
 # Test that a synchronous request gets its reply when the reply arrives while
-# the channel callback handles other messages from the server.
+# the channel callback handles other messages from the server.  A lost reply
+# leaves the request waiting until it times out, and it then returns nothing.
+# The request gets a timeout much longer than a slow server needs, so that
+# only a lost reply makes it time out.
 def g:Test_RpcReplyDuringNotifications()
   :silent! edit XRpcReplyDuringNotifications.c
   setline(1, ['int f1(int a) {', '  return a;', '}'])
@@ -3192,16 +3208,20 @@ def g:Test_RpcReplyDuringNotifications()
   var params = {textDocument: {uri: util.LspBufnrToUri(bufnr())}}
 
   g:LSPTest_fileStatusDelay = 50
+  g:LSPTest_slowFileStatusCount = 0
   try
     for i in range(5)
       # The change makes clangd send file status notifications.
       setline(2, $'  return a + {i};')
       listener_flush()
-      var start = reltime()
-      var reply = lspserver.rpc('textDocument/documentSymbol', params)
-      assert_equal('f1', reply->get('result', [{}])[0]->get('name', ''))
-      assert_true(start->reltime()->reltimefloat() < 1.0)
+      var reply = lspserver.rpc('textDocument/documentSymbol', params,
+				{timeout: 30000})
+      if assert_equal('f1', reply->get('result', [{}])[0]->get('name', '')) != 0
+	break
+      endif
     endfor
+    # The notifications were handled while the requests waited for a reply
+    assert_true(g:LSPTest_slowFileStatusCount > 0)
   finally
     g:LSPTest_fileStatusDelay = 0
     :%bw!

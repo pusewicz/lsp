@@ -23,6 +23,7 @@ import './hover.vim'
 import './signature.vim'
 import './codeaction.vim'
 import './codelens.vim'
+import './documentcolor.vim'
 import './documentlink.vim'
 import './callhierarchy.vim' as callhier
 import './typehierarchy.vim' as typehier
@@ -52,9 +53,16 @@ def Error_cb(lspserver: dict<any>, chan: channel, emsg: string): void
   lspserver.errorLog(emsg)
 enddef
 
-# LSP server exit callback
+# LSP server exit callback.  Reports how the server exited, also in the debug
+# log, where a server that exits unexpectedly otherwise only shows as requests
+# that get no reply.
 def Exit_cb(lspserver: dict<any>, job: job, status: number): void
-  util.WarnMsg($'{strftime("%m/%d/%y %T")}: LSP server ({lspserver.name}) exited with status {status}')
+  var termsig: string = job->job_info().termsig
+  var how: string = termsig->empty()
+    ? $'exited with status {status}'
+    : $'was killed by signal {termsig->toupper()}'
+  util.WarnMsg($'{strftime("%m/%d/%y %T")}: LSP server ({lspserver.name}) {how}')
+  lspserver.traceLog($'LSP server {how}')
   if lspserver.diagnosticPullTimer != -1
     timer_stop(lspserver.diagnosticPullTimer)
     lspserver.diagnosticPullTimer = -1
@@ -2269,9 +2277,86 @@ def TypeHierarchyPrepareReply(lspserver: dict<any>, reqctx: dict<number>,
   GetTypeHierarchy(lspserver, typeHierItem, isSuper, {pending: 0, Done: Show})
 enddef
 
+# Check that the symbol under the cursor, at the LSP position "pos" in the
+# current buffer, can be renamed, and call "Cbfunc" with its current name.  A
+# server that supports "textDocument/prepareRename" is asked first: when it
+# refuses, a message tells why and "Cbfunc" is not called, nor is it when the
+# editor state in "reqctx" (see util.RequestContextGet()) changed before the
+# reply arrived.  Otherwise "Cbfunc" is called right away with the word under
+# the cursor.
+# Request: "textDocument/prepareRename"
+# Param: PrepareRenameParams
+def PrepareRename(lspserver: dict<any>, reqctx: dict<number>,
+		  pos: dict<number>, Cbfunc: func(string))
+  var cword: string = expand('<cword>')
+  if !lspserver.isRenamePrepareProvider
+    Cbfunc(cword)
+    return
+  endif
+
+  # interface PrepareRenameParams
+  #   interface TextDocumentPositionParams
+  var bnr: number = reqctx.bnr
+  var param: dict<any> = {textDocument: {uri: util.LspBufnrToUri(bnr)},
+			  position: pos}
+  AsyncRpcInContext(lspserver, reqctx,
+		    'textDocument/prepareRename', 'textDocument/prepareRename',
+		    param, (_: dict<any>, result: any, error: dict<any>) => {
+    if !error->empty()
+      # The server says why the symbol cannot be renamed
+      if !IsStaleRequestError(error)
+	util.ErrMsg(error.message)
+      endif
+      return
+    endif
+
+    # Result: Range | {range: Range, placeholder: string}
+    #	      | {defaultBehavior: boolean} | null
+    if result->type() != v:t_dict && result->type() != v:t_none
+      util.ErrMsg('prepareRename response from the language server is not a Dict')
+      return
+    endif
+    if result->empty() || !result->get('defaultBehavior', true)
+      util.WarnMsg('Nothing to rename at the cursor')
+      return
+    endif
+
+    Cbfunc(PrepareRenameName(lspserver, bnr, result, cword))
+  }, {handleError: false})
+enddef
+
+# Return the current name of the symbol to rename in buffer "bnr", given the
+# reply "result" of the language server to "textDocument/prepareRename": its
+# placeholder, or else the text in its range, or else, when the server leaves
+# it to the client or the range is not on one line, "cword", the word under
+# the cursor.
+def PrepareRenameName(lspserver: dict<any>, bnr: number, result: dict<any>,
+		      cword: string): string
+  if !result->get('placeholder', '')->empty()
+    return result.placeholder
+  endif
+
+  var range: dict<any> = result->get('range', result)
+  if !range->has_key('start') || !range->has_key('end')
+      || range.start.line != range.end.line
+    return cword
+  endif
+
+  lspserver.decodeRange(bnr, range)
+  var ltext: string = bnr->getbufline(range.start.line + 1)->get(0, '')
+  var startByte: number = util.GetLineByteFromPos(bnr, range.start)
+  var name: string = ltext->strpart(startByte,
+	util.GetLineByteFromPos(bnr, range.end) - startByte)
+  return name->empty() ? cword : name
+enddef
+
+# Rename the symbol at the LSP position "pos" in buffer "bnr" to "newName".
+# The edits are applied when the reply arrives, unless the buffer was changed
+# in the meantime.
 # Request: "textDocument/rename"
 # Param: RenameParams
-def RenameSymbol(lspserver: dict<any>, newName: string)
+def RenameSymbol(lspserver: dict<any>, bnr: number, pos: dict<number>,
+		 newName: string)
   # Check whether LSP server supports rename operation
   if !lspserver.isRenameProvider
     util.ErrMsg('LSP server does not support rename operation')
@@ -2280,11 +2365,10 @@ def RenameSymbol(lspserver: dict<any>, newName: string)
 
   # interface RenameParams
   #   interface TextDocumentPositionParams
-  var param: dict<any> = {}
-  param = lspserver.getTextDocPosition(true)
-  param.newName = newName
+  var param: dict<any> = {textDocument: {uri: util.LspBufnrToUri(bnr)},
+			  position: pos, newName: newName}
 
-  AsyncRpcInContext(lspserver, util.RequestContextGet('buffer'),
+  AsyncRpcInContext(lspserver, util.RequestContextGet('buffer', bnr),
 		    'textDocument/rename', 'textDocument/rename', param,
 		    (_: dict<any>, result: any, _) => {
     # Result: WorkspaceEdit | null
@@ -2418,9 +2502,13 @@ def CodeActionAsync(lspserver: dict<any>, fname_arg: string, line1: number,
   endif
 enddef
 
+# Let the user select one of the code lenses of the file "fname" in the
+# current buffer and run its command.  With "onCursorLine", only one of the
+# code lenses of the cursor line, and run it right away when it is the only
+# one.
 # Request: "textDocument/codeLens"
 # Param: CodeLensParams
-def CodeLens(lspserver: dict<any>, fname: string)
+def CodeLens(lspserver: dict<any>, fname: string, onCursorLine: bool = false)
   # Check whether LSP server supports code lens operation
   if !lspserver.isCodeLensProvider
     util.ErrMsg('LSP server does not support code lens operation')
@@ -2428,18 +2516,25 @@ def CodeLens(lspserver: dict<any>, fname: string)
   endif
 
   var bnr = bufnr()
-  var reqctx = util.RequestContextGet('window', bnr)
+  var lnum = line('.') - 1
+  var reqctx = util.RequestContextGet(onCursorLine ? 'cursor' : 'window', bnr)
   var params = {textDocument: {uri: util.LspFileToUri(fname)}}
   AsyncRpcInContext(lspserver, reqctx, $'textDocument/codeLens {bnr}',
 		    'textDocument/codeLens', params,
 		    (_: dict<any>, result: any, _) => {
     # Result: CodeLens[] | null
-    if result->empty()
-      util.WarnMsg($'No code lens actions found for the current file')
+    var codeLensItems: list<dict<any>> =
+      result->type() == v:t_list ? result : []
+    if onCursorLine
+      codeLensItems->filter((_, item) => item.range.start.line == lnum)
+    endif
+    if codeLensItems->empty()
+      util.WarnMsg(onCursorLine
+	? 'No code lens actions found for the current line'
+	: 'No code lens actions found for the current file')
       return
     endif
 
-    var codeLensItems: list<dict<any>> = result
     # Decode the position encoding in all the code lens items
     if lspserver.needOffsetEncoding
       for codeLensItem in codeLensItems
@@ -2449,11 +2544,60 @@ def CodeLens(lspserver: dict<any>, fname: string)
 
     ResolveCodeLenses(lspserver, bnr, codeLensItems,
 		      (resolvedItems: list<dict<any>>) => {
-      if util.RequestContextMatches(reqctx)
+      if !util.RequestContextMatches(reqctx)
+	return
+      endif
+      if onCursorLine
+	codelens.RunCodeLens(lspserver, resolvedItems)
+      else
 	codelens.ProcessCodeLens(lspserver, resolvedItems)
       endif
     })
   })
+enddef
+
+# Request the code lenses of buffer "bnr", resolve them and show them above
+# their lines, unless the buffer changed or was detached from the server in
+# the meantime.
+# Request: "textDocument/codeLens"
+# Param: CodeLensParams
+def CodeLensShow(lspserver: dict<any>, bnr: number)
+  if !lspserver.isCodeLensProvider
+    return
+  endif
+
+  var changedtick: number = bnr->getbufvar('changedtick')
+  var IsCurrent = (): bool => bnr->getbufvar('changedtick', -1) == changedtick
+    && !buf.BufLspServerGetById(bnr, lspserver.id)->empty()
+  var params = {textDocument: {uri: util.LspBufnrToUri(bnr)}}
+  AsyncRpcSupersede(lspserver, $'codeLens/show {bnr}',
+		    'textDocument/codeLens', params,
+		    (_: dict<any>, result: any, error: dict<any>) => {
+    if !error->empty()
+      lspserver.traceLog($'Code lens failed: {error->get("message", "")}')
+      return
+    endif
+    # Result: CodeLens[] | null.  Without a result, as when the request was
+    # cancelled or the content was modified, the code lenses are left as they
+    # are.
+    if result->type() != v:t_list || !IsCurrent()
+      return
+    endif
+
+    var codeLensItems: list<dict<any>> = result
+    if lspserver.needOffsetEncoding
+      for codeLensItem in codeLensItems
+	lspserver.decodeRange(bnr, codeLensItem.range)
+      endfor
+    endif
+
+    ResolveCodeLenses(lspserver, bnr, codeLensItems,
+		      (resolvedItems: list<dict<any>>) => {
+      if IsCurrent()
+	codelens.ShowCodeLenses(bnr, resolvedItems)
+      endif
+    })
+  }, {handleError: false})
 enddef
 
 # Resolve the items in "codeLensItems" of buffer "bnr" that have no command,
@@ -2556,6 +2700,31 @@ def GetDocumentLinks(lspserver: dict<any>, bnr: number, reqctx: dict<number>,
       endfor
     endif
     Cbfunc(links)
+  })
+enddef
+
+# Get the colors in buffer "bnr" and show them, unless the buffer was changed
+# before the reply arrived.  Without a result, as when the request was
+# cancelled, the colors shown before are kept.
+# Request: "textDocument/documentColor"
+# Param: DocumentColorParams
+def DocumentColorsUpdate(lspserver: dict<any>, bnr: number)
+  var params = {textDocument: {uri: util.LspBufnrToUri(bnr)}}
+  AsyncRpcInContext(lspserver, util.RequestContextGet('buffer', bnr),
+		    $'textDocument/documentColor {bnr}',
+		    'textDocument/documentColor', params,
+		    (_: dict<any>, result: any, _) => {
+    # Result: ColorInformation[]
+    if result->type() != v:t_list
+      return
+    endif
+    var colors: list<dict<any>> = result
+    if lspserver.needOffsetEncoding
+      for colorInfo in colors
+	lspserver.decodeRange(bnr, colorInfo.range)
+      endfor
+    endif
+    documentcolor.ColorsShow(bnr, colors)
   })
 enddef
 
@@ -3187,14 +3356,17 @@ export def NewLspServer(serverParams: dict<any>): dict<any>
     getOutgoingCalls: function(GetOutgoingCalls, [lspserver]),
     inlayHintsShow: function(InlayHintsShow, [lspserver]),
     typeHierarchy: function(TypeHierarchy, [lspserver]),
+    prepareRename: function(PrepareRename, [lspserver]),
     renameSymbol: function(RenameSymbol, [lspserver]),
     codeActionAsync: function(CodeActionAsync, [lspserver]),
     pullDiagnostics: function(PullDiagnostics, [lspserver]),
     queuePullDiagnostics: function(QueuePullDiagnostics, [lspserver]),
     queuePullDiagnosticsAllBuffers: function(QueuePullDiagnosticsAllBuffers, [lspserver]),
     codeLens: function(CodeLens, [lspserver]),
+    codeLensShow: function(CodeLensShow, [lspserver]),
     resolveCodeAction: function(ResolveCodeAction, [lspserver]),
     resolveCodeLens: function(ResolveCodeLens, [lspserver]),
+    documentColorsUpdate: function(DocumentColorsUpdate, [lspserver]),
     showDocumentLinks: function(ShowDocumentLinks, [lspserver]),
     openDocumentLink: function(OpenDocumentLink, [lspserver]),
     resolveDocumentLink: function(ResolveDocumentLink, [lspserver]),

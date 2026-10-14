@@ -4,6 +4,7 @@ vim9script
 import '../autoload/lsp/lspserver.vim' as lserver
 import '../autoload/lsp/lsp.vim' as lsp
 import '../autoload/lsp/codeaction.vim' as codeaction
+import '../autoload/lsp/codelens.vim' as codelens
 import '../autoload/lsp/signature.vim' as signature
 import '../autoload/lsp/completion.vim' as completion
 import '../autoload/lsp/handlers.vim' as handlers
@@ -14,6 +15,7 @@ import '../autoload/lsp/buffer.vim' as buf
 import '../autoload/lsp/ontypeformat.vim' as ontypeformat
 import '../autoload/lsp/textedit.vim' as textedit
 import '../autoload/lsp/inlayhints.vim' as inlayhints
+import '../autoload/lsp/documentcolor.vim' as documentcolor
 import '../autoload/lsp/capabilities.vim' as capabilities
 import '../autoload/lsp/hover.vim' as hover
 import '../autoload/lsp/options.vim' as opt
@@ -166,10 +168,18 @@ def g:Test_RequestValidation_InvalidParamsAndMethodNotFound()
     {id: 24, method: 'client/unregisterCapability', params: {unregisterations: {}}}, -32602)
   AssertRequestError(lspserver, responses,
     {id: 25, method: 'window/workDoneProgress/create', params: {}}, -32602)
+  AssertRequestError(lspserver, responses,
+    {id: 26, method: 'workspace/inlayHint/refresh', params: {foo: 1}}, -32602)
+  AssertRequestError(lspserver, responses,
+    {id: 27, method: 'workspace/semanticTokens/refresh', params: {foo: 1}},
+    -32602)
 
   # Unknown method should return MethodNotFound.
   AssertRequestError(lspserver, responses,
-    {id: 26, method: 'workspace/notARealMethod', params: {}}, -32601)
+    {id: 28, method: 'workspace/notARealMethod', params: {}}, -32601)
+  # Inline values are not supported
+  AssertRequestError(lspserver, responses,
+    {id: 29, method: 'workspace/inlineValue/refresh'}, -32601)
 enddef
 
 def g:Test_ProcessRequest_CustomHandlerException_ReturnsInternalError()
@@ -395,6 +405,36 @@ def g:Test_ServerState_StaysTyped()
   endtry
   AssertTyped(lspserver, 'after the server was started and exited')
   :%bw!
+enddef
+
+# Test that the exit of the language server is reported with its exit status,
+# or with the signal that killed it, also in the debug log.
+def g:Test_ServerExit_ReportsHow()
+  silent! edit XServerExit.txt
+  var bnr = bufnr()
+  # Start the server asynchronously, as outside the tests.  It exits once it
+  # has read the start of the "initialize" request.
+  g:LSPTest = false
+  try
+    for [cmd, how] in [['read l; exit 3', 'exited with status 3'],
+		       ['read l; kill -SEGV $$', 'was killed by signal SEGV']]
+      var lspserver = MakeTestLspServer([])
+      var traceMsgs: list<string> = []
+      lspserver.traceLog = (msg) => traceMsgs->add(msg)
+      lspserver.path = 'sh'
+      lspserver.args = ['-c', cmd]
+      :messages clear
+
+      lspserver.startServer(bnr)
+      g:WaitForAssert(() => assert_false(lspserver.running))
+      assert_match($'^Warn: .*: LSP server (test) {how}$',
+		   execute('messages')->split("\n")[-1])
+      assert_equal([$'LSP server {how}'], traceMsgs)
+    endfor
+  finally
+    g:LSPTest = true
+    :%bw!
+  endtry
 enddef
 
 # Test that a message from the server isn't kept in the server dict once it is
@@ -1286,6 +1326,255 @@ def g:Test_DiagnosticRefresh_PullsDocumentsOpenOnTheServer()
     endfor
     :%bw!
   endtry
+enddef
+
+# Returns a running test language server providing inlay hints, semantic
+# tokens and code lenses, which adds the replies it sends to "responses" and
+# the buffer number of each document it requests the inlay hints, the semantic
+# tokens or the code lenses of to "requested".
+def MakeRefreshTestLspServer(responses: list<dict<any>>,
+			     requested: list<number>): dict<any>
+  var lspserver = MakeTestLspServer([])
+  lspserver.running = true
+  lspserver.ready = true
+  lspserver.isInlayHintProvider = true
+  lspserver.isSemanticTokensProvider = true
+  lspserver.isCodeLensProvider = true
+  lspserver.sendResponse = function(CaptureResponse, [responses])
+  lspserver.inlayHintsShow = (bnr: number) => {
+    requested->add(bnr)
+  }
+  lspserver.semanticHighlightUpdate = (bnr: number) => {
+    requested->add(bnr)
+  }
+  lspserver.codeLensShow = (bnr: number) => {
+    requested->add(bnr)
+  }
+  return lspserver
+enddef
+
+# Edit three buffers, of which the second one is not shown in a window, and
+# open their documents on "lspserver".  The document of the third buffer is
+# opened on "otherServer" first, which then provides the features for it.
+# Returns the buffer numbers.
+def OpenRefreshTestDocuments(lspserver: dict<any>,
+			     otherServer: dict<any>): list<number>
+  # Showing a buffer attached to a language server refreshes its diagnostics
+  DiagInitOnce()
+  silent! edit XRefresh1.txt
+  silent! new XRefresh2.txt
+  :hide
+  silent! new XRefresh3.txt
+  var bufnrs = ['XRefresh1.txt', 'XRefresh2.txt', 'XRefresh3.txt']
+    ->map((_, name) => bufnr(name))
+  buf.BufLspServerSet(bufnrs[2], otherServer)
+  otherServer.textdocDidOpen(bufnrs[2], 'text')
+  for bnr in bufnrs
+    buf.BufLspServerSet(bnr, lspserver)
+    lspserver.textdocDidOpen(bnr, 'text')
+  endfor
+  return bufnrs
+enddef
+
+# Undo OpenRefreshTestDocuments().
+def CloseRefreshTestDocuments(lspserver: dict<any>, otherServer: dict<any>,
+			      bufnrs: list<number>)
+  for bnr in bufnrs
+    buf.BufLspServerRemove(bnr, lspserver)
+    buf.BufLspServerRemove(bnr, otherServer)
+  endfor
+  :%bw!
+enddef
+
+# Test that a "workspace/inlayHint/refresh" request gets a reply, and then
+# updates the inlay hints from the server right away in the documents shown in
+# a window when in Normal mode, and else after a CursorHold in them.  Not when
+# the inlay hints are not shown, and not the inlay hints of a document from
+# another server.
+def g:Test_InlayHintRefresh_UpdatesShownDocuments()
+  var responses: list<dict<any>> = []
+  var requested: list<number> = []
+  var otherRequested: list<number> = []
+  var lspserver = MakeRefreshTestLspServer(responses, requested)
+  var otherServer = MakeRefreshTestLspServer([], otherRequested)
+  var bufnrs = OpenRefreshTestDocuments(lspserver, otherServer)
+  var NeedsUpdate = () => bufnrs->mapnew((_, bnr) =>
+    bnr->getbufvar('LspInlayHintsNeedsUpdate', true))
+  g:InlayHintRefreshTest = (id: number) => {
+    lspserver.processRequest({jsonrpc: '2.0', id: id,
+			      method: 'workspace/inlayHint/refresh'})
+  }
+  try
+    for bnr in bufnrs
+      setbufvar(bnr, 'LspInlayHintsNeedsUpdate', false)
+    endfor
+    g:InlayHintRefreshTest(1)
+    assert_equal([{id: 1, result: null, error: {}}], responses)
+    assert_equal([false, false, false], NeedsUpdate())
+
+    # Not with g:LspOptionsSet(), which would show the inlay hints in every
+    # buffer.
+    opt.lspOptions.showInlayHints = true
+    feedkeys("i\<Cmd>call g:InlayHintRefreshTest(2)\<CR>\<Esc>", 'xt')
+    assert_equal([], requested)
+    assert_equal([true, true, false], NeedsUpdate())
+
+    g:InlayHintRefreshTest(3)
+    g:WaitForAssert(() => assert_equal([bufnrs[0]], requested))
+    assert_equal([false, true, false], NeedsUpdate())
+    assert_equal([1, 2, 3], responses->mapnew((_, r) => r.id))
+
+    exe $'sbuffer {bufnrs[1]}'
+    inlayhints.BufferInit(lspserver, bufnrs[1])
+    doautocmd CursorHold
+    g:WaitForAssert(() => assert_equal(bufnrs[0 : 1], requested))
+    assert_equal([], otherRequested)
+  finally
+    opt.lspOptions.showInlayHints = false
+    unlet g:InlayHintRefreshTest
+    CloseRefreshTestDocuments(lspserver, otherServer, bufnrs)
+  endtry
+enddef
+
+# Test that a "workspace/codeLens/refresh" request gets a reply, and then
+# updates the code lenses from the server right away in the documents shown
+# in a window when in Normal mode, and else after a CursorHold in them.  Not
+# when the code lenses are not shown, and not the code lenses of a document
+# from another server.
+def g:Test_CodeLensRefresh_UpdatesShownDocuments()
+  var responses: list<dict<any>> = []
+  var requested: list<number> = []
+  var otherRequested: list<number> = []
+  var lspserver = MakeRefreshTestLspServer(responses, requested)
+  var otherServer = MakeRefreshTestLspServer([], otherRequested)
+  var bufnrs = OpenRefreshTestDocuments(lspserver, otherServer)
+  var NeedsUpdate = () => bufnrs->mapnew((_, bnr) =>
+    bnr->getbufvar('LspCodeLensNeedsUpdate', true))
+  g:CodeLensRefreshTest = (id: number) => {
+    lspserver.processRequest({jsonrpc: '2.0', id: id,
+			      method: 'workspace/codeLens/refresh'})
+  }
+  try
+    for bnr in bufnrs
+      setbufvar(bnr, 'LspCodeLensNeedsUpdate', false)
+    endfor
+    g:CodeLensRefreshTest(1)
+    assert_equal([{id: 1, result: null, error: {}}], responses)
+    assert_equal([false, false, false], NeedsUpdate())
+
+    # Not with g:LspOptionsSet(), which would show the code lenses in every
+    # buffer.
+    opt.lspOptions.showCodeLens = true
+    feedkeys("i\<Cmd>call g:CodeLensRefreshTest(2)\<CR>\<Esc>", 'xt')
+    assert_equal([], requested)
+    assert_equal([true, true, false], NeedsUpdate())
+
+    g:CodeLensRefreshTest(3)
+    assert_equal([bufnrs[0]], requested)
+    assert_equal([false, true, false], NeedsUpdate())
+    assert_equal([1, 2, 3], responses->mapnew((_, r) => r.id))
+
+    codelens.BufferInit(lspserver, bufnrs[1])
+    assert_equal([bufnrs[0]], requested)
+    exe $'sbuffer {bufnrs[1]}'
+    doautocmd CursorHold
+    assert_equal(bufnrs[0 : 1], requested)
+    assert_equal([], otherRequested)
+  finally
+    opt.lspOptions.showCodeLens = false
+    unlet g:CodeLensRefreshTest
+    CloseRefreshTestDocuments(lspserver, otherServer, bufnrs)
+  endtry
+enddef
+
+# Test that a "workspace/semanticTokens/refresh" request gets a reply, and
+# then updates the semantic highlighting from the server in the documents
+# shown in a window, and in the other documents when they are shown in one
+# again.  Not when semantic highlighting is off, and not the semantic
+# highlighting of a document from another server.
+def g:Test_SemanticTokensRefresh_UpdatesShownDocuments()
+  var responses: list<dict<any>> = []
+  var requested: list<number> = []
+  var otherRequested: list<number> = []
+  var lspserver = MakeRefreshTestLspServer(responses, requested)
+  var otherServer = MakeRefreshTestLspServer([], otherRequested)
+  var bufnrs = OpenRefreshTestDocuments(lspserver, otherServer)
+  var Refresh = (id: number) => {
+    lspserver.processRequest({jsonrpc: '2.0', id: id,
+			      method: 'workspace/semanticTokens/refresh'})
+  }
+  var UpdatePending = () => bufnrs->mapnew((_, bnr) =>
+    bnr->getbufvar('LspSemanticTimer', 0) > 0)
+  var RefreshWhenShown = (bnr: number) =>
+    autocmd_get({group: 'LspSemanticRefresh', pattern: $'<buffer={bnr}>'})
+    ->len()
+  try
+    Refresh(1)
+    assert_equal([{id: 1, result: null, error: {}}], responses)
+    assert_equal([false, false, false], UpdatePending())
+
+    g:LspOptionsSet({semanticHighlight: true, semanticHighlightDelay: 1})
+    Refresh(2)
+    assert_equal([2], responses[1 :]->mapnew((_, r) => r.id))
+    assert_equal([true, false, false], UpdatePending())
+    assert_equal([0, 1, 0], bufnrs->mapnew((_, bnr) => RefreshWhenShown(bnr)))
+    g:WaitForAssert(() => assert_equal([bufnrs[0]], requested))
+
+    exe $'sbuffer {bufnrs[1]}'
+    g:WaitForAssert(() => assert_equal(bufnrs[0 : 1], requested))
+    assert_equal(0, RefreshWhenShown(bufnrs[1]))
+    assert_equal([], otherRequested)
+  finally
+    g:LspOptionsSet({semanticHighlight: false, semanticHighlightDelay: 1000})
+    CloseRefreshTestDocuments(lspserver, otherServer, bufnrs)
+  endtry
+enddef
+
+# Test that detaching a buffer from its language servers cancels the update of
+# its semantic highlighting deferred until it is shown in a window.
+def g:Test_SemanticTokensRefresh_DetachCancelsUpdateWhenShown()
+  var lspserver = MakeRefreshTestLspServer([], [])
+  silent! edit XSemanticRefreshDetach1.txt
+  silent! new XSemanticRefreshDetach2.txt
+  var bnr = bufnr()
+  :hide
+  buf.BufLspServerSet(bnr, lspserver)
+  lspserver.textdocDidOpen(bnr, 'text')
+  var acmd = {group: 'LspSemanticRefresh', pattern: $'<buffer={bnr}>'}
+  g:LspOptionsSet({semanticHighlight: true})
+  try
+    lspserver.processRequest({jsonrpc: '2.0', id: 1,
+			      method: 'workspace/semanticTokens/refresh'})
+    assert_equal(1, autocmd_get(acmd)->len())
+    lsp.RemoveFile(bnr)
+    assert_equal([], autocmd_get(acmd))
+  finally
+    g:LspOptionsSet({semanticHighlight: false})
+    buf.BufLspServerRemove(bnr, lspserver)
+    :%bw!
+  endtry
+enddef
+
+# Test that a reply with no inlay hints removes the inlay hints shown in the
+# buffer, and that one without a result, as when the request was cancelled,
+# leaves them as they are.
+def g:Test_InlayHintsReply_RemovesHintsWhenThereAreNone()
+  if prop_type_get('LspInlayHintsType')->empty()
+    inlayhints.InitOnce()
+  endif
+  silent! edit XInlayHintsNone.txt
+  setline(1, ['int x = f(1);'])
+  var lspserver = MakeTestLspServer([])
+  var hint = {position: {line: 0, character: 10}, label: 'a:', kind: 2}
+  var Hints = () => prop_list(1, {types: ['LspInlayHintsParam']})->len()
+
+  inlayhints.InlayHintsReply(lspserver, [hint], {}, bufnr())
+  assert_equal(1, Hints())
+  inlayhints.InlayHintsReply(lspserver, null, {}, bufnr())
+  assert_equal(1, Hints())
+  inlayhints.InlayHintsReply(lspserver, [], {}, bufnr())
+  assert_equal(0, Hints())
+  :%bw!
 enddef
 
 def g:Test_DiagNotification_PushAndPull_AreBothRetained()
@@ -6054,11 +6343,189 @@ def g:Test_RenameSymbol_DecodesEditsAfterPrecedingChanges()
 			     [lspserver, Utf16CreateAndEdit(fname)])
   try
     silent! edit XRenameUtf16Source.txt
-    lspserver.renameSymbol('new')
+    lspserver.renameSymbol(bufnr(), {line: 0, character: 0}, 'new')
     assert_equal(['😀!ab'], getbufline(fname, 1, '$'))
   finally
     delete(fname)
     :%bwipe!
+  endtry
+enddef
+
+# Test that the rename request is about the given position in the given
+# buffer, also when that is not where the cursor is.
+def g:Test_RenameSymbol_SendsGivenPosition()
+  silent! edit XRenameSymbolTarget.txt
+  var bnr = bufnr()
+  var requests: list<list<any>> = []
+  var lspserver = MakeTestLspServer([])
+  lspserver.isRenameProvider = true
+  lspserver.rpc_a = (method: string, params: any, _: any, _ = {}) => {
+    requests->add([method, params])
+    return 1
+  }
+  try
+    silent! edit XRenameSymbolOther.txt
+    var pos = {line: 2, character: 3}
+    lspserver.renameSymbol(bnr, pos, 'new')
+    assert_equal([['textDocument/rename',
+		   {textDocument: {uri: util.LspBufnrToUri(bnr)},
+		    position: pos, newName: 'new'}]], requests)
+  finally
+    :%bwipe!
+  endtry
+enddef
+
+# Returns a running and ready language server with UTF-16 positions for the
+# current buffer that supports "textDocument/prepareRename" and replies to it
+# with "reply", which has the "result" or the "error" of the reply.  Instead of
+# renaming, its renameSymbol() adds the new name to "newNames" and the
+# position of the symbol to "positions".
+def MakePrepareRenameLspServer(reply: dict<any>, newNames: list<string>,
+			       positions: list<dict<number>> = []): dict<any>
+  var lspserver = MakeUtf16LspServer()
+  lspserver.running = true
+  lspserver.ready = true
+  lspserver.isRenameProvider = true
+  lspserver.isRenamePrepareProvider = true
+  # Vim numbers the asynchronous requests on a new channel from 1.
+  lspserver.job = StartStubServerJob([{jsonrpc: '2.0', id: 1}->extend(reply)])
+  lspserver.renameSymbol = (_: number, pos: dict<number>, newName: string) => {
+    positions->add(pos)
+    newNames->add(newName)
+  }
+  buf.BufLspServerSet(bufnr(), lspserver)
+  return lspserver
+enddef
+
+# Discard the keys that a test fed and that nothing read, so that they are not
+# executed after it.
+def DiscardTypeahead()
+  while getcharstr(0) != ''
+  endwhile
+enddef
+
+# Test that ":LspRename" pre-fills the prompt for the new name with the name
+# that the language server replies to "textDocument/prepareRename": its
+# placeholder, or else the text in its range, or else, when the server leaves
+# it to the client or the range is on more than one line, the word under the
+# cursor.  Without "textDocument/prepareRename", the prompt is pre-filled with
+# the word under the cursor.
+def g:Test_LspRename_PrepareRenamePrefillsPrompt()
+  silent! edit XLspRenamePrepare.txt
+  setline(1, ["😀 = $foo + 'a", 'b'])
+  var bnr = bufnr()
+  var range = {start: {line: 0, character: 5}, end: {line: 0, character: 9}}
+  g:LSPTest = false
+  try
+    for [result, name] in [
+	[range, '$foo'],
+	[{range: range, placeholder: 'bar'}, 'bar'],
+	[{range: range, placeholder: ''}, '$foo'],
+	[{defaultBehavior: true}, 'foo'],
+	[{start: {line: 0, character: 13}, end: {line: 1, character: 1}}, 'foo']]
+      var newNames: list<string> = []
+      var lspserver = MakePrepareRenameLspServer({result: result}, newNames)
+      cursor(1, 9)
+      feedkeys("X\<CR>", 't')
+      :LspRename
+      g:WaitForAssert(() => assert_equal([$'{name}X'], newNames))
+      StopAsyncReplyingLspServer(lspserver, bnr)
+    endfor
+
+    var newNames: list<string> = []
+    var lspserver = MakePrepareRenameLspServer({result: v:null}, newNames)
+    lspserver.isRenamePrepareProvider = false
+    feedkeys("X\<CR>", 't')
+    :LspRename
+    assert_equal(['fooX'], newNames)
+    StopAsyncReplyingLspServer(lspserver, bnr)
+  finally
+    g:LSPTest = true
+    DiscardTypeahead()
+    :%bw!
+  endtry
+enddef
+
+# Test that ":LspRename" neither prompts for a new name nor renames when the
+# language server refuses to rename the symbol under the cursor, and that it
+# tells why, unless the request was cancelled.
+def g:Test_LspRename_PrepareRenameRefused()
+  silent! edit XLspRenameRefused.txt
+  setline(1, ['foo'])
+  var bnr = bufnr()
+  var nothing = 'Warn: Nothing to rename at the cursor'
+  g:LSPTest = false
+  try
+    for [reply, msg] in [
+	[{result: v:null}, nothing],
+	[{result: {defaultBehavior: false}}, nothing],
+	[{error: {code: -32602, message: 'No symbol'}}, 'Error: No symbol'],
+	[{error: {code: -32801, message: 'Modified'}}, ''],
+	[{result: [1]},
+	 'Error: prepareRename response from the language server is not a Dict']]
+      var newNames: list<string> = []
+      var lspserver = MakePrepareRenameLspServer(reply, newNames)
+      :messages clear
+      var beforeMessages = execute('messages')
+      # A prompt would read the <Esc> and cancel
+      feedkeys("\<Esc>", 't')
+      :LspRename
+      g:WaitForAssert(() => assert_equal({}, lspserver.supersedableRequests))
+      assert_equal(msg,
+		   execute('messages')->strpart(beforeMessages->len())->trim(),
+		   string(reply))
+      assert_equal([], newNames)
+      assert_equal("\<Esc>", getcharstr(0))
+      StopAsyncReplyingLspServer(lspserver, bnr)
+    endfor
+  finally
+    g:LSPTest = true
+    DiscardTypeahead()
+    :%bw!
+  endtry
+enddef
+
+# Test that ":LspRename {newName}" renames the symbol that was under the cursor
+# without a prompt when the language server replies that it can be renamed,
+# also when the cursor moved before the reply arrived, but not when the buffer
+# was changed.  ":LspRename" doesn't prompt for a new name when the cursor
+# moved.
+def g:Test_LspRename_PrepareRenameAfterCursorMoved()
+  silent! edit XLspRenameMoved.txt
+  var bnr = bufnr()
+  var pos = {line: 0, character: 0}
+  var range = {start: pos, end: {line: 0, character: 3}}
+  g:LSPTest = false
+  try
+    for [cmd, action, expected] in [
+	['LspRename baz', '', ['baz']],
+	['LspRename baz', 'move', ['baz']],
+	['LspRename baz', 'change', []],
+	['LspRename', 'move', []]]
+      setline(1, ['foo bar'])
+      var newNames: list<string> = []
+      var positions: list<dict<number>> = []
+      var lspserver = MakePrepareRenameLspServer({result: range}, newNames,
+						 positions)
+      cursor(1, 1)
+      # A prompt would read the <Esc> and cancel
+      feedkeys("\<Esc>", 't')
+      exe cmd
+      if action == 'move'
+	cursor(1, 5)
+      elseif action == 'change'
+	setline(1, ['foo baz'])
+      endif
+      g:WaitForAssert(() => assert_equal({}, lspserver.supersedableRequests))
+      assert_equal(expected, newNames, $'{cmd}, action: {action}')
+      assert_equal(expected->mapnew((_, _) => pos), positions)
+      assert_equal("\<Esc>", getcharstr(0))
+      StopAsyncReplyingLspServer(lspserver, bnr)
+    endfor
+  finally
+    g:LSPTest = true
+    DiscardTypeahead()
+    :%bw!
   endtry
 enddef
 
@@ -6251,6 +6718,223 @@ def g:Test_LspCodeLens_ResolvesItems()
   endtry
 enddef
 
+# Define the code lens highlight group and text property type, which are
+# otherwise defined only when the first language server is started.
+def CodeLensInitOnce()
+  if prop_type_get('LspCodeLens')->empty()
+    codelens.InitOnce()
+  endif
+enddef
+
+# Returns the LSP range of the character at "character" on the zero-based
+# line "line".
+def CodeLensRange(line: number, character: number): dict<any>
+  return {start: {line: line, character: character},
+	  end: {line: line, character: character + 1}}
+enddef
+
+# Returns the texts of the code lenses shown above each line of the current
+# buffer.
+def CodeLensTexts(): list<list<string>>
+  return range(1, line('$'))->mapnew((_, lnum) =>
+    prop_list(lnum, {types: ['LspCodeLens']})->mapnew((_, p) => p.text))
+enddef
+
+# Returns a running test language server providing code lenses, attached to
+# the current buffer.  It replies to "textDocument/codeLens" with "lenses",
+# and to "codeLens/resolve" with the item in "resolved" for the "data" of the
+# code lens, or with null.  The methods of the requests it gets are added to
+# "requests", and the commands it runs to "execCmds".
+def MakeCodeLensServer(lenses: list<dict<any>>, resolved: dict<dict<any>>,
+		       requests: list<string>,
+		       execCmds: list<string>): dict<any>
+  var lspserver = MakeTestLspServer([])
+  lspserver.running = true
+  lspserver.ready = true
+  lspserver.isCodeLensProvider = true
+  lspserver.isCodeLensResolveProvider = true
+  lspserver.rpc_a = (method: string, params: any, Cbfunc: func, _ = {}) => {
+    requests->add(method)
+    var result: any = null
+    if method == 'textDocument/codeLens'
+      result = lenses->deepcopy()
+    elseif resolved->has_key(params->get('data', ''))
+      result = resolved[params.data]->deepcopy()
+    endif
+    Cbfunc(lspserver, result, {})
+    return 1
+  }
+  lspserver.executeCommand = (cmd: dict<any>) => {
+    execCmds->add(cmd.command)
+  }
+  buf.BufLspServerSet(bufnr(), lspserver)
+  return lspserver
+enddef
+
+# Test that setting the "showCodeLens" option shows the code lenses above
+# their lines, indented like the line: the resolved ones, on one line for a
+# line with several, in the order of their columns.  Resetting the option
+# removes them.
+def g:Test_CodeLens_ShownAboveTheirLines()
+  CodeLensInitOnce()
+  silent! edit XCodeLensShow.txt
+  setlocal tabstop=4
+  setline(1, ['fn a() {}', "\t  fn b() {}", 'fn c() {}', 'fn d() {}'])
+  var lenses = [
+    {range: CodeLensRange(0, 3), command: {title: 'Run', command: 'run'}},
+    {range: CodeLensRange(0, 0), command: {title: 'Debug', command: 'debug'}},
+    {range: CodeLensRange(1, 3), data: 'refs'},
+    {range: CodeLensRange(2, 0), data: 'unresolvable'},
+    {range: CodeLensRange(3, 0), command: {title: "two\nlines", command: 'x'}}
+  ]
+  var resolved = {refs: {range: CodeLensRange(1, 3),
+			 command: {title: '2 references', command: 'refs'}}}
+  var requests: list<string> = []
+  var lspserver = MakeCodeLensServer(lenses, resolved, requests, [])
+  try
+    g:LspOptionsSet({showCodeLens: true})
+    assert_equal(['textDocument/codeLens', 'codeLens/resolve',
+		  'codeLens/resolve'], requests)
+    assert_equal([['Debug | Run'], ['      2 references'], [], ['two lines']],
+		 CodeLensTexts())
+    assert_equal('above', prop_list(1, {types: ['LspCodeLens']})[0].text_align)
+
+    g:LspOptionsSet({showCodeLens: false})
+    assert_equal([[], [], [], []], CodeLensTexts())
+    assert_equal([], autocmd_get({group: 'LspCodeLens',
+				  pattern: $'<buffer={bufnr()}>'}))
+  finally
+    g:LspOptionsSet({showCodeLens: false})
+    buf.BufLspServerRemove(bufnr(), lspserver)
+    :%bw!
+  endtry
+enddef
+
+# Test that the code lenses are updated when the cursor rests after a change,
+# that a reply to a request made before a change is dropped, and that the code
+# lenses are not updated in Insert mode, but when the cursor rests after it.
+def g:Test_CodeLens_UpdatedAfterChange()
+  CodeLensInitOnce()
+  silent! edit XCodeLensChange.txt
+  setline(1, ['one', 'two'])
+  var bnr = bufnr()
+  var lenses = [
+    {range: CodeLensRange(0, 0), command: {title: 'One', command: 'one'}}
+  ]
+  var requests: list<string> = []
+  var lspserver = MakeCodeLensServer(lenses, {}, requests, [])
+  opt.lspOptions.showCodeLens = true
+  try
+    codelens.BufferInit(lspserver, bnr)
+    assert_equal([['One'], []], CodeLensTexts())
+
+    # Without a change, the code lenses are not requested again
+    doautocmd CursorHold
+    assert_equal(1, requests->len())
+
+    lenses[0] = {range: CodeLensRange(1, 0),
+		 command: {title: 'Two', command: 'two'}}
+    append(0, 'zero')
+    doautocmd TextChanged
+    doautocmd CursorHold
+    assert_equal(2, requests->len())
+    assert_equal([[], ['Two'], []], CodeLensTexts())
+
+    # The reply to a request made before a change is dropped
+    var Replies: list<func> = []
+    lspserver.rpc_a = (_, _, Cbfunc: func, _ = {}) => {
+      Replies->add(() => Cbfunc(lspserver, lenses->deepcopy(), {}))
+      return 1
+    }
+    lenses[0].range = CodeLensRange(2, 0)
+    doautocmd TextChanged
+    doautocmd CursorHold
+    deletebufline(bnr, 1)
+    Replies[0]()
+    assert_equal([['Two'], []], CodeLensTexts())
+
+    # The code lenses are not shown in Insert mode, but after it
+    g:CodeLensShowTest = () => {
+      codelens.ShowCodeLenses(bnr, [{range: CodeLensRange(0, 0),
+				   command: {title: 'Ins', command: 'ins'}}])
+    }
+    feedkeys("i\<Cmd>call g:CodeLensShowTest()\<CR>\<Esc>", 'xt')
+    assert_equal([['Two'], []], CodeLensTexts())
+    assert_true(bnr->getbufvar('LspCodeLensNeedsUpdate'))
+  finally
+    opt.lspOptions.showCodeLens = false
+    silent! unlet g:CodeLensShowTest
+    buf.BufLspServerRemove(bnr, lspserver)
+    :%bw!
+  endtry
+enddef
+
+# Test that detaching a buffer from its language servers removes the code
+# lenses shown in it and stops updating them.
+def g:Test_CodeLens_RemovedWhenDetached()
+  CodeLensInitOnce()
+  silent! edit XCodeLensDetach.txt
+  setline(1, ['one'])
+  var bnr = bufnr()
+  var lenses = [
+    {range: CodeLensRange(0, 0), command: {title: 'One', command: 'one'}}
+  ]
+  var lspserver = MakeCodeLensServer(lenses, {}, [], [])
+  opt.lspOptions.showCodeLens = true
+  try
+    codelens.BufferInit(lspserver, bnr)
+    assert_equal([['One']], CodeLensTexts())
+    lsp.RemoveFile(bnr)
+    assert_equal([[]], CodeLensTexts())
+    assert_equal([], autocmd_get({group: 'LspCodeLens',
+				  pattern: $'<buffer={bnr}>'}))
+  finally
+    opt.lspOptions.showCodeLens = false
+    buf.BufLspServerRemove(bnr, lspserver)
+    :%bw!
+  endtry
+enddef
+
+# Test that ":LspCodeLensRun" runs the code lens on the cursor line, without
+# a menu when it is the only one, and resolves only the code lenses on that
+# line.
+def g:Test_LspCodeLensRun()
+  silent! edit XCodeLensRun.txt
+  setline(1, ['one', 'two', 'three'])
+  var lenses = [
+    {range: CodeLensRange(0, 0), command: {title: 'Run', command: 'run'}},
+    {range: CodeLensRange(1, 0), command: {title: 'A', command: 'a'}},
+    {range: CodeLensRange(1, 2), data: 'b'}
+  ]
+  var resolved = {b: {range: CodeLensRange(1, 2),
+		      command: {title: 'B', command: 'b'}}}
+  var requests: list<string> = []
+  var execCmds: list<string> = []
+  var lspserver = MakeCodeLensServer(lenses, resolved, requests, execCmds)
+  try
+    cursor(1, 1)
+    :LspCodeLensRun
+    assert_equal(['textDocument/codeLens'], requests)
+    assert_equal(['run'], execCmds)
+
+    # Select the second code lens on the line
+    cursor(2, 1)
+    feedkeys(":LspCodeLensRun\<CR>2\<CR>", 'xt')
+    assert_equal(['textDocument/codeLens', 'codeLens/resolve'],
+		 requests[1 :])
+    assert_equal(['run', 'b'], execCmds)
+
+    cursor(3, 1)
+    :LspCodeLensRun
+    assert_equal('Warn: No code lens actions found for the current line',
+		 LastMessage())
+    assert_equal(['run', 'b'], execCmds)
+  finally
+    buf.BufLspServerRemove(bufnr(), lspserver)
+    :%bw!
+  endtry
+enddef
+
 # Returns a stub language server that replies to "textDocument/documentLink"
 # with "links" and to "documentLink/resolve" with "resolved".  The server is a
 # resolve provider only if "resolved" is not empty.  The requests sent to the
@@ -6367,6 +7051,129 @@ def g:Test_DocumentLinkOpen_ExternalUri()
     delete('XDocLinkOpener')
     delete('XDocLinkOpened')
     delete('XDocLinkPwned')
+  endtry
+enddef
+
+# Send a "window/showDocument" request with "params" from the language server
+# "lspserver" made by MakeRequestTestLspServer() with "responses", and return
+# the result of the reply.
+def ShowDocument(lspserver: dict<any>, responses: list<dict<any>>,
+		 params: dict<any>): any
+  responses->filter('0')
+  lspserver.processRequest({jsonrpc: '2.0', id: 1,
+			    method: 'window/showDocument', params: params})
+  assert_equal(1, responses->len())
+  assert_equal({}, responses[0].error)
+  return responses[0].result
+enddef
+
+# Test that a "window/showDocument" request without a URI, or with a selection
+# that is not a range, gets an InvalidParams error.
+def g:Test_ShowDocument_InvalidParams()
+  var responses: list<dict<any>> = []
+  var lspserver = MakeRequestTestLspServer(responses)
+  AssertRequestError(lspserver, responses,
+    {id: 1, method: 'window/showDocument', params: {}}, -32602)
+  AssertRequestError(lspserver, responses,
+    {id: 2, method: 'window/showDocument',
+     params: {uri: 'file:///tmp/x', selection: []}}, -32602)
+enddef
+
+# Test that a "window/showDocument" request shows a file in a window and puts
+# the cursor at the start of the selection, decoded from the position
+# encoding, and that by default the window takes the focus.  The cursor
+# location is pushed onto the tag stack, as for a jump to a definition.
+def g:Test_ShowDocument_TakesFocus()
+  writefile(['one', "\U1F60A ab"], 'XShowDocTarget.txt')
+  silent! edit XShowDocSrc.txt
+  setline(1, ['src'])
+  :write
+  var responses: list<dict<any>> = []
+  var lspserver = MakeRequestTestLspServer(responses)
+  lspserver.posEncoding = 16
+  var uri = util.LspFileToUri('XShowDocTarget.txt')
+  try
+    # "a" is after the emoji (2 UTF-16 code units) and the space
+    var selection = {start: {line: 1, character: 3},
+		     end: {line: 1, character: 5}}
+    assert_equal({success: true}, ShowDocument(lspserver, responses,
+					       {uri: uri, selection: selection}))
+    assert_equal(1, winnr('$'))
+    assert_equal('XShowDocTarget.txt', expand('%:t'))
+    assert_equal([2, 6], [line('.'), col('.')])
+    assert_equal('XShowDocSrc.txt',
+		 gettagstack().items[-1].bufnr->bufname())
+
+    # Without a selection the cursor stays where it is
+    cursor(1, 2)
+    assert_equal({success: true}, ShowDocument(lspserver, responses,
+					       {uri: uri, takeFocus: true}))
+    assert_equal([1, 2], [line('.'), col('.')])
+  finally
+    :%bw!
+    delete('XShowDocTarget.txt')
+    delete('XShowDocSrc.txt')
+  endtry
+enddef
+
+# Test that a "window/showDocument" request that asks not to take the focus
+# shows a file in a window split from the current one, or in the window
+# already showing it, and puts the cursor in that window at the start of the
+# selection, while the cursor stays in the current window.
+def g:Test_ShowDocument_KeepsFocus()
+  writefile(['one', 'two', 'three'], 'XShowDocTarget.txt')
+  silent! edit XShowDocSrc.txt
+  setline(1, ['src'])
+  var srcWinid = win_getid()
+  var responses: list<dict<any>> = []
+  var lspserver = MakeRequestTestLspServer(responses)
+  var uri = util.LspFileToUri('XShowDocTarget.txt')
+  var Selection = (lnum: number): dict<any> => ({
+    start: {line: lnum, character: 1}, end: {line: lnum, character: 1}})
+  try
+    for lnum in [1, 2]
+      assert_equal({success: true},
+		   ShowDocument(lspserver, responses,
+				{uri: uri, selection: Selection(lnum),
+				 takeFocus: false}))
+      assert_equal(srcWinid, win_getid())
+      assert_equal(2, winnr('$'))
+      var targetWinid = bufnr('XShowDocTarget.txt')->bufwinid()
+      assert_equal([lnum + 1, 2],
+		   getcurpos(targetWinid)[1 : 2], $'lnum: {lnum}')
+    endfor
+  finally
+    :%bw!
+    delete('XShowDocTarget.txt')
+  endtry
+enddef
+
+# Test that a "window/showDocument" request shows a URI externally with the
+# opener from the Vim runtime when the server asks for it, and that it reports
+# a failure for a URI that it cannot show in Vim.
+def g:Test_ShowDocument_External()
+  writefile(['#!/bin/sh', 'printf "%s" "$1" > XShowDocOpened'],
+	    'XShowDocOpener')
+  setfperm('XShowDocOpener', 'rwx------')
+  g:Openprg = './XShowDocOpener'
+  var responses: list<dict<any>> = []
+  var lspserver = MakeRequestTestLspServer(responses)
+  var uri = 'https://example.com/doc'
+  try
+    assert_equal({success: false},
+		 ShowDocument(lspserver, responses, {uri: uri}))
+    assert_match('Cannot show "https://example.com/doc" in Vim',
+		 execute('messages'))
+    assert_false(filereadable('XShowDocOpened'))
+
+    assert_equal({success: true},
+		 ShowDocument(lspserver, responses, {uri: uri, external: true}))
+    g:WaitFor(() => filereadable('XShowDocOpened')
+		      && readfile('XShowDocOpened') == [uri])
+  finally
+    unlet g:Openprg
+    delete('XShowDocOpener')
+    delete('XShowDocOpened')
   endtry
 enddef
 
@@ -7756,6 +8563,212 @@ def g:Test_BufFeatureAutocmds_FeatureDisabled()
     :%bw!
     delete('XBufFeatureDisabled.txt')
   endtry
+enddef
+
+# Returns an LSP ColorInformation for the color with the red, green and blue
+# components "rgb" (from 0 to 1) from character "schar" to character "echar"
+# of line "line".
+def ColorInfo(line: number, schar: number, echar: number,
+	      rgb: list<any>): dict<any>
+  return {range: {start: {line: line, character: schar},
+		  end: {line: line, character: echar}},
+	  color: {red: rgb[0], green: rgb[1], blue: rgb[2], alpha: 1}}
+enddef
+
+# Returns the color swatches in buffer "bnr": the line, the column and the
+# text property type of each, and its text.
+def ColorSwatches(bnr: number): list<list<any>>
+  return prop_list(1, {bufnr: bnr, end_lnum: -1})
+    ->filter((_, p) => p.type =~# '^LspDocumentColor')
+    ->mapnew((_, p) => [p.lnum, p.col, p.type, p.text])
+enddef
+
+# Returns the GUI and the terminal colors of highlight group "name".
+def HighlightColors(name: string): list<string>
+  var hl: dict<any> = hlget(name)[0]
+  return [hl->get('guifg', '')->tolower(), hl->get('ctermfg', '')]
+enddef
+
+# Returns a running and ready language server that finds the colors in the
+# current buffer, using UTF-16 positions, and sends the "replies" to the
+# requests, like MakeAsyncReplyingLspServer().
+def MakeColorServer(replies: list<any>): dict<any>
+  var lspserver = MakeAsyncReplyingLspServer(replies)
+  lspserver.isColorProvider = true
+  lspserver.posEncoding = 16
+  lspserver.needOffsetEncoding = true
+  return lspserver
+enddef
+
+# Test that a swatch of each color that the language server finds in a buffer
+# is shown before the color, in that color, at the position decoded from the
+# negotiated position encoding.  The swatches shown before are replaced, but
+# kept when the server replies without a result.
+def g:Test_DocumentColors_ShowSwatches()
+  g:LspOptionsSet({showDocumentColors: true})
+  silent! edit XDocumentColors.css
+  setline(1, ['a { color: #ff0000; }', '/* 😊 */ b { color: rgb(128 128 128); }'])
+  var bnr = bufnr()
+  # "rgb(" starts at UTF-16 code unit 20 of the second line
+  var grayCol = getline(2)->stridx('rgb(') + 1
+  g:LSPTest = false
+  try
+    var lspserver = MakeColorServer([[
+      ColorInfo(0, 11, 18, [1, 0, 0]),
+      ColorInfo(1, 20, 37, [0.5, 0.5, 0.5])
+    ]])
+    documentcolor.BufferInit(lspserver, bnr)
+    g:WaitForAssert(() => assert_equal([
+      [1, 12, 'LspDocumentColorFF0000', '■ '],
+      [2, grayCol, 'LspDocumentColor808080', '■ ']
+    ], ColorSwatches(bnr)))
+    assert_equal(['#ff0000', '196'], HighlightColors('LspDocumentColorFF0000'))
+    assert_equal(['#808080', '244'], HighlightColors('LspDocumentColor808080'))
+    StopAsyncReplyingLspServer(lspserver, bnr)
+
+    lspserver = MakeColorServer([[ColorInfo(1, 20, 37, [0, 0, 1.0])]])
+    lspserver.documentColorsUpdate(bnr)
+    var blue = [[2, grayCol, 'LspDocumentColor0000FF', '■ ']]
+    g:WaitForAssert(() => assert_equal(blue, ColorSwatches(bnr)))
+    assert_equal(['#0000ff', '21'], HighlightColors('LspDocumentColor0000FF'))
+    StopAsyncReplyingLspServer(lspserver, bnr)
+
+    lspserver = MakeColorServer([v:null])
+    lspserver.documentColorsUpdate(bnr)
+    g:WaitForAssert(() => assert_equal({}, lspserver.supersedableRequests))
+    assert_equal(blue, ColorSwatches(bnr))
+    StopAsyncReplyingLspServer(lspserver, bnr)
+  finally
+    g:LSPTest = true
+    documentcolor.BufferDeInit(bnr)
+    g:LspOptionsSet({showDocumentColors: false})
+    :%bw!
+  endtry
+enddef
+
+# Test that the colors are not shown when the buffer was changed before the
+# reply arrived.
+def g:Test_DocumentColors_DropsReplyAfterChange()
+  silent! edit XDocumentColorsChange.css
+  setline(1, ['a { color: #ff0000; }'])
+  var bnr = bufnr()
+  g:LSPTest = false
+  try
+    var lspserver = MakeColorServer([[ColorInfo(0, 11, 18, [1, 0, 0])]])
+    lspserver.documentColorsUpdate(bnr)
+    setline(1, ['ab { color: #ff0000; }'])
+    g:WaitForAssert(() => assert_equal({}, lspserver.supersedableRequests))
+    assert_equal([], ColorSwatches(bnr))
+    StopAsyncReplyingLspServer(lspserver, bnr)
+  finally
+    g:LSPTest = true
+    :%bw!
+  endtry
+enddef
+
+# Test that the colors are shown and updated only while the
+# 'showDocumentColors' option is set, that initializing a buffer again doesn't
+# add the autocmds again, that the colors are updated once after changes stop
+# for a moment, and that detaching the buffer from the language server removes
+# the swatches.
+def g:Test_DocumentColors_UpdatesAndOption()
+  documentcolor.InitOnce()
+  silent! edit XDocumentColorsOption.css
+  setline(1, ['a { color: #ff0000; }'])
+  var bnr = bufnr()
+  var srv = MakeCapsServer({colorProvider: true}, [])
+  var updates: list<number> = []
+  srv.documentColorsUpdate = (b: number) => {
+    updates->add(b)
+    documentcolor.ColorsShow(b, [ColorInfo(0, 11, 18, [1, 0, 0])])
+  }
+  buf.BufLspServerSet(bnr, srv)
+  var Events = () => autocmd_get({group: 'LspDocumentColors', bufnr: bnr})
+			->mapnew((_, a) => a.event)
+  var swatch = [[1, 12, 'LspDocumentColorFF0000', '■ ']]
+  try
+    documentcolor.BufferInit(srv, bnr)
+    assert_equal([], updates)
+    assert_equal([], ColorSwatches(bnr))
+
+    g:LspOptionsSet({showDocumentColors: true})
+    documentcolor.BufferInit(srv, bnr)
+    assert_equal([bnr, bnr], updates)
+    assert_equal(swatch, ColorSwatches(bnr))
+    assert_equal(['TextChanged'], Events())
+
+    doautocmd TextChanged
+    doautocmd TextChanged
+    assert_equal([bnr, bnr], updates)
+    g:WaitForAssert(() => assert_equal([bnr, bnr, bnr], updates))
+    :sleep 50m
+    assert_equal([bnr, bnr, bnr], updates)
+
+    doautocmd TextChanged
+    g:LspOptionsSet({showDocumentColors: false})
+    assert_equal([], ColorSwatches(bnr))
+    assert_equal([], Events())
+    :sleep 350m
+    assert_equal([bnr, bnr, bnr], updates)
+
+    g:LspOptionsSet({showDocumentColors: true})
+    assert_equal([bnr, bnr, bnr, bnr], updates)
+    assert_equal(swatch, ColorSwatches(bnr))
+    assert_equal(['TextChanged'], Events())
+
+    lsp.RemoveFile(bnr)
+    assert_equal([], ColorSwatches(bnr))
+    assert_equal([], Events())
+  finally
+    g:LspOptionsSet({showDocumentColors: false})
+    :%bw!
+  endtry
+enddef
+
+# Test that the colors in a buffer are shown for the language server that
+# finds them, when another server is the last to get ready.
+def g:Test_DocumentColors_InitForItsServer()
+  g:LspOptionsSet({showDocumentColors: true})
+  try
+    var sync = {textDocumentSync: {openClose: true, change: 1}}
+    var srv1 = MakeCapsServer(sync->extendnew({colorProvider: true}), [])
+    var updates: list<number> = []
+    srv1.documentColorsUpdate = (b: number) => {
+      updates->add(b)
+    }
+    var srv2 = MakeCapsServer(sync, [])
+    srv2.ready = false
+    :silent edit XDocumentColorsInit.css
+    var bnr = bufnr()
+    buf.BufLspServerSet(bnr, srv1)
+    buf.BufLspServerSet(bnr, srv2)
+    lsp.BufferInit(srv1.id, bnr)
+    assert_equal([], updates)
+    srv2.ready = true
+    lsp.BufferInit(srv2.id, bnr)
+    assert_equal([bnr], updates)
+    assert_equal([$'ColorsUpdateLater({bnr})'],
+		 autocmd_get({group: 'LspDocumentColors', bufnr: bnr})
+		   ->mapnew((_, a) => a.cmd))
+    lsp.RemoveFile(bnr)
+  finally
+    g:LspOptionsSet({showDocumentColors: false})
+    :%bw!
+  endtry
+enddef
+
+# Test that the swatches get their colors back after a color scheme cleared
+# their highlight groups.
+def g:Test_DocumentColors_ColorScheme()
+  documentcolor.InitOnce()
+  silent! edit XDocumentColorsScheme.css
+  setline(1, ['a { color: #00ff00; }'])
+  documentcolor.ColorsShow(bufnr(), [ColorInfo(0, 11, 18, [0, 1, 0])])
+  :highlight clear LspDocumentColor00FF00
+  assert_equal(['', ''], HighlightColors('LspDocumentColor00FF00'))
+  doautocmd ColorScheme
+  assert_equal(['#00ff00', '46'], HighlightColors('LspDocumentColor00FF00'))
+  :%bw!
 enddef
 
 # Only here to because the test runner needs it

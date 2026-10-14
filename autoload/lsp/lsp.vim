@@ -20,8 +20,10 @@ import './symbol.vim'
 import './outline.vim'
 import './signature.vim'
 import './codeaction.vim'
+import './codelens.vim'
 import './hover.vim'
 import './inlayhints.vim'
+import './documentcolor.vim'
 import './semantichighlight.vim'
 import './ontypeformat.vim'
 
@@ -49,9 +51,11 @@ def LspInitOnce()
   prop_type_add('LspReadRef', {highlight: 'LspReadRef', override: override})
   prop_type_add('LspWriteRef', {highlight: 'LspWriteRef', override: override})
 
+  codelens.InitOnce()
   completion.InitOnce()
   diag.InitOnce()
   inlayhints.InitOnce()
+  documentcolor.InitOnce()
   signature.InitOnce()
   symbol.InitOnce()
   semantichighlight.InitOnce()
@@ -720,6 +724,16 @@ export def BufferInit(lspserverId: number, bnr: number): void
 	semantichighlight.BufferInit(lspsrv, bnr)
       endif
 
+      var colorServer = buf.BufLspServerGet(bnr, 'documentColor')
+      if !colorServer->empty() && serverId == colorServer.id
+	documentcolor.BufferInit(lspsrv, bnr)
+      endif
+
+      var codeLensServer = buf.BufLspServerGet(bnr, 'codeLens')
+      if !codeLensServer->empty() && serverId == codeLensServer.id
+	codelens.BufferInit(lspsrv, bnr)
+      endif
+
       var onTypeFormatServer = buf.BufLspServerGet(bnr, 'documentOnTypeFormatting')
       if !onTypeFormatServer->empty() && serverId == onTypeFormatServer.id
 	ontypeformat.BufferInit(lspsrv, bnr)
@@ -854,7 +868,9 @@ export def RemoveFile(bnr: number): void
     ontypeformat.BufferDeInit(bnr)
     signature.BufferDeInit(bnr)
     inlayhints.BufferDeInit(bnr)
+    documentcolor.BufferDeInit(bnr)
     semantichighlight.BufferDeInit(bnr)
+    codelens.BufferDeInit(bnr)
     diag.BufferDeInit(bnr)
   endif
   # Iterate over a copy because BufLspServerRemove mutates the underlying list.
@@ -1509,27 +1525,35 @@ export def TypeHierarchy(direction: number)
   lspserver.typeHierarchy(direction)
 enddef
 
-# Rename a symbol
-# Uses LSP "textDocument/rename" request
+# Rename the symbol at the cursor to "a_newName", or, when it is empty, to the
+# name entered at a prompt that is pre-filled with its current name.
+# Uses LSP "textDocument/prepareRename" and "textDocument/rename" requests
 export def Rename(a_newName: string)
   var lspserver: dict<any> = buf.CurbufGetServerChecked('rename')
   if lspserver->empty()
     return
   endif
 
-  var newName: string = a_newName
-  if newName->empty()
-    var sym: string = expand('<cword>')
-    newName = input($"Rename symbol '{sym}' to: ", sym)
+  # The symbol to rename is the one under the cursor now.  Only a change of the
+  # buffer cancels renaming it to "a_newName", but after the cursor moved, the
+  # prompt for a new name would be confusing and is not opened.
+  var bnr: number = bufnr()
+  var pos: dict<number> = lspserver.getPosition(true)
+  var reqctx = util.RequestContextGet(a_newName->empty() ? 'cursor' : 'buffer')
+  lspserver.prepareRename(reqctx, pos, (sym: string) => {
+    var newName: string = a_newName
     if newName->empty()
-      return
+      newName = input($"Rename symbol '{sym}' to: ", sym)
+      if newName->empty()
+	return
+      endif
+
+      # clear the input prompt
+      :echo "\r"
     endif
 
-    # clear the input prompt
-    :echo "\r"
-  endif
-
-  lspserver.renameSymbol(newName)
+    lspserver.renameSymbol(bnr, pos, newName)
+  })
 enddef
 
 # Perform a code action
@@ -1628,6 +1652,18 @@ export def CodeLens()
   endif
 
   lspserver.codeLens(@%)
+enddef
+
+# Run the code lens on the cursor line, or the selected one when there are
+# several.
+# Uses LSP "textDocument/codeLens" and "codeLens/resolve" requests
+export def CodeLensRun()
+  var lspserver: dict<any> = buf.CurbufGetServerChecked('codeLens')
+  if lspserver->empty()
+    return
+  endif
+
+  lspserver.codeLens(@%, true)
 enddef
 
 # Display the links in the current buffer in a location or quickfix list
