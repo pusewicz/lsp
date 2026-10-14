@@ -99,6 +99,19 @@ enddef
 nnoremap <silent> <plug>(LspFormat) <scriptcmd>set operatorfunc=LspFormatFunc<cr>g@
 vnoremap <silent> <plug>(LspFormat) <scriptcmd>set operatorfunc=LspFormatFunc<cr>g@
 
+# Jump between the tabstops of an expanded snippet
+inoremap <silent> <Plug>(LspSnippetJumpNext) <ScriptCmd>lsp.SnippetJump(1)<CR>
+snoremap <silent> <Plug>(LspSnippetJumpNext) <ScriptCmd>lsp.SnippetJump(1)<CR>
+inoremap <silent> <Plug>(LspSnippetJumpPrev) <ScriptCmd>lsp.SnippetJump(-1)<CR>
+snoremap <silent> <Plug>(LspSnippetJumpPrev) <ScriptCmd>lsp.SnippetJump(-1)<CR>
+
+# Returns true when <Plug>(LspSnippetJumpNext) ("dir" 1) or
+# <Plug>(LspSnippetJumpPrev) ("dir" -1) can move the cursor to a tabstop of
+# an expanded snippet.
+def g:LspSnippetJumpable(dir: number): bool
+  return lsp.SnippetJumpable(dir)
+enddef
+
 command! -nargs=0 -bar -count LspGotoDeclaration lsp.GotoDeclaration(v:false, <q-mods>, <count>)
 command! -nargs=0 -bar -count LspGotoDefinition lsp.GotoDefinition(v:false, <q-mods>, <count>)
 command! -nargs=0 -bar -count LspGotoImpl lsp.GotoImplementation(v:false, <q-mods>, <count>)

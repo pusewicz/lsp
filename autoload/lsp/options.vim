@@ -114,9 +114,9 @@ export var lspOptions: dict<any> = {
   # tag.  Opt-in because it edits the buffer while you are typing.
   linkedEditing: false,
 
-  # If true, apply the LSP server supplied text edits after a completion.
-  # If a snippet plugin is going to apply the text edits, then set this to
-  # false to avoid applying the text edits twice.
+  # If true, apply the LSP server supplied text edits after a completion, and
+  # expand snippets.  If a snippet plugin is going to apply the text edits,
+  # then set this to false to avoid applying the text edits twice.
   completionTextEdit: true,
 
   # Alignment of virtual diagnostic text, when showDiagWithVirtualText is true
@@ -246,7 +246,7 @@ export var lspOptions: dict<any> = {
   # Show signature documentation in popup/echo signature help output
   showSignatureDocs: false,
 
-  # enable snippet completion support
+  # Let the language servers complete with snippets, which are expanded
   snippetSupport: false,
 
   # enable SirVer/ultisnips completion support
@@ -262,7 +262,8 @@ export var lspOptions: dict<any> = {
   # ShowReferences in a quickfix list instead of a location list`
   useQuickfixForLocations: false,
 
-  # enable hrsh7th/vim-vsnip completion support
+  # enable hrsh7th/vim-vsnip completion support, which also expands the
+  # snippets of the language servers
   vsnipSupport: false,
 
   # Limit the time autocompletion searches for words in current buffer (in

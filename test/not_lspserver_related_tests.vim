@@ -9,6 +9,8 @@ import '../autoload/lsp/offset.vim' as offset
 import '../autoload/lsp/selection.vim' as selection
 import '../autoload/lsp/util.vim' as util
 import '../autoload/lsp/options.vim' as opt
+import '../autoload/lsp/snippet.vim' as snippet
+import '../autoload/lsp/snippetparser.vim' as snippetparser
 
 # Test for no duplicates in helptags
 def g:Test_Helptags()
@@ -2071,6 +2073,576 @@ def g:Test_EncodeRange_DecodedRangePastEndOfLine()
     endfor
   endfor
   :bw!
+enddef
+
+# Returns a text node of a parsed snippet.
+def SnipText(value: string): dict<any>
+  return {type: 'text', value: value}
+enddef
+
+# Returns a tabstop node of a parsed snippet.
+def SnipTabstop(index: number, children: list<dict<any>> = []): dict<any>
+  return {type: 'tabstop', index: index, children: children}
+enddef
+
+# Test parsing the LSP snippet syntax.
+def g:Test_SnippetParser_Parse()
+  var cases = [
+    ['foo', [SnipText('foo')]],
+    ['$1', [SnipTabstop(1)]],
+    ['${1}', [SnipTabstop(1)]],
+    ['$12a', [SnipTabstop(12), SnipText('a')]],
+    ['$0', [SnipTabstop(0)]],
+    ['f(${1:x}, ${2:y})$0', [SnipText('f('), SnipTabstop(1, [SnipText('x')]),
+      SnipText(', '), SnipTabstop(2, [SnipText('y')]), SnipText(')'),
+      SnipTabstop(0)]],
+    ['${1:a ${2:b $3}}', [SnipTabstop(1, [SnipText('a '),
+      SnipTabstop(2, [SnipText('b '), SnipTabstop(3)])])]],
+    ['${1|one,two|}', [SnipTabstop(1)->extend({choices: ['one', 'two']})]],
+    ['${1|a\,b,c\|d,e\\f\$|}',
+      [SnipTabstop(1)->extend({choices: ['a,b', 'c|d', 'e\f$']})]],
+    ['${1||}', [SnipTabstop(1)->extend({choices: ['']})]],
+    ['$TM_FILENAME.h', [{type: 'variable', name: 'TM_FILENAME'},
+      SnipText('.h')]],
+    ['${_a1}', [{type: 'variable', name: '_a1'}]],
+    ['${VAR:x ${1:y}}', [{type: 'variable', name: 'VAR',
+      children: [SnipText('x '), SnipTabstop(1, [SnipText('y')])]}]],
+    ['${1:é}ü', [SnipTabstop(1, [SnipText('é')]), SnipText('ü')]],
+    ['${1:a\}b}', [SnipTabstop(1, [SnipText('a}b')])]],
+  ]
+  for [snippetText, expected] in cases
+    assert_equal(expected, snippetparser.Parse(snippetText), snippetText)
+  endfor
+enddef
+
+# Test that backslashes escape only "$", "}" and "\" in snippet text, and that
+# text that is not well-formed snippet syntax is taken literally.
+def g:Test_SnippetParser_ParseText()
+  var cases = [
+    ['\$1 \} \\ \x \', [SnipText('$1 } \ \x \')]],
+    ['a}b', [SnipText('a}b')]],
+    ['$', [SnipText('$')]],
+    ['$ 1', [SnipText('$ 1')]],
+    ['${', [SnipText('${')]],
+    ['${}', [SnipText('${}')]],
+    ['${-1}', [SnipText('${-1}')]],
+    ['${1', [SnipText('${1')]],
+    ['${1:foo', [SnipText('${1:foo')]],
+    ['${1|a,b}', [SnipText('${1|a,b}')]],
+    ['${1|a,b|', [SnipText('${1|a,b|')]],
+    ['${1/a/b}', [SnipText('${1/a/b}')]],
+    ['${VAR|a|}', [SnipText('${VAR|a|}')]],
+    ['${1:${2}', [SnipText('${1:'), SnipTabstop(2)]],
+    ['${1:$}', [SnipTabstop(1, [SnipText('$')])]],
+  ]
+  for [snippetText, expected] in cases
+    assert_equal(expected, snippetparser.Parse(snippetText), snippetText)
+  endfor
+enddef
+
+# Test parsing the transformations of variables and tabstops.
+def g:Test_SnippetParser_ParseTransform()
+  assert_equal([{type: 'variable', name: 'V', transform: {
+      regex: '(.*)\.c/x', options: 'gi', format: [
+	SnipText('a/$}\'), {type: 'format', index: 1},
+	{type: 'format', index: 2}, SnipText('-'),
+	{type: 'format', index: 1, modifier: 'upcase'},
+	{type: 'format', index: 1, ifValue: 'y'},
+	{type: 'format', index: 1, ifValue: 'y:', elseValue: 'n}'},
+	{type: 'format', index: 1, elseValue: 'e'},
+	{type: 'format', index: 1, elseValue: 'f'},
+	SnipText('$x'),
+      ]}}],
+    snippetparser.Parse('${V/(.*)\.c\/x/a\/\$\}\\$1${2}-${1:/upcase}${1:+y}'
+			.. '${1:?y\::n\}}${1:-e}${1:f}$x/gi}'))
+  # An invalid case modifier is text, up to the "/" that ends the format.
+  assert_equal([{type: 'variable', name: 'V', transform: {
+      regex: 'a', options: 'b', format: [SnipText('${1:')]}}, SnipText('/}')],
+    snippetparser.Parse('${V/a/${1:/b}/}'))
+  assert_equal([SnipTabstop(1, [SnipText('x')]), SnipText(' '),
+      SnipTabstop(1)->extend({transform: {regex: '.*', options: '',
+	format: [{type: 'format', index: 0, modifier: 'capitalize'}]}})],
+    snippetparser.Parse('${1:x} ${1/.*/${0:/capitalize}/}'))
+enddef
+
+# Returns the rendered "snippetText" with the variables in "variables".
+def RenderSnippet(snippetText: string,
+		  variables: dict<string> = {}): dict<any>
+  return snippetparser.Render(snippetparser.Parse(snippetText),
+    (name) => variables->has_key(name) ? variables[name] : v:none)
+enddef
+
+# Returns a tabstop range of a rendered snippet.
+def SnipRange(index: number, start: number, end: number,
+	      primary: bool = true, parent: number = -1): dict<any>
+  return {index: index, start: start, end: end, primary: primary,
+	  parent: parent}
+enddef
+
+# Test rendering snippets to text and tabstop ranges.
+def g:Test_SnippetParser_Render()
+  var cases = [
+    ['f(${1:x}, ${2:yy})$0', 'f(x, yy)',
+      [SnipRange(1, 2, 3), SnipRange(2, 5, 7), SnipRange(0, 8, 8)]],
+    ['$2 $1', ' ', [SnipRange(2, 0, 0), SnipRange(1, 1, 1),
+      SnipRange(0, 1, 1)]],
+    ['${1:x} = $1;', 'x = x;', [SnipRange(1, 0, 1),
+      SnipRange(1, 4, 5, false), SnipRange(0, 6, 6)]],
+    ['$1 ${1:foo}', 'foo foo', [SnipRange(1, 0, 3),
+      SnipRange(1, 4, 7, false), SnipRange(0, 7, 7)]],
+    ['${1:a} ${1:b}', 'a a', [SnipRange(1, 0, 1),
+      SnipRange(1, 2, 3, false), SnipRange(0, 3, 3)]],
+    ['${1:a ${2:b}} $2', 'a b b', [SnipRange(1, 0, 3),
+      SnipRange(2, 2, 3, true, 0), SnipRange(2, 4, 5, false),
+      SnipRange(0, 5, 5)]],
+    ['${0:end} ${1:x}', 'end x', [SnipRange(0, 0, 3), SnipRange(1, 4, 5)]],
+    ['${1:${1:x}}', 'x', [SnipRange(1, 0, 1), SnipRange(0, 1, 1)]],
+    ['${1:é}𠀀$0', 'é𠀀', [SnipRange(1, 0, 2), SnipRange(0, 6, 6)]],
+    ["a\n\t${1:b}", "a\n\tb", [SnipRange(1, 3, 4), SnipRange(0, 4, 4)]],
+  ]
+  for [snippetText, text, tabstops] in cases
+    assert_equal({text: text, tabstops: tabstops}, RenderSnippet(snippetText),
+		 snippetText)
+  endfor
+
+  var choice = RenderSnippet('log(${1|info,warn|})$1')
+  assert_equal('log(info)info', choice.text)
+  assert_equal([SnipRange(1, 4, 8)->extend({choices: ['info', 'warn']}),
+		SnipRange(1, 9, 13, false), SnipRange(0, 13, 13)],
+	       choice.tabstops)
+
+  var transform = RenderSnippet('${1:foo} ${1/(.*)/${1:/upcase}/}')
+  assert_equal('foo FOO', transform.text)
+  assert_equal([SnipRange(1, 0, 3),
+		SnipRange(1, 4, 7, false)->extend({transform: {
+		  regex: '(.*)', options: '',
+		  format: [{type: 'format', index: 1, modifier: 'upcase'}]}}),
+		SnipRange(0, 7, 7)], transform.tabstops)
+enddef
+
+# Test rendering the variables of snippets.
+def g:Test_SnippetParser_RenderVariables()
+  var variables = {TM_FILENAME: 'main.c', TM_SELECTED_TEXT: ''}
+  var cases = [
+    ['$TM_FILENAME', 'main.c', [SnipRange(0, 6, 6)]],
+    ['${TM_FILENAME:x}', 'main.c', [SnipRange(0, 6, 6)]],
+    ['${TM_SELECTED_TEXT}', '', [SnipRange(0, 0, 0)]],
+    ['${TM_SELECTED_TEXT:x ${1:y}}', 'x y', [SnipRange(1, 2, 3),
+      SnipRange(0, 3, 3)]],
+    ['${TM_FILENAME/(.*)\.c$/$1.h/}', 'main.h', [SnipRange(0, 6, 6)]],
+    # An unknown variable becomes a placeholder after the other tabstops.
+    ['$FOO ${2:x} ${BAR:bar} $FOO', 'FOO x bar FOO', [SnipRange(3, 0, 3),
+      SnipRange(2, 4, 5), SnipRange(4, 6, 9), SnipRange(3, 10, 13, false),
+      SnipRange(0, 13, 13)]],
+  ]
+  for [snippetText, text, tabstops] in cases
+    assert_equal({text: text, tabstops: tabstops},
+		 RenderSnippet(snippetText, variables), snippetText)
+  endfor
+enddef
+
+# Test the transformations of snippet variables, with JavaScript regular
+# expressions translated to Vim patterns.
+def g:Test_SnippetParser_Transform()
+  var cases = [
+    ['foo-bar_baz', '/(.*)/${1:/upcase}/', 'FOO-BAR_BAZ'],
+    ['FOO', '/(.*)/${1:/downcase}/', 'foo'],
+    ['foo bar', '/(.*)/${1:/capitalize}/', 'Foo bar'],
+    ['Foo-bar_baz', '/(.*)/${1:/camelcase}/', 'fooBarBaz'],
+    ['foo-bar_baz', '/(.*)/${1:/pascalcase}/', 'FooBarBaz'],
+    ['abc', '/(x)?abc/${1:+yes}/', ''],
+    ['xabc', '/(x)?abc/${1:+yes}/', 'yes'],
+    ['abc', '/(x)?abc/${1:?yes:no}/', 'no'],
+    ['xabc', '/(x)?abc/${1:?yes:no}/', 'yes'],
+    ['abc', '/(x)?abc/${1:-none}/', 'none'],
+    ['xabc', '/(x)?abc/${1:-none}/', 'x'],
+    ['abc', '/(x)?abc/${1:none}/', 'none'],
+    ['ab', '/(a)(b)/$2$1/', 'ba'],
+    ['ab', '/(a)/\$1\/$1/', '$1/ab'],
+    ['a.b.c', '/\./-/', 'a-b.c'],
+    ['a.b.c', '/\./-/g', 'a-b-c'],
+    ['abc', '/./-/g', '---'],
+    ['ABC', '/b/x/i', 'AxC'],
+    ['ABC', '/b/x/', 'ABC'],
+    ['a12b', '/[\d]+/N/', 'aNb'],
+    ['a-]b', '/[\]-]+/N/', 'aNb'],
+    ['a^b', '/[x^]/N/', 'aNb'],
+    ['abc', '/[^b]/N/g', 'NbN'],
+    ['foobar foobaz', '/foo(?=baz)/X/', 'foobar Xbaz'],
+    ['foobar foobaz', '/foo(?!bar)/X/', 'foobar Xbaz'],
+    ['xa ya', '/(?<=y)a/X/', 'xa yX'],
+    ['xa ya', '/(?<!y)a/X/', 'xX ya'],
+    ['<a><b>', '/<.+?>/X/', 'X<b>'],
+    ['<a><b>', '/<.+>/X/', 'X'],
+    ['a$b^c', '/\$b\^/-/', 'a-c'],
+    ['a~b=c', '/~b=/-/', 'a-c'],
+    ['ab', '/(?<first>a)/[$1]/', '[a]b'],
+    ['aaa', '/a{2}/X/', 'Xa'],
+    ['aaaa', '/a{2,}?/X/', 'Xaa'],
+    ['a{b', '/a{b/X/', 'X'],
+    ['ab ab', '/^ab/X/g', 'X ab'],
+    ['ab ab', '/ab$/X/', 'ab X'],
+    ['ab', '/\bb/X/', 'ab'],
+    ['x/y', '/\//-/', 'x-y'],
+    ["tab\there", '/\t/ /', 'tab here'],
+    ['é', '/é/e/', 'e'],
+    # Not expressible in Vim: the text is not transformed.
+    ['ab', '/\Bb/X/', 'ab'],
+    ['ab', '/(a/X/', 'ab'],
+    ['ab', '/[]/X/', 'ab'],
+  ]
+  for [value, transform, expected] in cases
+    var rendered = RenderSnippet($'${{V{transform}}}', {V: value})
+    assert_equal(expected, rendered.text, $'"{value}" with {transform}')
+  endfor
+enddef
+
+const snippetNext = "\<Plug>(LspSnippetJumpNext)"
+const snippetPrev = "\<Plug>(LspSnippetJumpPrev)"
+# Keys that select and accept the first completion menu item
+const acceptFirst = "\<C-N>\<C-Y>"
+
+# The snippet states stored by <F2> in CompleteSnippet(): whether the cursor
+# can jump to the next and to the previous tabstop, and the number of
+# snippet text properties in the buffer.
+var snippetStates: list<list<any>> = []
+# The cursor lines stored by <F3> in CompleteSnippet()
+var snippetLines: list<string> = []
+
+# Returns a completion item with "label" and the snippet "insertText".
+def SnippetItem(label: string, insertText: string): dict<any>
+  return {label: label, insertTextFormat: 2, insertText: insertText}
+enddef
+
+# Returns the number of the markers of snippet tabstops in the current
+# buffer.
+def SnippetPropCount(): number
+  if prop_type_get('LspSnippetStay')->empty()
+    return 0
+  endif
+  return prop_list(1, {end_lnum: -1,
+		       types: ['LspSnippetStay', 'LspSnippetMove']})
+    ->len()
+enddef
+
+# Completes a snippet in buffer "fname" holding "lines", with a fake
+# completion server for "items" (see MakeTextEditServer()): after the
+# commands "setup", starts Insert mode with "startKeys" and asks for
+# auto-completion of the keyword before the cursor, and then types "keys",
+# e.g. acceptFirst.  <F2> adds the state of the snippet to snippetStates, <F3>
+# the cursor line to snippetLines.  Returns the lines of the buffer.
+def CompleteSnippet(lines: list<string>, items: list<dict<any>>, keys: string,
+		    startKeys: string = 'A', setup: string = '',
+		    fname: string = 'XSnippet.c'): list<string>
+  exe $'silent! edit {fname}'
+  exe setup
+  setline(1, lines)
+  var lspserver = MakeTextEditServer({items: items})
+  buf.BufLspServerSet(bufnr(), lspserver)
+  var saveAutoComplete = g:LspOptionsGet().autoComplete
+  var saveCompleteopt = &g:completeopt
+  g:LspOptionsSet({autoComplete: true})
+  snippetStates = []
+  snippetLines = []
+  var result: list<string> = []
+  try
+    completion.BufferInit(lspserver, bufnr(), &filetype)
+    setlocal completeopt=menuone,noinsert,noselect
+    inoremap <buffer> <F5> <ScriptCmd>completion.LspComplete(true)<CR>
+    for mode in ['i', 's', 'n']
+      exe $'{mode}noremap <buffer> <F2> <ScriptCmd>snippetStates->add('
+	.. '[g:LspSnippetJumpable(1), g:LspSnippetJumpable(-1), '
+	.. 'SnippetPropCount()])<CR>'
+      exe $'{mode}noremap <buffer> <F3> '
+	.. "<ScriptCmd>snippetLines->add(getline('.'))<CR>"
+    endfor
+    feedkeys($"{startKeys}\<F5>{keys}", 'xt')
+    result = getline(1, '$')
+  finally
+    g:LspOptionsSet({autoComplete: saveAutoComplete})
+    &g:completeopt = saveCompleteopt
+    buf.BufLspServerRemove(bufnr(), lspserver)
+    :%bw!
+  endtry
+  return result
+enddef
+
+# Test that accepting a snippet completion item expands the snippet with its
+# first tabstop selected, so that typing replaces it, and that the cursor
+# jumps to the next tabstops and lastly to the final one, which ends the
+# snippet.
+def g:Test_Snippet_Completion_JumpThroughTabstops()
+  var items = [SnippetItem('printf', 'printf(${1:fmt}, ${2:args})$0')]
+  assert_equal(['printf("%d", x);'], CompleteSnippet(['pri'], items,
+    acceptFirst .. "\<F2>\"%d\"" .. snippetNext .. 'x' .. snippetNext
+    .. "\<F2>;\<Esc>"))
+  assert_equal([[true, false, 8], [false, false, 0]], snippetStates)
+enddef
+
+# Test jumping back to a tabstop, and that there is no tabstop before the
+# first one.
+def g:Test_Snippet_Completion_JumpBack()
+  var items = [SnippetItem('func', 'func(${1:a}, ${2:b})')]
+  assert_equal(['func(z, y)'], CompleteSnippet(['fun'], items,
+    acceptFirst .. 'x' .. snippetNext .. "\<F2>y" .. snippetPrev .. 'z'
+    .. snippetNext .. snippetNext .. "\<Esc>"))
+  assert_equal([[true, true, 8]], snippetStates)
+
+  assert_equal(['func(q, b)'], CompleteSnippet(['fun'], items,
+    acceptFirst .. snippetPrev .. "\<F2>q\<Esc>"))
+  assert_equal([[true, false, 8]], snippetStates)
+enddef
+
+# Test a key that jumps to the next tabstop only in a snippet, with
+# g:LspSnippetJumpable() in an <expr> mapping.
+def g:Test_Snippet_Completion_JumpableMapping()
+  var items = [SnippetItem('func', 'func(${1:a}, ${2:b})')]
+  assert_equal(['func(x, y)X'], CompleteSnippet(['fun'], items,
+    acceptFirst .. "x\<F6>y\<F6>\<F6>\<Esc>", 'A',
+    'imap <buffer> <expr> <F6> g:LspSnippetJumpable(1) '
+    .. '? "\<Plug>(LspSnippetJumpNext)" : "X"'))
+enddef
+
+# Test that a tabstop without text starts Insert mode there.
+def g:Test_Snippet_Completion_EmptyTabstop()
+  var items = [SnippetItem('func', 'func($1)$0')]
+  assert_equal(['func(x);'], CompleteSnippet(['fun'], items,
+    acceptFirst .. 'x' .. snippetNext .. ";\<Esc>"))
+enddef
+
+# Test that the mirrors of a tabstop get its text, transformed for a mirror
+# with a transformation, while it is typed and when jumping away from it.
+def g:Test_Snippet_Completion_Mirrors()
+  var items = [SnippetItem('var', 'var ${1:x} = $1 + ${1/(.*)/${1:/upcase}/};')]
+  assert_equal(['var abc = abc + ABC;'], CompleteSnippet(['va'], items,
+    acceptFirst .. 'abc' .. snippetNext .. "\<Esc>"))
+
+  # Let the autocmds that sync the mirrors run while typing.
+  test_override('char_avail', 1)
+  try
+    assert_equal(['var abc = abc + ABC;'], CompleteSnippet(['va'], items,
+      acceptFirst .. "ab\<F3>c\<Esc>"))
+    assert_equal(['var ab = ab + AB;'], snippetLines)
+
+    # Undo reverts a mirror together with the text it mirrors, and the
+    # expansion of the snippet together with its completion.
+    assert_equal(['va'], CompleteSnippet(['va'], items,
+      acceptFirst .. "abc\<Esc>u\<F3>u\<F3>"))
+    assert_equal(['var x = x + X;', 'va'], snippetLines)
+  finally
+    test_override('char_avail', 0)
+  endtry
+enddef
+
+# Test that a choice shows its values in the completion menu.
+def g:Test_Snippet_Completion_Choice()
+  var items = [SnippetItem('log', 'log(${1|info,warn,error|})$0')]
+  assert_equal(['log(warn);'], CompleteSnippet(['lo'], items,
+    acceptFirst .. "\<C-N>\<C-N>\<C-Y>" .. snippetNext .. ";\<Esc>"))
+enddef
+
+# Test that a snippet expanded in a tabstop of another snippet is done first,
+# and the cursor then goes on to the next tabstop of the other snippet.
+def g:Test_Snippet_Completion_Nested()
+  # The menu has both items, as snippets are not filtered: "outer" first.
+  var items = [SnippetItem('outer', 'outer(${1:a}, ${2:b})')
+		 ->extend({sortText: '1'}),
+	       SnippetItem('inner', 'inner(${1:x})')->extend({sortText: '2'})]
+  assert_equal(['outer(inner(y), z)'], CompleteSnippet(['out'], items,
+    acceptFirst .. "inn\<F5>\<C-N>" .. acceptFirst .. "\<F2>y" .. snippetNext
+    .. snippetNext .. 'z' .. snippetNext .. "\<F2>\<Esc>"))
+  assert_equal([[true, false, 14], [false, false, 0]], snippetStates)
+enddef
+
+# Test expanding snippets with text edits: one that replaces the keyword, one
+# that also replaces text before it, and an InsertReplaceEdit, which also
+# replaces the rest of the keyword after the cursor.
+def g:Test_Snippet_Completion_TextEdits()
+  var items: list<dict<any>> = [{
+    label: 'printf', insertTextFormat: 2,
+    textEdit: {range: FirstLineRange(4, 6), newText: 'printf(${1:x})'},
+  }]
+  assert_equal(['foo.printf(y)'], CompleteSnippet(['foo.pr'], items,
+    acceptFirst .. 'y' .. snippetNext .. "\<Esc>"))
+
+  items = [{
+    label: 'bar?', filterText: '.bar', insertTextFormat: 2,
+    textEdit: {range: FirstLineRange(3, 4), newText: '?.bar($1)'},
+  }]
+  assert_equal(['foo?.bar(q)'], CompleteSnippet(['foo.'], items,
+    acceptFirst .. 'q' .. snippetNext .. "\<Esc>"))
+
+  items = [{
+    label: 'printf', insertTextFormat: 2,
+    textEdit: {insert: FirstLineRange(4, 6), replace: FirstLineRange(4, 8),
+	       newText: 'printf(${1:x})'},
+  }]
+  assert_equal(['x = printf(y);'], CompleteSnippet(['x = prit;'], items,
+    acceptFirst .. 'y' .. snippetNext .. "\<Esc>", '0fra'))
+enddef
+
+# Test that the tabstops of a snippet move with its text when the additional
+# text edits of the completion item add lines before it.
+def g:Test_Snippet_Completion_AdditionalTextEdits()
+  var items = [SnippetItem('printf', 'printf(${1:fmt}, ${2:args})')
+		 ->extend({additionalTextEdits: [{
+		   range: FirstLineRange(0, 0),
+		   newText: "#include <stdio.h>\n"}]})]
+  assert_equal(['#include <stdio.h>', '#include <a.h>', 'printf(x, y)'],
+    CompleteSnippet(['#include <a.h>', 'pri'], items,
+      acceptFirst .. 'x' .. snippetNext .. 'y' .. snippetNext .. "\<Esc>",
+      'GA'))
+enddef
+
+# Test the indent of the lines of a snippet: of the line it is expanded in,
+# with a tab in the snippet being an indent, unless the item asks for its
+# text as is.
+def g:Test_Snippet_Completion_Indent()
+  var items = [SnippetItem('for', "for ${1:x} {\n\t$0\n}")]
+  var keys = acceptFirst .. 'i' .. snippetNext .. "body\<Esc>"
+  assert_equal(['    for i {', '        body', '    }'],
+    CompleteSnippet(['    fo'], items, keys, 'A',
+		    'setlocal expandtab shiftwidth=4'))
+  assert_equal(["\tfor i {", "\t\tbody", "\t}"],
+    CompleteSnippet(["\tfo"], items, keys, 'A', 'setlocal noexpandtab'))
+  items[0].insertTextMode = 1
+  assert_equal(['    for i {', "\tbody", '}'],
+    CompleteSnippet(['    fo'], items, keys, 'A',
+		    'setlocal expandtab shiftwidth=4'))
+enddef
+
+# Test that a snippet is not expanded when typing goes on after selecting its
+# item, or when another plugin expands snippets (completionTextEdit is off).
+def g:Test_Snippet_Completion_NotExpanded()
+  var items = [SnippetItem('printf', 'printf(${1:fmt})')]
+  assert_equal(['printf('], CompleteSnippet(['pri'], items,
+    "\<C-N>(\<F2>\<Esc>"))
+  assert_equal([[false, false, 0]], snippetStates)
+
+  g:LspOptionsSet({completionTextEdit: false})
+  try
+    assert_equal(['printf'], CompleteSnippet(['pri'], items,
+      acceptFirst .. "\<F2>\<Esc>"))
+    assert_equal([[false, false, 0]], snippetStates)
+  finally
+    g:LspOptionsSet({completionTextEdit: true})
+  endtry
+enddef
+
+# Test that <Enter> with auto-completion accepts a snippet item without
+# starting a new line, while it does both for another item.
+def g:Test_Snippet_Completion_EnterKey()
+  var items = [SnippetItem('printf', 'printf(${1:fmt})'), {label: 'prefix'}]
+  assert_equal(['printf(y)'], CompleteSnippet(['pri'], items,
+    "\<C-N>\<CR>y" .. snippetNext .. "\<Esc>"))
+  assert_equal(['prefix', ''], CompleteSnippet(['pre'], items,
+    "\<C-N>\<CR>\<Esc>"))
+enddef
+
+# Test that moving the cursor out of a snippet ends it.
+def g:Test_Snippet_SessionEndsWhenCursorLeaves()
+  var items = [SnippetItem('printf', 'printf(${1:fmt})')]
+  # CursorMoved is not triggered while there are keys to execute.
+  assert_equal(['printf(fmt)', 'other'], CompleteSnippet(['pri', 'other'],
+    items, acceptFirst .. "\<Esc>\<Cmd>doautocmd CursorMoved\<CR>\<F2>j"
+    .. "\<Cmd>doautocmd CursorMoved\<CR>\<F2>", 'ggA'))
+  assert_equal([[true, false, 6], [false, false, 0]], snippetStates)
+enddef
+
+# Test that typing replaces the whole text of a tabstop with any 'selection',
+# and with multibyte characters at its end.
+def g:Test_Snippet_SelectTabstop()
+  var items = [SnippetItem('func', 'func(${1:é𠀀}, ${2:abc})')]
+  var keys = acceptFirst .. 'x' .. snippetNext .. 'y' .. snippetNext
+    .. "\<Esc>"
+  var saveSelection = &selection
+  try
+    for selection in ['inclusive', 'exclusive', 'old']
+      &selection = selection
+      assert_equal(['func(x, y)'], CompleteSnippet(['fun'], items, keys),
+		   $"'selection' {selection}")
+    endfor
+  finally
+    &selection = saveSelection
+  endtry
+enddef
+
+# Test a tabstop and its mirror spanning lines: selecting the tabstop and
+# syncing its mirror.
+def g:Test_Snippet_MultilineTabstop()
+  var items = [SnippetItem('a', '${1:a} $1 ${2:z}')]
+  assert_equal(['d d z'], CompleteSnippet([''], items,
+    acceptFirst .. "b\<CR>c" .. snippetNext .. "\<F3>" .. snippetPrev .. 'd'
+    .. snippetNext .. "\<Esc>", 'S', '', 'XSnippet.txt'))
+  assert_equal(['c z'], snippetLines)
+enddef
+
+# Test that edits that delete and join lines in a snippet, which make Vim
+# fail with text properties across lines, keep its tabstops.
+def g:Test_Snippet_EditsAcrossLines()
+  var items = [SnippetItem('if', "if ${1:cond} {\n\t${2:body}\n}")]
+  assert_equal(['if cond {', "\tx", '}'], CompleteSnippet(['i'], items,
+    acceptFirst .. "\<Esc>gg0fovjdugg0JugggJu2G0d2lu2Gddu3G0i\<BS>\<Esc>u"
+    .. 'gga' .. snippetNext .. 'x' .. snippetNext .. "\<Esc>", 'A', '',
+    'XSnippet.txt'))
+enddef
+
+# Test the variables of snippets.
+def g:Test_Snippet_Variables()
+  silent! edit XSnippetVariables.c
+  setlocal commentstring=/*\ %s\ */ comments=s1:/*,mb:*,ex:*/,://
+  setline(1, ['foo bar'])
+  var cwd = getcwd()
+  var variables = {
+    TM_CURRENT_LINE: 'foo bar',
+    TM_CURRENT_WORD: 'foo',
+    TM_LINE_INDEX: '0',
+    TM_LINE_NUMBER: '1',
+    TM_FILENAME: 'XSnippetVariables.c',
+    TM_FILENAME_BASE: 'XSnippetVariables',
+    TM_DIRECTORY: cwd,
+    TM_FILEPATH: $'{cwd}/XSnippetVariables.c',
+    RELATIVE_FILEPATH: 'XSnippetVariables.c',
+    WORKSPACE_NAME: cwd->fnamemodify(':t'),
+    WORKSPACE_FOLDER: cwd,
+    BLOCK_COMMENT_START: '/*',
+    BLOCK_COMMENT_END: '*/',
+    LINE_COMMENT: '//',
+    TM_SELECTED_TEXT: '',
+  }
+  var names = variables->keys()
+  snippet.Expand(names->mapnew((_, name) => $'${name}')->join('|'), 1, 3, 3,
+		 true, $'{cwd}/')
+  assert_equal(['fo' .. names->mapnew((_, name) => variables[name])->join('|')
+		.. 'o bar'], getline(1, '$'))
+
+  var patterns = {
+    CURRENT_YEAR: '^\d\{4}$',
+    CURRENT_YEAR_SHORT: '^\d\d$',
+    CURRENT_MONTH: '^\d\d$',
+    CURRENT_MONTH_NAME: '^\S\+$',
+    CURRENT_MONTH_NAME_SHORT: '^\S\+$',
+    CURRENT_DATE: '^\d\d$',
+    CURRENT_DAY_NAME: '^\S\+$',
+    CURRENT_DAY_NAME_SHORT: '^\S\+$',
+    CURRENT_HOUR: '^\d\d$',
+    CURRENT_MINUTE: '^\d\d$',
+    CURRENT_SECOND: '^\d\d$',
+    CURRENT_SECONDS_UNIX: '^\d\+$',
+    CURRENT_TIMEZONE_OFFSET: '^[+-]\d\d:\d\d$',
+    RANDOM: '^\d\{6}$',
+    RANDOM_HEX: '^\x\{6}$',
+    UUID: '^\x\{8}-\x\{4}-4\x\{3}-[89ab]\x\{3}-\x\{12}$',
+  }
+  names = patterns->keys()
+  setline(1, [''])
+  snippet.Expand(names->mapnew((_, name) => $'${name}')->join('|'), 1, 1, 1,
+		 true, '')
+  var values = getline(1)->split('|', true)
+  for i in names->len()->range()
+    assert_match(patterns[names[i]], values[i], names[i])
+  endfor
+  :%bw!
 enddef
 
 # vim: tabstop=8 shiftwidth=2 softtabstop=2 noexpandtab

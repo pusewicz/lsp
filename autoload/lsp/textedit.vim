@@ -209,6 +209,69 @@ export def ApplyTextEdits(bnr: number, text_edits: list<dict<any>>): void
   deletebufline(bnr, start_line + 1 + lines->len(), last_line)
 enddef
 
+# The text that SubstituteInLine() puts in, for its ":substitute" command.
+var substituteText: string
+
+# Replace the text from byte column "col" up to byte column "endCol"
+# (exclusive) on line "lnum" of the current buffer with "text".  A line break
+# in "text" splits the line.  Moves the cursor.
+def SubstituteInLine(lnum: number, col: number, endCol: number, text: string)
+  substituteText = text
+  var pat = $'\%{col}c' .. (endCol > col ? $'.\{{-}}\%{endCol}c' : '')
+  exe $'silent keepjumps keeppatterns :{lnum}s/{pat}/\=substituteText/e'
+enddef
+
+# Join line "lnum" of the current buffer with the next line, without adding or
+# removing any characters.
+def JoinWithNextLine(lnum: number)
+  var formatoptions = &l:formatoptions
+  # The "j" flag removes a comment leader also from ":join!".
+  setlocal formatoptions-=j
+  try
+    exe $'silent keepjumps :{lnum}join!'
+  finally
+    &l:formatoptions = formatoptions
+  endtry
+enddef
+
+# Replace the text in the current buffer from line "lnum", byte column "col"
+# up to line "endLnum", byte column "endCol" (exclusive) with "text", where
+# "\n" is a line break.  Unlike setline(), this keeps the text properties in
+# the lines, which move with the text around them as when typing.  The cursor
+# stays on the same text, at the end of "text" when it was in the replaced
+# text.
+export def ReplaceText(lnum: number, col: number, endLnum: number,
+		       endCol: number, text: string)
+  var lines = text->split("\n", true)
+  var newEndLnum = lnum + lines->len() - 1
+  var newEndCol = lines->len() == 1 ? col + text->len() : lines[-1]->len() + 1
+
+  var [curLnum, curCol] = [line('.'), col('.')]
+  if curLnum > endLnum
+    curLnum += newEndLnum - endLnum
+  elseif curLnum == endLnum && curCol >= endCol
+      && (curLnum > lnum || curCol > col)
+    [curLnum, curCol] = [newEndLnum, newEndCol + curCol - endCol]
+  elseif curLnum > lnum || (curLnum == lnum && curCol > col)
+    [curLnum, curCol] = [newEndLnum, newEndCol]
+  endif
+
+  if endLnum > lnum
+    # A ":substitute" across lines doesn't keep the text properties where
+    # they belong, so remove the text of the lines one line at a time.
+    SubstituteInLine(endLnum, 1, endCol, '')
+    SubstituteInLine(lnum, col, getline(lnum)->len() + 1, '')
+    if endLnum - lnum > 1
+      deletebufline('', lnum + 1, endLnum - 1)
+    endif
+    JoinWithNextLine(lnum)
+    SubstituteInLine(lnum, col, col, text)
+  else
+    SubstituteInLine(lnum, col, endCol, text)
+  endif
+  cursor(curLnum, curCol)
+enddef
+
 # Returns text edits "edits" for buffer "bnr" with their positions decoded
 # from the position encoding of language server "lspserver" for the current
 # text of the buffer.  "edits" is not changed.  Without a language server the

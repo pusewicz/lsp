@@ -26,6 +26,7 @@ CONTENTS                                                     *lsp-contents*
      7. Insert Mode Completion ..................... |lsp-ins-mode-completion|
        7.1. Forcing completion without characters .. |lsp-ins-force|
        7.2. Inline completion ...................... |lsp-inline-completion|
+       7.3. Snippets ............................... |lsp-snippets|
      8. Diagnostics ................................ |lsp-diagnostics|
      9. Tag Function ............................... |lsp-tagfunc|
     10. LSP Formatting ............................. |lsp-format|
@@ -1821,9 +1822,10 @@ completionTextEdit	|Boolean| option.  If true, apply the LSP server
 			supplied text edits after a completion.  This
 			includes the text edit of a completion item that also
 			replaces text before the completed keyword (e.g.
-			"foo." completed to "foo?.bar").  If a snippet
-			plugin is going to apply the text edits, then set
-			this to false to avoid applying the text edits twice.
+			"foo." completed to "foo?.bar"), and the expansion of
+			snippets (|lsp-snippets|).  If a snippet plugin is
+			going to apply the text edits, then set this to false
+			to avoid applying the text edits twice.
 			By default this is set to true.
 
                                                 *lsp-opt-completionKinds*
@@ -2315,20 +2317,24 @@ showSignatureDocs	|Boolean| option.  Include parameter and
 			By default this is set to false.
 
 						*lsp-opt-snippetSupport*
-snippetSupport		|Boolean| option.  Enable snippet completion support.
-			Need a snippet completion plugin like vim-vsnip.
+snippetSupport		|Boolean| option.  Let the language servers complete
+			with snippets, which the plugin expands, see
+			|lsp-snippets|.  Some language servers only complete
+			with snippets.
 			By default this is set to false.
 
 						*lsp-opt-ultisnipsSupport*
-ultisnipsSupport	|Boolean| option.  Enable SirVer/ultisnips support.
-			Need a snippet completion plugin SirVer/ultisnips.
+ultisnipsSupport	|Boolean| option.  Add the snippets of the
+			SirVer/ultisnips plugin to the completion menu.
 			By default this is set to false.
 
 						*lsp-opt-vsnipSupport*
-vsnipSupport		|Boolean| option.  Enable hrsh7th/vim-vsnip support.
-			Need snippet completion plugins hrsh7th/vim-vsnip
-			and hrsh7th/vim-vsnip-integ.  Make sure
-			ultisnipsSupport is set to false before enabling this.
+vsnipSupport		|Boolean| option.  Add the snippets of the
+			hrsh7th/vim-vsnip plugin to the completion menu, and
+			let the hrsh7th/vim-vsnip-integ plugin expand the
+			snippets of the language servers in place of the
+			plugin (|lsp-snippets|).  Make sure ultisnipsSupport
+			is set to false before enabling this.
 			By default this option is set to false.
 
 						*lsp-opt-usePopupInCodeAction*
@@ -2735,6 +2741,75 @@ example, to use the keys of the GitHub Copilot plugin for Vim: >
 <
 A suggestion in the snippet format is inserted as the text it inserts when
 nothing is typed in it: its placeholders with their default text.
+
+------------------------------------------------------------------------------
+							*lsp-snippets*
+7.3. Snippets~
+
+A language server can complete with a snippet: text with tabstops for the
+parts to fill in, like the arguments of a function.  Set the
+|lsp-opt-snippetSupport| option to let the language servers know that the
+plugin accepts snippets.
+
+Accepting a snippet completion item with CTRL-Y (|complete_CTRL-Y|), or with
+<Enter> in the plugin's auto-completion, expands its snippet.  While the item
+is selected in the completion menu, only the first word of the snippet is
+inserted, and that word is all that stays when typing goes on after selecting
+the item.
+
+The expanded snippet selects the text of its first tabstop in Select mode, so
+that typing replaces it (|Select-mode|), or starts Insert mode where a tabstop
+has no text.  These mappings jump to the next and to the previous tabstop, in
+Insert and in Select mode:
+
+	<Plug>(LspSnippetJumpNext)		*<Plug>(LspSnippetJumpNext)*
+	<Plug>(LspSnippetJumpPrev)		*<Plug>(LspSnippetJumpPrev)*
+
+The plugin maps no keys to them, as the keys for this are already used for
+other things in many setups.  For example: >
+
+    imap <C-J> <Plug>(LspSnippetJumpNext)
+    smap <C-J> <Plug>(LspSnippetJumpNext)
+    imap <C-K> <Plug>(LspSnippetJumpPrev)
+    smap <C-K> <Plug>(LspSnippetJumpPrev)
+<
+						*g:LspSnippetJumpable()*
+g:LspSnippetJumpable({dir}) returns true when the cursor can jump to the next
+({dir} is 1) or to the previous ({dir} is -1) tabstop.  It lets a key jump
+only in a snippet: >
+
+    imap <expr> <Tab> g:LspSnippetJumpable(1) ? "\<Plug>(LspSnippetJumpNext)" : "\<Tab>"
+    smap <expr> <Tab> g:LspSnippetJumpable(1) ? "\<Plug>(LspSnippetJumpNext)" : "\<Tab>"
+<
+Jumping on from the last tabstop goes to the final tabstop, which is at the
+end of the snippet unless the snippet puts it elsewhere, and ends the
+snippet.  Moving the cursor out of the snippet ends it too.  A snippet
+expanded in a tabstop of another snippet comes first, and then jumping goes
+on in the other snippet.
+
+All of the snippet syntax of the Language Server Protocol is supported:
+- Tabstops ("$1") and placeholders ("${1:text}"), also nested in each other.
+  The other occurrences of a tabstop get its text as it is typed, and undo
+  reverts them together with it.
+- Choices ("${1|one,two|}"): jumping to a choice shows its values in the
+  completion menu.
+- Variables ("$TM_FILENAME", "${TM_SELECTED_TEXT:default}"): the variables of
+  VS Code, with the comment markers taken from 'commentstring' and
+  'comments'.  An unknown variable becomes a placeholder with its name.
+- Transformations of variables and of the occurrences of tabstops
+  ("${TM_FILENAME/(.*)\..*/${1:/upcase}/}").  Their JavaScript regular
+  expressions are translated to Vim patterns.  A regular expression with
+  something that Vim patterns don't have, like "\B", leaves the text as it
+  is.
+
+The lines of a snippet after its first line get the indent of the line that
+it is expanded in, and a tab in their indent is one indent of the buffer (see
+'expandtab' and 'shiftwidth'), unless the completion item asks for its text
+as it is ("insertTextMode").
+
+The plugin leaves the snippets alone with the |lsp-opt-vsnipSupport| option,
+as vim-vsnip-integ expands them, and with the |lsp-opt-completionTextEdit|
+option off, as another plugin then applies the completion items.
 
 ==============================================================================
 							*lsp-diagnostics*
