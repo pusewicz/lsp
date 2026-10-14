@@ -1095,10 +1095,13 @@ the symbol under the cursor.
 			When |lsp-opt-showSignature| is enabled (default is
 			true), the signature is automatically displayed in
 			insert mode when you type a trigger character (usually
-			'(' or ',') and when you enter insert mode in the
-			arguments of a call. The signature popup appears with the
+			'(' or ',') and when you enter insert mode right after
+			one, as with "A" on a line ending in "(" or ", " or
+			with "o" below it.  The signature popup appears above
+			the cursor with the
 			active parameter highlighted to help you see which
-			parameter you are currently typing.  While a signature
+			parameter you are currently typing, and stays in place
+			while you type on that line.  While a signature
 			session is active, the plugin can retrigger signature
 			help on supported retrigger characters and on
 			insert-mode cursor/text changes so the displayed call
@@ -2298,9 +2301,9 @@ showSignature		|Boolean| option.  In insert mode, automatically show
 			the current symbol signature (function or method
 			parameters) when triggered by a trigger character
 			(typically '(' or ',') and when insert mode is
-			entered in the arguments of a call. The signature
-			is displayed in a popup with the active parameter
-			highlighted.
+			entered right after one, as in the arguments of a
+			call. The signature is displayed in a popup with the
+			active parameter highlighted.
 			While a signature session is active, the plugin can
 			also retrigger on supported retrigger characters and
 			on insert-mode cursor/text changes to keep the

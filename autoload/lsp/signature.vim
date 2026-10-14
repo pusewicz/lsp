@@ -15,6 +15,8 @@ var sig_state = {
   activeParam: 0,       # top-level SignatureHelp.activeParameter value (-1 = suppress)
   lspserver: {},        # server that owns the current session
   bnr: -1,              # buffer the session is anchored to
+  popupRow: -1,         # window line that the signature popup is above
+  popupClosesOnMove: false,  # the popup closes when the cursor moves
 }
 
 # Mirrors LSP 3.17 SignatureHelpTriggerKind enum values.
@@ -276,8 +278,7 @@ export def SignatureRequestContextGet(): dict<number>
 enddef
 
 # Popup close callback: if the signature popup is closed out-of-band (for
-# example by the user), immediately clear signature session state and restore
-# temporary overload-navigation mappings.
+# example by the user), immediately clear the signature session state.
 def SignaturePopupCloseCb(lspserver: dict<any>, popupid: number, result: number)
   if result == SIG_POPUP_CLOSE_INTERNAL
     return
@@ -309,7 +310,7 @@ def CloseCurBufSignaturePopup()
 enddef
 
 # Clear the active signature session when the popup goes away or a new session
-# starts. This also tears down any temporary navigation mappings.
+# starts. This also removes the autocmds of the session.
 def ResetSignatureState()
   DisableSignatureSessionAutocmds()
   sig_state.signatures = []
@@ -317,6 +318,8 @@ def ResetSignatureState()
   sig_state.activeParam = 0
   sig_state.lspserver = {}
   sig_state.bnr = -1
+  sig_state.popupRow = -1
+  sig_state.popupClosesOnMove = false
   ResetSignatureContentChangeState()
 enddef
 
@@ -802,37 +805,74 @@ def RestoreSignatureFirstLine(bnr: number, signatureText: string)
   prop_clear(1, 1, {bufnr: bnr})
 enddef
 
-# Render signature help in a popup and apply active-parameter text property.
+# Show the signature help "lines" in the signature popup of "lspserver", with
+# the active parameter highlighted as "hlinfo" says and the markdown rendered
+# when "filetype" is "lspgfm".  The popup is created above the cursor when
+# there is none and reused while the cursor stays on that window line, so
+# that it doesn't move as the user types; it is created anew on another line,
+# as after a line break in the arguments.
+#
+# In Insert mode, the session autocmds update the popup as the cursor moves
+# and close it when Insert mode is left.  In the other modes, as after
+# ":LspShowSignature", nothing else would close it, so the popup closes when
+# the cursor moves.
 def ShowPopupSignature(lspserver: dict<any>, lines: list<string>,
-                       hlinfo: dict<number>, total: number,
-		       filetype: string)
-  # Close the previous signature popup and open a new one
-  if lspserver.signaturePopup != -1
-    popup_close(lspserver.signaturePopup, SIG_POPUP_CLOSE_INTERNAL)
+		       hlinfo: dict<number>, filetype: string)
+  var row = winline()
+  var closesOnMove: bool = mode() !~# '^i'
+  var popupID = lspserver.signaturePopup
+  if popupID != -1 && popup_list()->index(popupID) == -1
+    # Closed without the callback, as by popup_clear()
+    popupID = -1
+  endif
+  if popupID != -1 && (sig_state.popupRow != row
+		       || sig_state.popupClosesOnMove != closesOnMove)
+    popup_close(popupID, SIG_POPUP_CLOSE_INTERNAL)
+    popupID = -1
   endif
 
-  var popupAttrs = opt.PopupConfigure('SignatureHelp', {
-    padding: [0, 1, 0, 1],
-    moved: [col('.') - 1, 9999999],
-    pos: 'botright',
-    callback: (id, result) => SignaturePopupCloseCb(lspserver, id, result)
-  })
-  var popupID = lines->popup_atcursor(popupAttrs)
+  if popupID == -1
+    var popupAttrs = opt.PopupConfigure('SignatureHelp', {
+      line: 'cursor-1',
+      col: 'cursor',
+      pos: 'botleft',
+      posinvert: true,
+      padding: [0, 1, 0, 1],
+      callback: (id, result) => SignaturePopupCloseCb(lspserver, id, result)
+    })
+    if closesOnMove
+      popupAttrs.moved = 'any'
+    endif
+    popupID = lines->popup_create(popupAttrs)
+    prop_type_add('signature', {bufnr: popupID->winbufnr(),
+				highlight: 'LspSigActiveParameter'})
+    lspserver.signaturePopup = popupID
+    sig_state.popupRow = row
+    sig_state.popupClosesOnMove = closesOnMove
+  else
+    popupID->popup_settext(lines)
+    if closesOnMove
+      # Close the popup when the cursor moves from where it is now
+      popupID->popup_setoptions({moved: 'any'})
+    endif
+  endif
+
   var bnr: number = popupID->winbufnr()
   if !filetype->empty()
+    # Setting 'filetype' renders the markdown, also when it is already set.
     win_execute(popupID, $'setlocal ft={filetype}')
     RestoreSignatureFirstLine(bnr, lines[0])
+  elseif !bnr->getbufvar('&filetype')->empty()
+    win_execute(popupID, 'setlocal ft=')
   endif
-  prop_type_add('signature', {bufnr: bnr, highlight: 'LspSigActiveParameter'})
   if hlinfo.hllen > 0
     prop_add(1, hlinfo.startcol + 1, {bufnr: bnr, length: hlinfo.hllen, type: 'signature'})
   endif
-  lspserver.signaturePopup = popupID
   EnableSignatureSessionAutocmds()
 enddef
 
 # Render the current signature session either in the command line or in a
-# popup. Popup mode also owns the temporary overload-navigation mappings.
+# popup.
 def DisplayCurrentSignature(): void
   var sig: dict<any> = GetCurrentSignature()
   if sig->empty()
@@ -850,7 +890,7 @@ def DisplayCurrentSignature(): void
   if opt.lspOptions.echoSignature
     EchoSignature(display.text, hlinfo, display.docSummary)
   else
-    ShowPopupSignature(lspserver, display.lines, hlinfo, total, display.filetype)
+    ShowPopupSignature(lspserver, display.lines, hlinfo, display.filetype)
   endif
 enddef
 
@@ -882,12 +922,33 @@ def SetupSignatureTriggerChars(bnr: number, autoTriggerChars: list<string>)
   endif
 enddef
 
-# Handle the start of Insert mode (InsertEnter): show the signature of the
-# call whose arguments the cursor is in, as the popup was closed when Insert
-# mode was left.  The server replies with no signature when the cursor is not
-# in a call.
+# Return the last character before the cursor that is not white space: on the
+# cursor line, or on the last line above it that has one when the cursor line
+# has none before the cursor.  Empty when there is none.
+def CharBeforeCursor(): string
+  var text: string = getline('.')->strpart(0, col('.') - 1)->trim('', 2)
+  if text->empty()
+    var lnum: number = prevnonblank(line('.') - 1)
+    if lnum > 0
+      text = getline(lnum)->trim('', 2)
+    endif
+  endif
+  return text->matchstr('.$')
+enddef
+
+# Handle the start of Insert mode (InsertEnter): show the signature help when
+# the cursor is right after a trigger character, as after "f(" or "f(a, " or
+# on a new line below them (white space and blank lines are skipped), where
+# Insert mode is entered to type an argument.  The popup was closed when
+# Insert mode was left.  Entering Insert mode elsewhere doesn't request the
+# signature help, as the cursor is mostly not in a call then.
 def OnInsertEnter()
-  if buf.CurbufGetServer('signatureHelp')->empty()
+  var lspserver: dict<any> = buf.CurbufGetServer('signatureHelp')
+  if lspserver->empty()
+    return
+  endif
+
+  if !IsSignatureTriggerCharacter(lspserver, CharBeforeCursor())
     return
   endif
 
@@ -901,8 +962,9 @@ def EnableSignatureSessionAutocmds()
   # moved in insert mode or the text is changed.
   AddSignatureAutocmd(bnr, 'CursorMovedI', 'g:LspHandleSignatureContentChange()')
   AddSignatureAutocmd(bnr, 'TextChangedI', 'g:LspHandleSignatureContentChange()')
-  # Close the signature popup when leaving insert mode
+  # Close the signature popup when leaving insert mode or the window
   AddSignatureAutocmd(bnr, 'InsertLeave', 'CloseCurBufSignaturePopup()')
+  AddSignatureAutocmd(bnr, 'WinLeave', 'CloseCurBufSignaturePopup()')
 enddef
 
 # Remove popup-session autocmds when the signature popup is no longer visible.
@@ -914,6 +976,7 @@ def DisableSignatureSessionAutocmds()
   autocmd_delete([{bufnr: bnr, group: 'LspSignatureHelp', event: 'CursorMovedI'}])
   autocmd_delete([{bufnr: bnr, group: 'LspSignatureHelp', event: 'TextChangedI'}])
   autocmd_delete([{bufnr: bnr, group: 'LspSignatureHelp', event: 'InsertLeave'}])
+  autocmd_delete([{bufnr: bnr, group: 'LspSignatureHelp', event: 'WinLeave'}])
 enddef
 
 # Return true when server reply has at least one signature entry.
