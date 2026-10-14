@@ -673,9 +673,7 @@ locations where a symbol is referenced.
 			Any other target, for example a "https:" URL, is
 			opened with the default handler of the system using
 			|dist#vim9#Open()|, which can be configured with the
-			|g:Openprg| variable.  When the Vim runtime doesn't
-			provide this function, "xdg-open" or "open" is used on
-			Unix and the URL handler of the system on MS-Windows.
+			|g:Openprg| variable.
 
 			You may want to map a key to invoke this command: >
 
@@ -1189,6 +1187,16 @@ Commands to modify, rename, or format your code using the language server.
 			command is executed.  The selected action is always
 			resolved/executed using the language server that
 			provided that action.
+
+			The command of an action (or of a code lens) can make
+			the language server ask to show a document, as the
+			"Browse documentation" actions of gopls do.  A file is
+			opened like |:LspGotoDefinition| opens one, or in a
+			split window, without moving the cursor, when the
+			server asks not to take the focus.  What the server
+			asks to show externally, like a web page, is opened
+			with |dist#vim9#Open()|, as |:LspDocumentLinkOpen|
+			does.
 
 			Use |:LspFixAll| and |:LspOrganizeImports| for
 			dedicated source actions over the current file.

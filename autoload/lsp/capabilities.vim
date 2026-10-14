@@ -639,6 +639,9 @@ export def GetClientCaps(): dict<any>
       }
     },
     window: {
+      showDocument: {
+	support: true
+      },
       workDoneProgress: true,
     },
     workspace: {
