@@ -53,9 +53,16 @@ def Error_cb(lspserver: dict<any>, chan: channel, emsg: string): void
   lspserver.errorLog(emsg)
 enddef
 
-# LSP server exit callback
+# LSP server exit callback.  Reports how the server exited, also in the debug
+# log, where a server that exits unexpectedly otherwise only shows as requests
+# that get no reply.
 def Exit_cb(lspserver: dict<any>, job: job, status: number): void
-  util.WarnMsg($'{strftime("%m/%d/%y %T")}: LSP server ({lspserver.name}) exited with status {status}')
+  var termsig: string = job->job_info().termsig
+  var how: string = termsig->empty()
+    ? $'exited with status {status}'
+    : $'was killed by signal {termsig->toupper()}'
+  util.WarnMsg($'{strftime("%m/%d/%y %T")}: LSP server ({lspserver.name}) {how}')
+  lspserver.traceLog($'LSP server {how}')
   if lspserver.diagnosticPullTimer != -1
     timer_stop(lspserver.diagnosticPullTimer)
     lspserver.diagnosticPullTimer = -1

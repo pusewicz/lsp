@@ -5,8 +5,9 @@
 # - runner_selftest_fixture.vim: runner.vim keeps the results of a test file
 #   whose test pass hooks fail, reports each failure naming the hook and the
 #   test pass, stops the language server after a failed start, goes on with the
-#   next test pass, and reports an error while quitting Vim instead of stopping
-#   at the hit-enter prompt.
+#   next test pass, reports a failed test with the messages given while it ran,
+#   and reports an error while quitting Vim instead of stopping at the
+#   hit-enter prompt.
 # - runner_selftest_timeout.vim: run_tests.sh kills Vim when a test waits for a
 #   key, and keeps the results so far.
 # The test files run through run_tests.sh like any other.
@@ -92,10 +93,16 @@ FAIL: g:StartLangServer() threw in the test pass start: start failed
 [notready]
 FAIL: Not able to start the language server in the test pass notready
 [stop]
+Failed
+MESSAGE: A message of the failing test
+Test_Failing: FAIL
 Test_First: pass
 Test_Second: pass
 FAIL: g:StopLangServer() threw in the test pass stop: stop failed
 [none]
+Failed
+MESSAGE: A message of the failing test
+Test_Failing: FAIL
 Test_First: pass
 Test_Second: pass
 FAIL: Error while quitting Vim: E605: Exception not caught: quit failed"
