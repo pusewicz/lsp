@@ -1510,7 +1510,8 @@ class and interface hierarchies.
 5.7 Diagnostics (Errors & Warnings)~
 
 Commands to navigate through and view the error, warning, and hint messages
-reported by the language server.
+reported by the language server.  The jumps and the location list skip the
+hints displayed only by the highlight for their tag (|lsp-diags-tags|).
 
 					*:LspDiag-current* *:LspDiagCurrent*
 :LspDiag current	Displays the diagnostic message (if any) for the
@@ -1745,6 +1746,10 @@ aleSupport		|Boolean| option. If true, diagnostics will be sent to
 			The related information of a diagnostic
 			(|lsp-diags-related-info|) is added after its message
 			in the detail that |:ALEDetail| displays.
+			Hints are sent as information, as Ale has no type for
+			them.  The hints with a tag (|lsp-diags-tags|) aren't
+			sent to Ale, unless "highlightDiagInline" is set to
+			false.
 
 						*lsp-opt-autoComplete*
 autoComplete		|Boolean| option. In insert mode, automatically
@@ -2932,10 +2937,14 @@ diagnostic.
 Language servers report much of the unnecessary and deprecated code as hints
 with a tag, often for every unused import or parameter.  As in other editors,
 such a hint is displayed only by the highlight for its tag: it gets no sign,
-no virtual text and no "LspDiagInlineHint" highlight.  It is still listed in
-the location list and displayed by ":LspDiag current".  When the
-"highlightDiagInline" option is set to |v:false|, it is displayed like any
-other hint.
+no virtual text and no "LspDiagInlineHint" highlight.  It is also left out of
+the lists of problems: the |:LspDiag| jumps (e.g. ":LspDiag next") skip it,
+the counts of lsp#lsp#ErrorCount() and the diagnostics location list leave it
+out, and it isn't sent to Ale (|lsp-opt-aleSupport|).  It is still displayed
+by ":LspDiag current", in the balloon and on the status line, and it is sent
+to the language server with a code action request for its line, for a fix
+such as removing an unused import.  When the "highlightDiagInline" option is
+set to |v:false|, it is displayed and listed like any other hint.
 
 If you wish to temporarily disable the automatic diagnostic highlighting for
 the current Vim session, you can achieve this using the ":LspDiag highlight
@@ -2957,9 +2966,10 @@ the current buffer, categorized by their types.  When called, this function
 returns a Dictionary containing four keys: "Info," "Hint," "Warn," and
 "Error." Each key corresponds to a specific diagnostic type, and its
 associated value is the number of diagnostic messages of that particular type
-found in the buffer.  With the information gathered using this function, you
-can easily display the number of diagnostics in the current buffer in your
-'statusline'.
+found in the buffer, not counting the hints displayed only by the highlight
+for their tag (|lsp-diags-tags|).  With the information gathered using this
+function, you can easily display the number of diagnostics in the current
+buffer in your 'statusline'.
 
 For some diagnostic errors/warnings, the language server may provide an
 automatic fix.  To apply this fix, you can use the |:LspCodeAction| command.

@@ -382,6 +382,15 @@ def DiagIsTagOnly(diag: dict<any>): bool
     && !DiagTagPropTypes(diag)->empty()
 enddef
 
+# Returns a new List with the diagnostics in "diags" that are listed: all but
+# the ones displayed only by their tag highlights (DiagIsTagOnly()).  Those
+# hints, often one for every unused import or parameter, are left out of the
+# jumps, the counts, the location list and the diagnostics sent to ALE, as
+# other clients leave them out of their lists of problems.
+def ListedDiags(diags: list<dict<any>>): list<dict<any>>
+  return diags->copy()->filter((_, d) => !DiagIsTagOnly(d))
+enddef
+
 # Remove signs and text properties for diagnostics in buffer
 def RemoveDiagVisualsForBuffer(bnr: number, all: bool = false)
   var lspOpts = opt.lspOptions
@@ -506,8 +515,7 @@ export def DiagsRefresh(bnr: number)
   var mostSevereOnly: bool = lspOpts.showDiagWithVirtualText
 	&& lspOpts.diagVirtualTextMostSevere
   var virtualTextDiags: dict<dict<any>> = mostSevereOnly
-	? MostSevereDiagByLine(diags->copy()
-				 ->filter((_, d) => !DiagIsTagOnly(d)))
+	? MostSevereDiagByLine(ListedDiags(diags))
 	: {}
 
   var signs: list<dict<any>> = []
@@ -664,6 +672,14 @@ def AleLinterNamesGet(bnr: number): list<string>
     ->uniq()
 enddef
 
+# Returns the type of an ALE loclist entry for the LSP DiagnosticSeverity
+# "severity".  ALE has no type for hints and draws and counts an entry of any
+# type other than "W" and "I" as an error, so a hint is information to ALE.
+# Any other severity is an error.
+def DiagSevToAleType(severity: number): string
+  return severity == 2 ? 'W' : severity == 3 || severity == 4 ? 'I' : 'E'
+enddef
+
 # Returns the ALE loclist entry for diagnostic "diag" in buffer "bnr", as
 # returned by DiagInBuf().  ALE highlights up to and including "end_col", so
 # the end of the entry is the last byte in the diagnostic range.  An empty
@@ -689,7 +705,7 @@ def AleLocListItem(bnr: number, diag: dict<any>): dict<any>
   endif
   var item: dict<any> = {text: diag.message, lnum: lnum, col: col,
     end_lnum: endLnum, end_col: endCol,
-    type: "EWIH"[get(diag, "severity", 1) - 1]}
+    type: DiagSevToAleType(diag->get('severity', 1))}
   if !DiagRelatedInfo(diag)->empty()
     item.detail = DiagDisplayText(diag)
   endif
@@ -709,8 +725,8 @@ def SendAleDiags(bnr: number, timerid: number)
       diags->extend(kindDiags)
     endfor
     # Convert to Ale's diagnostics format (:h ale-loclist-format)
-    var loclist = SortDiags(DeduplicateDiags(diags))
-      ->mapnew((_, v) => AleLocListItem(bnr, DiagInBuf(bnr, v)))
+    var loclist = ListedDiags(SortDiags(DeduplicateDiags(diags)))
+      ->map((_, v) => AleLocListItem(bnr, DiagInBuf(bnr, v)))
     loclists[lspserver.name] = loclists->get(lspserver.name, [])
       ->extend(loclist)
   endfor
@@ -922,12 +938,12 @@ export def DiagNotification(lspserver: dict<any>, uri: string, diags_arg: list<d
   endif
 enddef
 
-# get the count of error in the current buffer
+# Returns the number of the listed diagnostics (see ListedDiags()) in buffer
+# "bnr" for each severity.
 export def DiagsGetErrorCount(bnr: number): dict<number>
   var diagSevCount: list<number> = [0, 0, 0, 0, 0]
   if diagsMap->has_key(bnr)
-    var diags = diagsMap[bnr].sortedDiagnostics
-    for diag in diags
+    for diag in ListedDiags(diagsMap[bnr].sortedDiagnostics)
       var severity = diag->get('severity', 0)
       diagSevCount[severity] += 1
     endfor
@@ -986,14 +1002,15 @@ def DiagLocListItem(bnr: number, diag: dict<any>): dict<any>
   }
 enddef
 
-# Returns the location list items for the diagnostics in buffer "bnr".  The
-# item of a diagnostic is followed by the items of its related information.
+# Returns the location list items for the listed diagnostics (see
+# ListedDiags()) in buffer "bnr".  The item of a diagnostic is followed by the
+# items of its related information.
 def DiagsLocListItems(bnr: number): list<dict<any>>
   if !diagsMap->has_key(bnr)
     return []
   endif
   var items: list<dict<any>> = []
-  for diag in diagsMap[bnr].sortedDiagnostics
+  for diag in ListedDiags(diagsMap[bnr].sortedDiagnostics)
     items->add(DiagLocListItem(bnr, diag))
     for related in DiagRelatedInfo(diag)
       items->add(RelatedInfoLocListItem(diag, related))
@@ -1292,7 +1309,8 @@ def JumpDiag(diag: dict<any>)
   endif
 enddef
 
-# jump to the next/previous/first diagnostic message in the current buffer
+# Jump to the next/previous/first/last listed diagnostic (see ListedDiags())
+# in the current buffer.
 export def LspDiagsJump(which: string, a_count: number = 0): void
   var fname: string = expand('%:p')
   if fname->empty()
@@ -1304,8 +1322,8 @@ export def LspDiagsJump(which: string, a_count: number = 0): void
     util.WarnMsg($'No diagnostic messages found for {fname}')
     return
   endif
-  var diags: list<dict<any>> = diagsMap[bnr].sortedDiagnostics
-    ->mapnew((_, d) => DiagInBuf(bnr, d))
+  var diags: list<dict<any>> = ListedDiags(diagsMap[bnr].sortedDiagnostics)
+    ->map((_, d) => DiagInBuf(bnr, d))
   if diags->empty()
     util.WarnMsg($'No diagnostic messages found for {fname}')
     return
@@ -1420,6 +1438,19 @@ def DiagsRedrawAll()
   endfor
 enddef
 
+# Update the diagnostics location lists of every buffer with diagnostics, and
+# the diagnostics sent to ALE for it, for a change in which diagnostics are
+# listed (see ListedDiags()).  Only the buffers that ALE got diagnostics for
+# are sent them again.
+def DiagListsUpdateAll()
+  for bnr in diagsMap->keys()->mapnew((_, key) => key->str2nr())
+    BufDiagsLocListsUpdate(bnr)
+    if opt.lspOptions.aleSupport && aleLinterNames->has_key(bnr)
+      SendAleDiags(bnr, -1)
+    endif
+  endfor
+enddef
+
 # Set up the diagnostics features again in every buffer with a language
 # server, with the current options.
 def BuffersFeaturesSet()
@@ -1437,8 +1468,8 @@ const signTextOptions: list<string> = [
   'diagSignHintText'
 ]
 
-# The options that change how the diagnostics are displayed, each with the
-# function applying a change in them.  The other diagnostics options are read
+# The options that change how the diagnostics are displayed or which ones are
+# listed, each with the function applying a change in them.  The other diagnostics options are read
 # whenever they are used.
 const displayOptionAppliers: list<dict<any>> = [
   {Apply: DiagSignsDefine, options: signTextOptions},
@@ -1453,7 +1484,8 @@ const displayOptionAppliers: list<dict<any>> = [
   {
     Apply: BuffersFeaturesSet,
     options: ['showDiagInBalloon', 'showDiagOnStatusLine']
-  }
+  },
+  {Apply: DiagListsUpdateAll, options: ['highlightDiagInline']}
 ]
 
 # The values of the options in "displayOptionAppliers" when they were last
