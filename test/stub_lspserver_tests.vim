@@ -8338,9 +8338,11 @@ enddef
 
 # Type "keys", which enter Insert mode, and return the [trigger kind, trigger
 # character] of the signature help requests of the language server
-# "lspserver" for it, waiting for the first one.  feedkeys() stays in Insert
-# mode with the "!" flag, so a timer leaves it.
-def SigRequestsOnTyping(lspserver: dict<any>, keys: string): list<list<any>>
+# "lspserver" for it, waiting for the first one when "waitForRequest" is true
+# and 200 ms otherwise.  feedkeys() stays in Insert mode with the "!" flag,
+# so a timer leaves it.
+def SigRequestsOnTyping(lspserver: dict<any>, keys: string,
+			waitForRequest: bool = true): list<list<any>>
   var requests: list<list<any>> = []
   lspserver.showSignature = (kind: number, char: string) => {
     requests->add([kind, char])
@@ -8348,7 +8350,7 @@ def SigRequestsOnTyping(lspserver: dict<any>, keys: string): list<list<any>>
   var tries = 0
   timer_start(10, (timer) => {
     tries += 1
-    if !requests->empty() || tries >= 500
+    if !requests->empty() || tries >= (waitForRequest ? 500 : 20)
       timer_stop(timer)
       feedkeys("\<Esc>", 't')
     endif
@@ -8360,7 +8362,8 @@ enddef
 # Test for the trigger kind and character of the signature help requested
 # while typing: a typed trigger character, or a retrigger character while a
 # signature is shown, is sent as such, also when typing it changes the text,
-# and entering Insert mode requests the signature help as invoked.
+# and entering Insert mode right after a trigger character, skipping white
+# space and blank lines, requests the signature help as invoked.
 def g:Test_SignatureHelp_TriggerKinds()
   signature.InitOnce()
   g:LspOptionsSet({echoSignature: false, showSignatureDocs: false})
@@ -8376,24 +8379,36 @@ def g:Test_SignatureHelp_TriggerKinds()
   buf.BufLspServerSet(bnr, srv)
   signature.BufferInit(srv, bnr)
   try
-    # [whether a signature is shown, typed keys, expected requests]
+    # [whether a signature is shown, text of the line(s), keys typed at the
+    #  third column of the first line, expected requests]
     var cases = [
-      [false, 'a(', [[2, '(']]],
-      [false, 'a)', [[1, '']]],
-      [true, 'a,', [[2, ',']]],
-      [true, 'a)', [[2, ')']]],
+      [false, 'f(a', 'a(', [[2, '(']]],
+      [false, 'f(a', 'a)', []],
+      [true, 'f(a', 'a,', [[2, ',']]],
+      [true, 'f(a', 'a)', [[2, ')']]],
       # A trigger character in an expression doesn't insert itself
-      [false, "a\<C-R>=toupper('x')\<CR>", [[1, '']]]
+      [false, 'f(a', "a\<C-R>=toupper('x')\<CR>", []],
+      # Entering Insert mode after a trigger character, also on a line below
+      # it, or not
+      [false, 'f(', 'A', [[1, '']]],
+      [false, 'f(a, ', 'A', [[1, '']]],
+      [false, 'f(a,', 'o', [[1, '']]],
+      [false, ['f(', '', '  '], 'jjI', [[1, '']]],
+      [false, 'f(a', 'A', []],
+      [false, 'f(a)', 'A', []],
+      [false, 'f(a', 'I', []],
+      [false, 'f(a', 'o', []]
     ]
-    for [shown, keys, expected] in cases
-      setline(1, 'f(a')
+    for [shown, line, keys, expected] in cases
+      deletebufline(bnr, 1, '$')
+      setline(1, line)
       cursor(1, 3)
       if shown
 	signature.SignatureHelp(srv, MakeSigHelp('f(int a, int b)',
 						 ['int a', 'int b'], 0), {})
       endif
-      assert_equal(expected, SigRequestsOnTyping(srv, keys),
-		   $'shown: {shown}, keys: {keys}')
+      assert_equal(expected, SigRequestsOnTyping(srv, keys, !expected->empty()),
+		   $'shown: {shown}, line: {line}, keys: {keys}')
     endfor
   finally
     signature.BufferDeInit(bnr)

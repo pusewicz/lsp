@@ -1910,25 +1910,30 @@ def g:Test_LspShowSignature()
   signature.SignatureHelp(sigserver, {}, {}, reqctx)
   assert_equal([p[0]], popup_list())
 
-  popup_close(p[0])
-
-  # Editing after the first argument should highlight the second parameter.
+  # Editing after the first argument should highlight the second parameter in
+  # the same popup, which stays where it is while the cursor is on its line.
+  var pos: dict<any> = popup_getpos(p[0])
   setline(8, '  MyFunc(10, ')
   cursor(8, 13)
   :LspShowSignature
-  g:WaitForAssert(() => assert_equal(1, popup_list()->len()))
-  p = popup_list()
-  bnr = winbufnr(p[0])
-  assert_equal(['MyFunc(int a, int b) -> int'], getbufline(bnr, 1, '$'))
   expected = {id: 0, col: 15, end: 1, type: 'signature', length: 5, start: 1}
   expected.type_bufnr = bnr
-  assert_equal([expected], prop_list(1, {bufnr: bnr}))
+  g:WaitForAssert(() => assert_equal([expected], prop_list(1, {bufnr: bnr})))
+  assert_equal([p[0]], popup_list())
+  assert_equal(['MyFunc(int a, int b) -> int'], getbufline(bnr, 1, '$'))
+  assert_equal(pos, popup_getpos(p[0]))
 
-  # Re-invoking should replace/update the popup, not accumulate popups.
+  # On another line of the arguments, the popup is shown above that line.
+  append(8, '         20')
+  cursor(9, 11)
   :LspShowSignature
-  g:WaitForReplies()
+  g:WaitForAssert(() => assert_notequal(p, popup_list()))
   p = popup_list()
-  g:WaitForAssert(() => assert_equal(1, p->len()))
+  assert_equal(1, p->len())
+  bnr = winbufnr(p[0])
+  assert_equal(pos.line + 1, popup_getpos(p[0]).line)
+  expected.type_bufnr = bnr
+  g:WaitForAssert(() => assert_equal([expected], prop_list(1, {bufnr: bnr})))
 
   popup_close(p[0])
 
@@ -1968,8 +1973,9 @@ def g:Test_LspShowSignature()
   :%bw!
 enddef
 
-# Test for showing the signature automatically when Insert mode is entered in
-# the arguments of a call, also after leaving Insert mode closed it.
+# Test for showing the signature automatically when Insert mode is entered
+# right after a trigger character, as in the arguments of a call, also after
+# leaving Insert mode closed it, but not elsewhere.
 def g:Test_LspShowSignature_InsertEnter()
   g:LspOptionsSet({echoSignature: false, showSignatureDocs: false})
 
@@ -1991,9 +1997,9 @@ def g:Test_LspShowSignature_InsertEnter()
   g:WaitForServerFileLoad(1)
 
   # Enter Insert mode with "cmd" and return the lines of the signature popup
-  # shown then, or [] when none is shown in time.  feedkeys() stays in Insert
-  # mode with the "!" flag, so a timer leaves it.
-  var SigPopupOnInsert = (cmd: string): list<string> => {
+  # shown then, or [] when none is shown in "maxTries" times 10 ms.
+  # feedkeys() stays in Insert mode with the "!" flag, so a timer leaves it.
+  var SigPopupOnInsert = (cmd: string, maxTries: number): list<string> => {
     var popupLines: list<string> = []
     var tries = 0
     timer_start(10, (timer) => {
@@ -2002,7 +2008,7 @@ def g:Test_LspShowSignature_InsertEnter()
 	popupLines = getbufline(popups[0]->winbufnr(), 1, '$')
       endif
       tries += 1
-      if !popups->empty() || tries >= 500
+      if !popups->empty() || tries >= maxTries
 	timer_stop(timer)
 	feedkeys("\<Esc>", 't')
       endif
@@ -2010,17 +2016,33 @@ def g:Test_LspShowSignature_InsertEnter()
     feedkeys(cmd, 'xt!')
     return popupLines
   }
+  var sig: list<string> = ['MyFunc(int a, int b) -> int']
 
   cursor(8, 1)
-  assert_equal(['MyFunc(int a, int b) -> int'], SigPopupOnInsert('A'))
+  assert_equal(sig, SigPopupOnInsert('A', 500))
   assert_equal([], popup_list())
-  assert_equal(['MyFunc(int a, int b) -> int'], SigPopupOnInsert('A'))
+  assert_equal(sig, SigPopupOnInsert('A', 500))
   assert_equal([], popup_list())
 
-  # On a line of the arguments of a call that spans several lines
+  # On a line of the arguments of a call that spans several lines, below the
+  # trigger character
   cursor(9, 1)
-  assert_equal(['MyFunc(int a, int b) -> int'], SigPopupOnInsert('I'))
+  assert_equal(sig, SigPopupOnInsert('I', 500))
   assert_equal([], popup_list())
+  cursor(8, 1)
+  assert_equal(sig, SigPopupOnInsert('o', 500))
+  assert_equal([], popup_list())
+
+  # After a comma, skipping the white space after it
+  setline(8, '  MyFunc(10, ')
+  assert_equal(sig, SigPopupOnInsert('A', 500))
+  assert_equal([], popup_list())
+
+  # Not after an argument, nor on a line below one
+  setline(8, '  MyFunc(10')
+  assert_equal([], SigPopupOnInsert('A', 20))
+  cursor(9, 1)
+  assert_equal([], SigPopupOnInsert('I', 20))
 
   :%bw!
 enddef
