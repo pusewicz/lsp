@@ -404,17 +404,15 @@ def GetInsertReplaceTailDeleteChars(lspserver: dict<any>,
 				getline('.')->strpart(col('.') - 1), tailLen)
 enddef
 
-# Delete the first "tailDeleteChars" characters after the cursor, counting
-# composing characters separately, that an InsertReplaceEdit completion
-# replaces.
-def ApplyInsertReplaceTailDelete(tailDeleteChars: number)
+# Return the number of bytes after the cursor to delete for the first
+# "tailDeleteChars" characters after it, counting composing characters
+# separately, that an InsertReplaceEdit completion replaces.
+def InsertReplaceTailDeleteLen(tailDeleteChars: number): number
   if tailDeleteChars <= 0
-    return
+    return 0
   endif
 
-  var ltext = getline('.')
-  var curByte = col('.') - 1
-  var tail = ltext->strpart(curByte)
+  var tail = getline('.')->strpart(col('.') - 1)
   var tailLen = tail->byteidxcomp(tailDeleteChars)
   if tailLen < 0
     tailLen = tail->len()
@@ -422,12 +420,20 @@ def ApplyInsertReplaceTailDelete(tailDeleteChars: number)
 
   # Only delete identifier tail chars. Do not remove punctuation or
   # following text (for example: ': 0,').
-  var deleteLen = min([tailLen, max([0, tail->matchend('^\k\+')])])
+  return min([tailLen, max([0, tail->matchend('^\k\+')])])
+enddef
+
+# Delete the first "tailDeleteChars" characters after the cursor, counting
+# composing characters separately, that an InsertReplaceEdit completion
+# replaces.
+def ApplyInsertReplaceTailDelete(tailDeleteChars: number)
+  var deleteLen = InsertReplaceTailDeleteLen(tailDeleteChars)
   if deleteLen <= 0
     return
   endif
 
-  setline('.', ltext->strpart(0, curByte) .. tail->strpart(deleteLen))
+  textedit.ReplaceText(line('.'), col('.'), line('.'), col('.') + deleteLen,
+		       '')
 enddef
 
 # Apply the text edit of the completion item "cItem" from "lspserver" after
@@ -468,9 +474,63 @@ def ApplyCompletionTextEdit(lspserver: dict<any>, cItem: dict<any>,
     return
   endif
 
-  setline('.', ltext->strpart(0, rangeStart) .. newText
-	       .. ltext->strpart(curByte))
+  textedit.ReplaceText(line('.'), rangeStart + 1, line('.'), curByte + 1,
+		       newText)
   cursor(0, rangeStart + newText->len() + 1)
+enddef
+
+# Return true when accepting the completion item "cItem" expands its snippet
+# with the built-in snippet support.  With vsnipSupport, vim-vsnip-integ
+# expands it, and with completionTextEdit off another plugin does.
+def ExpandsSnippet(cItem: dict<any>): bool
+  return cItem->get('insertTextFormat', 1) == 2
+    && opt.lspOptions.completionTextEdit && !opt.lspOptions.vsnipSupport
+enddef
+
+# Return the snippet of the completion item "cItem": its text edit's new text,
+# its insert text or its label.
+def CompletionSnippet(cItem: dict<any>): string
+  var textEdit = cItem->get('textEdit', v:none)
+  if textEdit->type() == v:t_dict
+      && textEdit->get('newText', v:none)->type() == v:t_string
+    return textEdit.newText
+  endif
+  var insertText = cItem->get('insertText', v:none)
+  return insertText->type() == v:t_string ? insertText : cItem->get('label', '')
+enddef
+
+# Expand the snippet of the completion item "cItem" from "lspserver" in place
+# of "word", which Vim inserted for it before the cursor, and of the text
+# that its text edit replaces before it and after the cursor.  Returns false
+# when "word" is not before the cursor and nothing is expanded.
+def ExpandCompletionSnippet(lspserver: dict<any>, cItem: dict<any>,
+			    word: string): bool
+  var ltext = getline('.')
+  var curByte = col('.') - 1
+  var wordStart = curByte - word->len()
+  if wordStart < 0 || ltext->strpart(wordStart, word->len()) !=# word
+    return false
+  endif
+
+  # The text before "word" is as it was for the completion request, and so is
+  # the start of "word" up to the start of the text edit when it starts in
+  # "word", see GetCompletionWordAndFilterText().
+  var start = wordStart
+  var textEdit = cItem->get('textEdit', v:none)
+  if textEdit->type() == v:t_dict
+    var rangeStart = TextEditStartByteIdx(textEdit,
+					  CursorLineByteIdxFunc(lspserver, ltext))
+    if rangeStart >= 0 && rangeStart <= curByte
+      start = rangeStart
+    endif
+  endif
+  var tailLen = InsertReplaceTailDeleteLen(
+    GetInsertReplaceTailDeleteChars(lspserver, cItem))
+
+  snippet.Expand(CompletionSnippet(cItem), line('.'), start + 1,
+		 curByte + 1 + tailLen, cItem->get('insertTextMode', 2) == 2,
+		 lspserver->get('workspaceFolders', [])->get(0, ''))
+  return true
 enddef
 
 # add completion from current buf
@@ -659,7 +719,7 @@ def BuildCompletionMenuItem(item: dict<any>, starttext: string,
   endif
 
   if insertTextFormat == 2
-    # snippet completion. Needs a snippet plugin to expand the snippet.
+    # A snippet: Vim inserts its leading word, accepting the item expands it.
     d.word = MakeValidWord(d.word)
   elseif !CompletionItemPrefixMatched(filterText, filterPrefix, matcher)
     return {}
@@ -1332,8 +1392,15 @@ def LspCompleteDone(bnr: number)
     return
   endif
 
-  ApplyCompletionTextEdit(lspserver, completionData,
-			  v:completed_item->get('word', ''))
+  # A snippet is expanded only when its item is accepted, not when typing
+  # goes on after selecting it.
+  var word: string = v:completed_item->get('word', '')
+  var expanded = ExpandsSnippet(completionData)
+    && !v:event->get('complete_word', '')->empty()
+    && ExpandCompletionSnippet(lspserver, completionData, word)
+  if !expanded
+    ApplyCompletionTextEdit(lspserver, completionData, word)
+  endif
 
   if !completionData->has_key('additionalTextEdits')
     # Some language servers (e.g. typescript) delay the computation of the
@@ -1345,8 +1412,10 @@ def LspCompleteDone(bnr: number)
     endif
   endif
 
-  ApplyInsertReplaceTailDelete(
-    GetInsertReplaceTailDeleteChars(lspserver, completionData))
+  if !expanded
+    ApplyInsertReplaceTailDelete(
+      GetInsertReplaceTailDeleteChars(lspserver, completionData))
+  endif
 
   if !completionData->get('additionalTextEdits', {})->empty()
     var additionalTextEdits = completionData.additionalTextEdits->deepcopy()
@@ -1362,10 +1431,30 @@ def LspCompleteDone(bnr: number)
     codeaction.DoCommand(lspserver, completionData.command)
   endif
 
+  if expanded
+    # After the other edits, which can move the snippet
+    snippet.Jump(1)
+  endif
+
   # Close the preview window automatically after completion
   if opt.lspOptions.completionInPreview && opt.lspOptions.closePreviewOnComplete
     ClosePreviewWindow()
   endif
+enddef
+
+# Return the keys for <Enter> in Insert mode with auto-completion: with the
+# completion menu, accept the selected item and start a new line, except for
+# a snippet, whose expansion selects its first tabstop.
+def CompletionEnterKeys(): string
+  if !pumvisible()
+    return "\<CR>"
+  endif
+  var cInfo = complete_info(['selected', 'completed'])
+  var cItem = cInfo->get('completed', {})->get('user_data', v:none)
+  if cInfo.selected != -1 && cItem->type() == v:t_dict && ExpandsSnippet(cItem)
+    return "\<C-Y>"
+  endif
+  return "\<C-Y>\<CR>"
 enddef
 
 # Initialize buffer-local completion options and autocmds
@@ -1396,7 +1485,7 @@ export def BufferInit(lspserver: dict<any>, bnr: number, ftype: string)
 	      'width:80,highlight:Pmenu,align:item,border:off')
     # <Enter> in insert mode stops completion and inserts a <Enter>
     if !opt.lspOptions.noNewlineInCompletion
-      :inoremap <expr> <buffer> <CR> pumvisible() ? "\<C-Y>\<CR>" : "\<CR>"
+      :inoremap <expr> <buffer> <CR> CompletionEnterKeys()
     endif
 
     # Trigger 24x7 insert mode completion when text is changed

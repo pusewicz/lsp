@@ -29,6 +29,7 @@ import './semantichighlight.vim'
 import './ontypeformat.vim'
 import './folding.vim'
 import './linkedediting.vim'
+import './snippet.vim'
 
 # filetype to LSP server map
 var ftypeServerMap: dict<list<dict<any>>> = {}
@@ -1828,6 +1829,17 @@ export def SelectionShrink()
   endif
 
   lspserver.selectionShrink()
+enddef
+
+# Move the cursor to the next ("dir" 1) or the previous ("dir" -1) tabstop of
+# the snippet expanded in the current buffer.
+export def SnippetJump(dir: number)
+  snippet.Jump(dir)
+enddef
+
+# Return true when SnippetJump() can move the cursor in direction "dir".
+export def SnippetJumpable(dir: number): bool
+  return snippet.Jumpable(dir)
 enddef
 
 # fold the entire document
