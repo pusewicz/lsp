@@ -1425,6 +1425,16 @@ def g:Test_WorkspaceEditCapability()
 	       capabilities.GetClientCaps().workspace.workspaceEdit)
 enddef
 
+# Test that the client advertises the "workspace/*/refresh" requests that it
+# handles, and not the one for inline values, which it doesn't support.
+def g:Test_RefreshCapabilities()
+  var workspaceCaps: dict<any> = capabilities.GetClientCaps().workspace
+  for feature in ['diagnostics', 'inlayHint', 'semanticTokens']
+    assert_equal({refreshSupport: true}, workspaceCaps->get(feature), feature)
+  endfor
+  assert_false(workspaceCaps->has_key('inlineValue'))
+enddef
+
 # Test for parsing the line and column fragment in a document link file URI
 def g:Test_DocumentLink_ParseFileUri()
   var uri = 'file:///tmp/a%20b.c'
