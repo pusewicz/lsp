@@ -6040,6 +6040,150 @@ def g:Test_RenameSymbol_DecodesEditsAfterPrecedingChanges()
   endtry
 enddef
 
+# Returns a running and ready language server with UTF-16 positions for the
+# current buffer that supports "textDocument/prepareRename" and replies to it
+# with "reply", which has the "result" or the "error" of the reply.  Instead of
+# renaming, its renameSymbol() adds the new name to "newNames".
+def MakePrepareRenameLspServer(reply: dict<any>,
+			       newNames: list<string>): dict<any>
+  var lspserver = MakeUtf16LspServer()
+  lspserver.running = true
+  lspserver.ready = true
+  lspserver.isRenameProvider = true
+  lspserver.isRenamePrepareProvider = true
+  # Vim numbers the asynchronous requests on a new channel from 1.
+  lspserver.job = StartStubServerJob([{jsonrpc: '2.0', id: 1}->extend(reply)])
+  lspserver.renameSymbol = (newName: string) => {
+    newNames->add(newName)
+  }
+  buf.BufLspServerSet(bufnr(), lspserver)
+  return lspserver
+enddef
+
+# Discard the keys that a test fed and that nothing read, so that they are not
+# executed after it.
+def DiscardTypeahead()
+  while getcharstr(0) != ''
+  endwhile
+enddef
+
+# Test that ":LspRename" pre-fills the prompt for the new name with the name
+# that the language server replies to "textDocument/prepareRename": its
+# placeholder, or else the text in its range, or else, when the server leaves
+# it to the client or the range is on more than one line, the word under the
+# cursor.  Without "textDocument/prepareRename", the prompt is pre-filled with
+# the word under the cursor.
+def g:Test_LspRename_PrepareRenamePrefillsPrompt()
+  silent! edit XLspRenamePrepare.txt
+  setline(1, ["😀 = $foo + 'a", 'b'])
+  var bnr = bufnr()
+  var range = {start: {line: 0, character: 5}, end: {line: 0, character: 9}}
+  g:LSPTest = false
+  try
+    for [result, name] in [
+	[range, '$foo'],
+	[{range: range, placeholder: 'bar'}, 'bar'],
+	[{range: range, placeholder: ''}, '$foo'],
+	[{defaultBehavior: true}, 'foo'],
+	[{start: {line: 0, character: 13}, end: {line: 1, character: 1}}, 'foo']]
+      var newNames: list<string> = []
+      var lspserver = MakePrepareRenameLspServer({result: result}, newNames)
+      cursor(1, 9)
+      feedkeys("X\<CR>", 't')
+      :LspRename
+      g:WaitForAssert(() => assert_equal([$'{name}X'], newNames))
+      StopAsyncReplyingLspServer(lspserver, bnr)
+    endfor
+
+    var newNames: list<string> = []
+    var lspserver = MakePrepareRenameLspServer({result: v:null}, newNames)
+    lspserver.isRenamePrepareProvider = false
+    feedkeys("X\<CR>", 't')
+    :LspRename
+    assert_equal(['fooX'], newNames)
+    StopAsyncReplyingLspServer(lspserver, bnr)
+  finally
+    g:LSPTest = true
+    DiscardTypeahead()
+    :%bw!
+  endtry
+enddef
+
+# Test that ":LspRename" neither prompts for a new name nor renames when the
+# language server refuses to rename the symbol under the cursor, and that it
+# tells why, unless the request was cancelled.
+def g:Test_LspRename_PrepareRenameRefused()
+  silent! edit XLspRenameRefused.txt
+  setline(1, ['foo'])
+  var bnr = bufnr()
+  var nothing = 'Warn: Nothing to rename at the cursor'
+  g:LSPTest = false
+  try
+    for [reply, msg] in [
+	[{result: v:null}, nothing],
+	[{result: {defaultBehavior: false}}, nothing],
+	[{error: {code: -32602, message: 'No symbol'}}, 'Error: No symbol'],
+	[{error: {code: -32801, message: 'Modified'}}, ''],
+	[{result: [1]},
+	 'Error: prepareRename response from the language server is not a Dict']]
+      var newNames: list<string> = []
+      var lspserver = MakePrepareRenameLspServer(reply, newNames)
+      :messages clear
+      var beforeMessages = execute('messages')
+      # A prompt would read the <Esc> and cancel
+      feedkeys("\<Esc>", 't')
+      :LspRename
+      g:WaitForAssert(() => assert_equal({}, lspserver.supersedableRequests))
+      assert_equal(msg,
+		   execute('messages')->strpart(beforeMessages->len())->trim(),
+		   string(reply))
+      assert_equal([], newNames)
+      assert_equal("\<Esc>", getcharstr(0))
+      StopAsyncReplyingLspServer(lspserver, bnr)
+    endfor
+  finally
+    g:LSPTest = true
+    DiscardTypeahead()
+    :%bw!
+  endtry
+enddef
+
+# Test that ":LspRename {newName}" renames the symbol without a prompt when
+# the language server replies that it can be renamed, and that ":LspRename"
+# with or without a new name does nothing when the cursor moved before the
+# reply arrived.
+def g:Test_LspRename_PrepareRenameDropsReplyAfterCursorMoved()
+  silent! edit XLspRenameMoved.txt
+  setline(1, ['foo bar'])
+  var bnr = bufnr()
+  var range = {start: {line: 0, character: 0}, end: {line: 0, character: 3}}
+  g:LSPTest = false
+  try
+    for [cmd, moveCursor, expected] in [
+	['LspRename baz', false, ['baz']],
+	['LspRename baz', true, []],
+	['LspRename', true, []]]
+      var newNames: list<string> = []
+      var lspserver = MakePrepareRenameLspServer({result: range}, newNames)
+      cursor(1, 1)
+      # A prompt would read the <Esc> and cancel
+      feedkeys("\<Esc>", 't')
+      exe cmd
+      if moveCursor
+	cursor(1, 5)
+      endif
+      g:WaitForAssert(() => assert_equal({}, lspserver.supersedableRequests))
+      assert_equal(expected, newNames, $'{cmd}, moveCursor: {moveCursor}')
+      assert_equal("\<Esc>", getcharstr(0))
+      StopAsyncReplyingLspServer(lspserver, bnr)
+    endfor
+  finally
+    g:LSPTest = true
+    DiscardTypeahead()
+    :%bw!
+  endtry
+enddef
+
 # The positions of the text edits of a code action, also of one that is
 # resolved, are decoded for the text that the edits are applied to, after the
 # changes before them.
