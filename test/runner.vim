@@ -31,10 +31,13 @@ def RecordQuitError()
 enddef
 
 # Run the test function "f" and append its "pass" or "FAIL" line to
-# results.txt, after the errors it reported.
+# results.txt, after the errors it reported.  A failed test also gets the
+# messages given while it ran: the plugin reports some failures, such as a
+# language server that exited, only in a message.
 def RunTest(f: string)
   v:errors = []
   v:errmsg = ''
+  :messages clear
   try
     # ISOLATION: Clear hidden buffers and reset options that might leak
     # silent! %bwipeout! is good, but we also ensure no leftover windows
@@ -57,7 +60,12 @@ def RunTest(f: string)
   endif
 
   if !v:errors->empty()
-    AddResults(v:errors + [$'{f}: FAIL'])
+    # When a message language is set, :messages starts with a "Messages
+    # maintainer" line.  Drop it, as GetMessages() in Vim's tests does.
+    var messages: list<string> = execute('messages')->split("\n")
+      ->filter((idx, msg) => idx > 0 || msg !~ '^Messages maintainer:')
+      ->map((_, msg) => $'MESSAGE: {msg}')
+    AddResults(v:errors + messages + [$'{f}: FAIL'])
   else
     AddResults([$'{f}: pass'])
   endif
