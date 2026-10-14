@@ -397,6 +397,18 @@ export def ProcessServerCaps(lspserver: dict<any>, caps: dict<any>)
     lspserver.isTypeHierarchyProvider = false
   endif
 
+  # inlineCompletionProvider
+  if lspserver.caps->has_key('inlineCompletionProvider')
+    if lspserver.caps.inlineCompletionProvider->type() == v:t_bool
+      lspserver.isInlineCompletionProvider =
+				lspserver.caps.inlineCompletionProvider
+    else
+      lspserver.isInlineCompletionProvider = true
+    endif
+  else
+    lspserver.isInlineCompletionProvider = false
+  endif
+
   # inlayHintProvider
   if lspserver.caps->has_key('inlayHintProvider')
     if lspserver.caps.inlayHintProvider->type() == v:t_bool
@@ -565,6 +577,9 @@ export def GetClientCaps(): dict<any>
 	linkSupport: true
       },
       inlayHint: {
+	dynamicRegistration: false
+      },
+      inlineCompletion: {
 	dynamicRegistration: false
       },
       onTypeFormatting: {

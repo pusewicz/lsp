@@ -29,6 +29,7 @@ import './folding.vim'
 import './callhierarchy.vim' as callhier
 import './typehierarchy.vim' as typehier
 import './inlayhints.vim'
+import './inlinecompletion.vim'
 import './semantichighlight.vim'
 import './buffer.vim' as buf
 
@@ -1308,6 +1309,50 @@ enddef
 # Notification: $/cancelRequest
 def CancelCompletion(lspserver: dict<any>)
   CancelSupersedableRequest(lspserver, 'textDocument/completion')
+enddef
+
+# Get the inline completions at the cursor in the current buffer.
+# "triggerKind" is the InlineCompletionTriggerKind: 1 when they are asked for,
+# 2 when they are requested while typing.  The reply is dropped when the text
+# or the cursor changes before it arrives.
+# Request: "textDocument/inlineCompletion"
+# Param: InlineCompletionParams
+def GetInlineCompletion(lspserver: dict<any>, triggerKind: number): void
+  var bnr = bufnr()
+  # The version of the document includes the changes sent before the request
+  bnr->listener_flush()
+  # interface InlineCompletionParams
+  #   interface TextDocumentPositionParams
+  #   interface InlineCompletionContext
+  # The document version and the formatting options are not in the LSP
+  # specification, but the GitHub Copilot language server uses them.
+  var params: dict<any> = {
+    textDocument: {
+      uri: util.LspBufnrToUri(bnr),
+      version: lspserver.docVersions->get(bnr, 0)
+    },
+    position: lspserver.getPosition(false),
+    context: {triggerKind: triggerKind},
+    formattingOptions: {
+      tabSize: shiftwidth(),
+      insertSpaces: &expandtab ? true : false
+    }
+  }
+
+  AsyncRpcInContext(lspserver, util.RequestContextGet('cursor', bnr),
+		    $'textDocument/inlineCompletion {bnr}',
+		    'textDocument/inlineCompletion', params,
+		    (_: dict<any>, reply: any, error: dict<any>) => {
+    inlinecompletion.InlineCompletionReply(lspserver, reply, error,
+					   triggerKind)
+  })
+enddef
+
+# Cancel the pending inline completion request about buffer "bnr", if any,
+# and ignore its reply.
+# Notification: $/cancelRequest
+def CancelInlineCompletion(lspserver: dict<any>, bnr: number)
+  CancelSupersedableRequest(lspserver, $'textDocument/inlineCompletion {bnr}')
 enddef
 
 # Get lazy properties for a completion item.
@@ -3324,6 +3369,8 @@ export def NewLspServer(serverParams: dict<any>): dict<any>
     getCompletion: function(GetCompletion, [lspserver]),
     resolveCompletion: function(ResolveCompletion, [lspserver]),
     cancelCompletion: function(CancelCompletion, [lspserver]),
+    getInlineCompletion: function(GetInlineCompletion, [lspserver]),
+    cancelInlineCompletion: function(CancelInlineCompletion, [lspserver]),
     gotoDefinition: function(GotoDefinition, [lspserver]),
     gotoDeclaration: function(GotoDeclaration, [lspserver]),
     gotoTypeDef: function(GotoTypeDef, [lspserver]),

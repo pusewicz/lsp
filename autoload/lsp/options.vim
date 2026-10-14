@@ -33,6 +33,14 @@ export var lspOptions: dict<any> = {
   # Automatically highlight diagnostics messages from LSP server
   autoHighlightDiags: true,
 
+  # In insert mode, request inline completions while typing and show them as
+  # ghost text
+  autoInlineCompletion: false,
+
+  # Debounce delay in milliseconds before requesting inline completions while
+  # typing
+  inlineCompletionDelay: 100,
+
   # Automatically populate the location list with new diagnostics
   autoPopulateDiags: false,
 

@@ -46,6 +46,7 @@ The following language server protocol (LSP) features are supported:
 * Folding code
 * Inlay hints
 * Document colors
+* Inline completion (ghost text)
 * Visually select symbol block/region
 * Semantic Highlight
 
@@ -118,6 +119,7 @@ call LspOptionsSet(#{
         \   autoComplete: v:true,
         \   autoHighlight: v:false,
         \   autoHighlightDiags: v:true,
+        \   autoInlineCompletion: v:false,
         \   autoPopulateDiags: v:false,
         \   completionMatcher: 'case',
         \   completionMatcherValue: 1,
@@ -133,6 +135,7 @@ call LspOptionsSet(#{
         \   completionInPreview: v:false,
         \   closePreviewOnComplete: v:true,
         \   ignoreMissingServer: v:false,
+        \   inlineCompletionDelay: 100,
         \   keepFocusInDiags: v:true,
         \   keepFocusInReferences: v:true,
         \   completionTextEdit: v:true,

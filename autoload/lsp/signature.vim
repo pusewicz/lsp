@@ -868,12 +868,13 @@ def AddSignatureAutocmd(bnr: number, event: string, cmd: string)
 enddef
 
 # Configure trigger and retrigger character detection in buffer "bnr" using
-# the KeyInputPre autocmd.
+# the KeyInputPre autocmd.  A key that is not typed in Insert or Replace mode,
+# e.g. in the expression of the expression register, doesn't insert itself.
 def SetupSignatureTriggerChars(bnr: number, autoTriggerChars: list<string>)
   if !autoTriggerChars->empty()
     # detect the trigger chars and show the signature
     var cmd =<< trim eval END
-      if index({autoTriggerChars}, v:char) != -1
+      if mode() =~# '^[iR]' && index({autoTriggerChars}, v:char) != -1
         call g:LspHandleSignatureTriggerChar(v:char)
       endif
     END
