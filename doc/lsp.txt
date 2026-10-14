@@ -2887,9 +2887,10 @@ attached to a buffer: >
     }
 <
 The folding ranges of a buffer are requested when its folds are first
-computed, and again after it is changed, once it isn't changed for a moment
-and Insert mode is left in it.  Until they arrive, the buffer has no folds, and
-after a change, the folds move with the lines that are added and deleted.
+computed, again after it is changed, once it isn't changed for a moment and
+Insert mode is left in it, and when the language server asks to refresh them.
+Until they arrive, the buffer has no folds, and after a change, the folds move
+with the lines that are added and deleted.
 
 When the folding ranges change, a fold that is still there stays open or
 closed.  A new fold is closed or open as 'foldlevel' says (see also
