@@ -2534,10 +2534,11 @@ def g:Test_LspIncomingCalls()
   :LspIncomingCalls
   assert_equal([1, 2], [winnr(), winnr('$')])
   var l = getline(1, '$')
+  var [open, closed] = has('gui_running') ? ['▼', '▶'] : ['-', '+']
   assert_equal('# Incoming calls to "xFuncIncoming"', l[0])
-  assert_match('- xFuncIncoming (XLspIncomingCalls.c \[.*\])', l[1])
-  assert_match('  + aFuncIncoming (XLspIncomingCalls.c \[.*\])', l[2])
-  assert_match('  + bFuncIncoming (XLspIncomingCalls.c \[.*\])', l[3])
+  assert_match($'{open} xFuncIncoming (XLspIncomingCalls.c \[.*\])', l[1])
+  assert_match($'  {closed} aFuncIncoming (XLspIncomingCalls.c \[.*\])', l[2])
+  assert_match($'  {closed} bFuncIncoming (XLspIncomingCalls.c \[.*\])', l[3])
   :%bw!
 enddef
 
