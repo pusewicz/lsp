@@ -375,6 +375,51 @@ def ProcessShowMessageRequest(lspserver: dict<any>, req: dict<any>)
   endif
 enddef
 
+# process the window/showDocument LSP server request: open a "file:" URI in a
+# window, or any URI with the default handler of the system when the server
+# asks to show it externally.
+# Request: "window/showDocument"
+# Param: ShowDocumentParams
+def ProcessShowDocumentReq(lspserver: dict<any>, request: dict<any>)
+  if !ValidateObjectParams(lspserver, request, 'window/showDocument')
+    return
+  endif
+
+  var params: dict<any> = request.params
+  if params->get('uri')->type() != v:t_string
+    SendInvalidParamsError(lspserver, request,
+      'window/showDocument params.uri must be a string')
+    return
+  endif
+  if params->has_key('selection') && params.selection->type() != v:t_dict
+    SendInvalidParamsError(lspserver, request,
+      'window/showDocument params.selection must be an object')
+    return
+  endif
+
+  var uri: string = params.uri
+  var success = false
+  if params->get('external', false)
+    success = util.OpenExternalUri(uri)
+  elseif uri =~? '^file:'
+    try
+      var location = {uri: uri,
+		      range: params->get('selection', {})->deepcopy()}
+      if !location.range->empty()
+	lspserver.decodeLocation(location)
+      endif
+      util.ShowFile(util.LspUriToFile(uri), location.range,
+		    params->get('takeFocus', true))
+      success = true
+    catch
+      util.ErrMsg($'Failed to show "{uri}": {v:exception}')
+    endtry
+  else
+    util.ErrMsg($'Cannot show "{uri}" in Vim')
+  endif
+  lspserver.sendResponse(request, {success: success}, {})
+enddef
+
 # process the workspace/diagnostic/refresh LSP server request
 # Request: "workspace/diagnostic/refresh"
 # Param: none
@@ -500,6 +545,7 @@ const lsp_request_handlers: dict<func> =
     'client/registerCapability': ProcessClientRegisterCap,
     'client/unregisterCapability': ProcessClientUnregisterCap,
     'window/workDoneProgress/create': ProcessWorkDoneProgressCreate,
+    'window/showDocument': ProcessShowDocumentReq,
     'window/showMessageRequest': ProcessShowMessageRequest,
     'workspace/applyEdit': ProcessApplyEditReq,
     'workspace/configuration': ProcessWorkspaceConfiguration,
