@@ -1994,6 +1994,35 @@ keepFocusInReferences	|Boolean| option.  Focus on the location list window
 			after |:LspShowReferences| and |:LspDocumentLink|.
 			By default this is set to true.
 
+						*lsp-opt-linkedEditing*
+linkedEditing		|Boolean| option.  When the cursor is in a range of
+			text that the language server links to other ranges,
+			for example the name of an HTML tag and the name of
+			its closing tag, make a change to the text of the
+			range to the other ranges too.  By default this is
+			set to false, since it edits the buffer while you are
+			typing.
+
+			The language server is asked for the linked ranges
+			when the cursor moves out of them, and they are
+			highlighted with |LspLinkedEditingRange| while the
+			cursor is in them.  Typing, deleting or putting text
+			in a range, in Insert mode or in Normal mode, changes
+			the other ranges the same way, and an undo undoes the
+			change in all of them.  The ranges are no longer
+			linked when the cursor leaves them, when the text of a
+			range is no longer a word (for example, after typing a
+			space after an HTML tag name), or when the ranges are
+			changed some other way (for example, by breaking a
+			line in one).  The language server tells what a word
+			is.  When it doesn't, a word has no white space,
+			quotes, backticks or any of the characters "<>/=".
+
+			While the completion popup menu is shown, the other
+			ranges are changed when the menu is closed if one of
+			them is before the cursor in the cursor line, as the
+			change would move the text being completed.
+
 						*lsp-opt-maxDiagnostics*
 maxDiagnostics		|Number| option. Maximum number of diagnostics to
 			process when receiving diagnostic notifications
@@ -3341,6 +3370,10 @@ override them.
 				completion (|lsp-inline-completion|).  By
 				default, linked to the "Comment" highlight
 				group.
+*LspLinkedEditingRange*		Used to highlight the linked ranges of
+				|lsp-opt-linkedEditing| while the cursor is in
+				them.  By default, linked to the "MatchParen"
+				highlight group.
 *LspPopup*			Used to highlight popup contents.  By default,
 				linked to the "Pmenu" highlight group.
 *LspPopupBorder*		Used to highlight popup borders.  By default,
@@ -4041,6 +4074,10 @@ inlayHint			Used to show inlay hints: inferred type
 					*lsp-features-inlineCompletion*
 inlineCompletion		Used to show inline completions as ghost text
 				in insert mode.  See |lsp-inline-completion|.
+					*lsp-features-linkedEditingRange*
+linkedEditingRange		Used to make a change to a range of text to
+				the ranges linked to it when
+				|lsp-opt-linkedEditing| is set.
 						*lsp-features-references*
 references			Used by the |:LspShowReferences| command.
 						*lsp-features-rename*

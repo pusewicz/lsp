@@ -30,6 +30,7 @@ import './callhierarchy.vim' as callhier
 import './typehierarchy.vim' as typehier
 import './inlayhints.vim'
 import './inlinecompletion.vim'
+import './linkedediting.vim'
 import './semantichighlight.vim'
 import './buffer.vim' as buf
 import './watchedfiles.vim'
@@ -2988,6 +2989,37 @@ def DecodeSelectionRange(lspserver: dict<any>, bnr: number, selRange: dict<any>)
   endif
 enddef
 
+# Ask for the ranges linked to the one at the cursor in the current buffer,
+# and link them for editing, unless the cursor moved or the buffer was changed
+# before the reply arrived.  As the request is made whenever the cursor moves,
+# an error is only logged.
+# Request: "textDocument/linkedEditingRange"
+# Param: LinkedEditingRangeParams
+def LinkedEditingRangesUpdate(lspserver: dict<any>)
+  var bnr = bufnr()
+  AsyncRpcInContext(lspserver, util.RequestContextGet('cursor', bnr),
+		    $'textDocument/linkedEditingRange {bnr}',
+		    'textDocument/linkedEditingRange',
+		    lspserver.getTextDocPosition(false),
+		    (_: dict<any>, result: any, error: dict<any>) => {
+    if !error->empty()
+      lspserver.traceLog($'Linked editing ranges failed: {error.message}')
+      return
+    endif
+    # Result: LinkedEditingRanges | null
+    if result->type() != v:t_dict || result->get('ranges')->type() != v:t_list
+      return
+    endif
+    var ranges: list<dict<any>> = result.ranges
+    if lspserver.needOffsetEncoding
+      for range in ranges
+	lspserver.decodeRange(bnr, range)
+      endfor
+    endif
+    linkedediting.RangesSet(bnr, ranges, result->get('wordPattern', ''))
+  }, {handleError: false})
+enddef
+
 # select the text around the current cursor location
 # Request: "textDocument/selectionRange"
 # Param: SelectionRangeParams
@@ -3416,6 +3448,7 @@ export def NewLspServer(serverParams: dict<any>): dict<any>
     workspaceQuery: function(WorkspaceQuerySymbols, [lspserver]),
     addWorkspaceFolder: function(AddWorkspaceFolder, [lspserver]),
     removeWorkspaceFolder: function(RemoveWorkspaceFolder, [lspserver]),
+    linkedEditingRangesUpdate: function(LinkedEditingRangesUpdate, [lspserver]),
     selectionRange: function(SelectionRange, [lspserver]),
     selectionExpand: function(SelectionExpand, [lspserver]),
     selectionShrink: function(SelectionShrink, [lspserver]),
