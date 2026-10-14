@@ -10,6 +10,9 @@
 #   hit-enter prompt.
 # - runner_selftest_timeout.vim: run_tests.sh kills Vim when a test waits for a
 #   key, and keeps the results so far.
+# - runner_selftest_notrun.vim: runner.vim reports each declared test that is
+#   not a global function after sourcing the file, such as one nested in
+#   another test by a misplaced "enddef", and runs legacy test functions.
 # The test files run through run_tests.sh like any other.
 
 cd "$(dirname "$0")" || exit 1
@@ -106,6 +109,13 @@ Test_Failing: FAIL
 Test_First: pass
 Test_Second: pass
 FAIL: Error while quitting Vim: E605: Exception not caught: quit failed"
+
+CheckRun runner_selftest_notrun.vim 30 3 \
+  "RESULT: Some tests in runner_selftest_notrun.vim FAILED." \
+  "FAIL: Test_Nested is declared in runner_selftest_notrun.vim but is not a global function after sourcing it, so it does not run
+FAIL: Test_ScriptLocal is declared in runner_selftest_notrun.vim but is not a global function after sourcing it, so it does not run
+Test_First: pass
+Test_Legacy: pass"
 
 # run_tests.sh returns 2 when Vim did not finish.
 CheckRun runner_selftest_timeout.vim 5 2 \
