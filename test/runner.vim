@@ -22,6 +22,18 @@ def HookException(hook: string, inPass: string): string
   return $'FAIL: {hook} threw{inPass}: {v:exception} at {v:throwpoint}'
 enddef
 
+# Return the sorted names of the Test_ functions that the test file "fname"
+# declares, also the ones that are not global functions after sourcing it:
+# nested in another function, script-local or in a script-level ":if".
+def DeclaredTests(fname: string): list<string>
+  return readfile(fname)
+    ->map((_, line) => line->matchstr(
+      '^\s*\%(def\|fu\%[nction]\)!\=\s\+\%(g:\)\=\zsTest_\w\+\ze\s*('))
+    ->filter((_, name) => name != '')
+    ->sort()
+    ->uniq()
+enddef
+
 # Append a FAIL line to results.txt for the last error message given while
 # quitting Vim, if any.  Called from the VimLeave autocommand.
 def RecordQuitError()
@@ -72,14 +84,16 @@ def RunTest(f: string)
 enddef
 
 # Run every global Test_ function defined by the sourced test file and append
-# one "pass" or "FAIL" line per test to results.txt.  A test file that cannot
-# run in this environment sets g:LSPTest_skip to the reason and gets a single
-# "SKIP" line instead.  Running no tests for any other reason is a failure.
-# An exception thrown by g:LSPTest_setupPass(), g:StartLangServer() or
+# one "pass" or "FAIL" line per test to results.txt.  "declared" names the
+# Test_ functions declared in the test file; each one that isn't a global
+# function, and so doesn't run, is a failure.  A test file that cannot run in
+# this environment sets g:LSPTest_skip to the reason and gets a single "SKIP"
+# line instead.  Running no tests for any other reason is a failure.  An
+# exception thrown by g:LSPTest_setupPass(), g:StartLangServer() or
 # g:StopLangServer() is a failure of the test pass, and the run goes on with
 # the next one.  g:StopLangServer() runs even when the language server didn't
 # start, so that a half-started one doesn't run into the next test pass.
-def LspRunTests()
+def LspRunTests(declared: list<string>)
   :set nomore
   :set debug=beep
 
@@ -88,13 +102,17 @@ def LspRunTests()
     return
   endif
 
-  # ROBUST DISCOVERY: Capture functions defined in the sourced test file
-  # The regex is tightened to handle compiled vs non-compiled function headers
+  # ":function" lists a :def function as "def Test_Name()" and a legacy one
+  # as "function Test_Name()".
   var fns: list<string> = execute('function /^Test_')
     ->split("\n")
-    ->map((_, v) => v->substitute('^\(def\|func\)\s\+\(Test_\w\+\).*', '\2', ''))
+    ->map((_, v) => v->substitute('^\%(def\|function\)\s\+\(Test_\w\+\).*', '\1', ''))
     ->filter((_, v) => v =~ '^Test_')
     ->sort()
+
+  AddResults(declared->copy()
+    ->filter((_, name) => fns->index(name) == -1)
+    ->map((_, name) => $'FAIL: {name} is declared in {g:TestName} but is not a global function after sourcing it, so it does not run'))
 
   if fns->empty()
     AddResults([$'FAIL: No tests found in {g:TestName}'])
@@ -160,8 +178,9 @@ try
   g:LoadLspPlugin()
 
   if filereadable(g:TestName)
+    var declared: list<string> = DeclaredTests(g:TestName)
     exe $'source {g:TestName}'
-    LspRunTests()
+    LspRunTests(declared)
   else
     AddResults([$'FAIL: Test file "{g:TestName}" not found'])
   endif
