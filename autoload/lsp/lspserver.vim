@@ -2269,25 +2269,29 @@ def TypeHierarchyPrepareReply(lspserver: dict<any>, reqctx: dict<number>,
   GetTypeHierarchy(lspserver, typeHierItem, isSuper, {pending: 0, Done: Show})
 enddef
 
-# Check that the symbol at the cursor can be renamed, and call "Cbfunc" with
-# its current name.  A server that supports "textDocument/prepareRename" is
-# asked first: when it refuses, a message tells why and "Cbfunc" is not
-# called, nor is it when the cursor moved or the buffer changed before the
+# Check that the symbol under the cursor, at the LSP position "pos" in the
+# current buffer, can be renamed, and call "Cbfunc" with its current name.  A
+# server that supports "textDocument/prepareRename" is asked first: when it
+# refuses, a message tells why and "Cbfunc" is not called, nor is it when the
+# editor state in "reqctx" (see util.RequestContextGet()) changed before the
 # reply arrived.  Otherwise "Cbfunc" is called right away with the word under
 # the cursor.
 # Request: "textDocument/prepareRename"
 # Param: PrepareRenameParams
-def PrepareRename(lspserver: dict<any>, Cbfunc: func(string))
+def PrepareRename(lspserver: dict<any>, reqctx: dict<number>,
+		  pos: dict<number>, Cbfunc: func(string))
+  var cword: string = expand('<cword>')
   if !lspserver.isRenamePrepareProvider
-    Cbfunc(expand('<cword>'))
+    Cbfunc(cword)
     return
   endif
 
   # interface PrepareRenameParams
   #   interface TextDocumentPositionParams
-  var param: dict<any> = lspserver.getTextDocPosition(true)
-  var bnr: number = bufnr()
-  AsyncRpcInContext(lspserver, util.RequestContextGet('cursor'),
+  var bnr: number = reqctx.bnr
+  var param: dict<any> = {textDocument: {uri: util.LspBufnrToUri(bnr)},
+			  position: pos}
+  AsyncRpcInContext(lspserver, reqctx,
 		    'textDocument/prepareRename', 'textDocument/prepareRename',
 		    param, (_: dict<any>, result: any, error: dict<any>) => {
     if !error->empty()
@@ -2309,17 +2313,17 @@ def PrepareRename(lspserver: dict<any>, Cbfunc: func(string))
       return
     endif
 
-    Cbfunc(PrepareRenameName(lspserver, bnr, result))
+    Cbfunc(PrepareRenameName(lspserver, bnr, result, cword))
   }, {handleError: false})
 enddef
 
 # Return the current name of the symbol to rename in buffer "bnr", given the
 # reply "result" of the language server to "textDocument/prepareRename": its
 # placeholder, or else the text in its range, or else, when the server leaves
-# it to the client or the range is not on one line, the word under the
-# cursor.
-def PrepareRenameName(lspserver: dict<any>, bnr: number,
-		      result: dict<any>): string
+# it to the client or the range is not on one line, "cword", the word under
+# the cursor.
+def PrepareRenameName(lspserver: dict<any>, bnr: number, result: dict<any>,
+		      cword: string): string
   if !result->get('placeholder', '')->empty()
     return result.placeholder
   endif
@@ -2327,7 +2331,7 @@ def PrepareRenameName(lspserver: dict<any>, bnr: number,
   var range: dict<any> = result->get('range', result)
   if !range->has_key('start') || !range->has_key('end')
       || range.start.line != range.end.line
-    return expand('<cword>')
+    return cword
   endif
 
   lspserver.decodeRange(bnr, range)
@@ -2335,12 +2339,16 @@ def PrepareRenameName(lspserver: dict<any>, bnr: number,
   var startByte: number = util.GetLineByteFromPos(bnr, range.start)
   var name: string = ltext->strpart(startByte,
 	util.GetLineByteFromPos(bnr, range.end) - startByte)
-  return name->empty() ? expand('<cword>') : name
+  return name->empty() ? cword : name
 enddef
 
+# Rename the symbol at the LSP position "pos" in buffer "bnr" to "newName".
+# The edits are applied when the reply arrives, unless the buffer was changed
+# in the meantime.
 # Request: "textDocument/rename"
 # Param: RenameParams
-def RenameSymbol(lspserver: dict<any>, newName: string)
+def RenameSymbol(lspserver: dict<any>, bnr: number, pos: dict<number>,
+		 newName: string)
   # Check whether LSP server supports rename operation
   if !lspserver.isRenameProvider
     util.ErrMsg('LSP server does not support rename operation')
@@ -2349,11 +2357,10 @@ def RenameSymbol(lspserver: dict<any>, newName: string)
 
   # interface RenameParams
   #   interface TextDocumentPositionParams
-  var param: dict<any> = {}
-  param = lspserver.getTextDocPosition(true)
-  param.newName = newName
+  var param: dict<any> = {textDocument: {uri: util.LspBufnrToUri(bnr)},
+			  position: pos, newName: newName}
 
-  AsyncRpcInContext(lspserver, util.RequestContextGet('buffer'),
+  AsyncRpcInContext(lspserver, util.RequestContextGet('buffer', bnr),
 		    'textDocument/rename', 'textDocument/rename', param,
 		    (_: dict<any>, result: any, _) => {
     # Result: WorkspaceEdit | null
