@@ -22,6 +22,7 @@ import './signature.vim'
 import './codeaction.vim'
 import './hover.vim'
 import './inlayhints.vim'
+import './documentcolor.vim'
 import './semantichighlight.vim'
 import './ontypeformat.vim'
 
@@ -52,6 +53,7 @@ def LspInitOnce()
   completion.InitOnce()
   diag.InitOnce()
   inlayhints.InitOnce()
+  documentcolor.InitOnce()
   signature.InitOnce()
   symbol.InitOnce()
   semantichighlight.InitOnce()
@@ -720,6 +722,11 @@ export def BufferInit(lspserverId: number, bnr: number): void
 	semantichighlight.BufferInit(lspsrv, bnr)
       endif
 
+      var colorServer = buf.BufLspServerGet(bnr, 'documentColor')
+      if !colorServer->empty() && serverId == colorServer.id
+	documentcolor.BufferInit(lspsrv, bnr)
+      endif
+
       var onTypeFormatServer = buf.BufLspServerGet(bnr, 'documentOnTypeFormatting')
       if !onTypeFormatServer->empty() && serverId == onTypeFormatServer.id
 	ontypeformat.BufferInit(lspsrv, bnr)
@@ -854,6 +861,7 @@ export def RemoveFile(bnr: number): void
     ontypeformat.BufferDeInit(bnr)
     signature.BufferDeInit(bnr)
     inlayhints.BufferDeInit(bnr)
+    documentcolor.BufferDeInit(bnr)
     semantichighlight.BufferDeInit(bnr)
     diag.BufferDeInit(bnr)
   endif
@@ -1518,7 +1526,13 @@ export def Rename(a_newName: string)
     return
   endif
 
-  lspserver.prepareRename((sym: string) => {
+  # The symbol to rename is the one under the cursor now.  Only a change of the
+  # buffer cancels renaming it to "a_newName", but after the cursor moved, the
+  # prompt for a new name would be confusing and is not opened.
+  var bnr: number = bufnr()
+  var pos: dict<number> = lspserver.getPosition(true)
+  var reqctx = util.RequestContextGet(a_newName->empty() ? 'cursor' : 'buffer')
+  lspserver.prepareRename(reqctx, pos, (sym: string) => {
     var newName: string = a_newName
     if newName->empty()
       newName = input($"Rename symbol '{sym}' to: ", sym)
@@ -1530,7 +1544,7 @@ export def Rename(a_newName: string)
       :echo "\r"
     endif
 
-    lspserver.renameSymbol(newName)
+    lspserver.renameSymbol(bnr, pos, newName)
   })
 enddef
 

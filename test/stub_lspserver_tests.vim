@@ -14,6 +14,7 @@ import '../autoload/lsp/buffer.vim' as buf
 import '../autoload/lsp/ontypeformat.vim' as ontypeformat
 import '../autoload/lsp/textedit.vim' as textedit
 import '../autoload/lsp/inlayhints.vim' as inlayhints
+import '../autoload/lsp/documentcolor.vim' as documentcolor
 import '../autoload/lsp/capabilities.vim' as capabilities
 import '../autoload/lsp/hover.vim' as hover
 import '../autoload/lsp/options.vim' as opt
@@ -6032,7 +6033,7 @@ def g:Test_RenameSymbol_DecodesEditsAfterPrecedingChanges()
 			     [lspserver, Utf16CreateAndEdit(fname)])
   try
     silent! edit XRenameUtf16Source.txt
-    lspserver.renameSymbol('new')
+    lspserver.renameSymbol(bufnr(), {line: 0, character: 0}, 'new')
     assert_equal(['😀!ab'], getbufline(fname, 1, '$'))
   finally
     delete(fname)
@@ -6040,12 +6041,37 @@ def g:Test_RenameSymbol_DecodesEditsAfterPrecedingChanges()
   endtry
 enddef
 
+# Test that the rename request is about the given position in the given
+# buffer, also when that is not where the cursor is.
+def g:Test_RenameSymbol_SendsGivenPosition()
+  silent! edit XRenameSymbolTarget.txt
+  var bnr = bufnr()
+  var requests: list<list<any>> = []
+  var lspserver = MakeTestLspServer([])
+  lspserver.isRenameProvider = true
+  lspserver.rpc_a = (method: string, params: any, _: any, _ = {}) => {
+    requests->add([method, params])
+    return 1
+  }
+  try
+    silent! edit XRenameSymbolOther.txt
+    var pos = {line: 2, character: 3}
+    lspserver.renameSymbol(bnr, pos, 'new')
+    assert_equal([['textDocument/rename',
+		   {textDocument: {uri: util.LspBufnrToUri(bnr)},
+		    position: pos, newName: 'new'}]], requests)
+  finally
+    :%bwipe!
+  endtry
+enddef
+
 # Returns a running and ready language server with UTF-16 positions for the
 # current buffer that supports "textDocument/prepareRename" and replies to it
 # with "reply", which has the "result" or the "error" of the reply.  Instead of
-# renaming, its renameSymbol() adds the new name to "newNames".
-def MakePrepareRenameLspServer(reply: dict<any>,
-			       newNames: list<string>): dict<any>
+# renaming, its renameSymbol() adds the new name to "newNames" and the
+# position of the symbol to "positions".
+def MakePrepareRenameLspServer(reply: dict<any>, newNames: list<string>,
+			       positions: list<dict<number>> = []): dict<any>
   var lspserver = MakeUtf16LspServer()
   lspserver.running = true
   lspserver.ready = true
@@ -6053,7 +6079,8 @@ def MakePrepareRenameLspServer(reply: dict<any>,
   lspserver.isRenamePrepareProvider = true
   # Vim numbers the asynchronous requests on a new channel from 1.
   lspserver.job = StartStubServerJob([{jsonrpc: '2.0', id: 1}->extend(reply)])
-  lspserver.renameSymbol = (newName: string) => {
+  lspserver.renameSymbol = (_: number, pos: dict<number>, newName: string) => {
+    positions->add(pos)
     newNames->add(newName)
   }
   buf.BufLspServerSet(bufnr(), lspserver)
@@ -6148,32 +6175,40 @@ def g:Test_LspRename_PrepareRenameRefused()
   endtry
 enddef
 
-# Test that ":LspRename {newName}" renames the symbol without a prompt when
-# the language server replies that it can be renamed, and that ":LspRename"
-# with or without a new name does nothing when the cursor moved before the
-# reply arrived.
-def g:Test_LspRename_PrepareRenameDropsReplyAfterCursorMoved()
+# Test that ":LspRename {newName}" renames the symbol that was under the cursor
+# without a prompt when the language server replies that it can be renamed,
+# also when the cursor moved before the reply arrived, but not when the buffer
+# was changed.  ":LspRename" doesn't prompt for a new name when the cursor
+# moved.
+def g:Test_LspRename_PrepareRenameAfterCursorMoved()
   silent! edit XLspRenameMoved.txt
-  setline(1, ['foo bar'])
   var bnr = bufnr()
-  var range = {start: {line: 0, character: 0}, end: {line: 0, character: 3}}
+  var pos = {line: 0, character: 0}
+  var range = {start: pos, end: {line: 0, character: 3}}
   g:LSPTest = false
   try
-    for [cmd, moveCursor, expected] in [
-	['LspRename baz', false, ['baz']],
-	['LspRename baz', true, []],
-	['LspRename', true, []]]
+    for [cmd, action, expected] in [
+	['LspRename baz', '', ['baz']],
+	['LspRename baz', 'move', ['baz']],
+	['LspRename baz', 'change', []],
+	['LspRename', 'move', []]]
+      setline(1, ['foo bar'])
       var newNames: list<string> = []
-      var lspserver = MakePrepareRenameLspServer({result: range}, newNames)
+      var positions: list<dict<number>> = []
+      var lspserver = MakePrepareRenameLspServer({result: range}, newNames,
+						 positions)
       cursor(1, 1)
       # A prompt would read the <Esc> and cancel
       feedkeys("\<Esc>", 't')
       exe cmd
-      if moveCursor
+      if action == 'move'
 	cursor(1, 5)
+      elseif action == 'change'
+	setline(1, ['foo baz'])
       endif
       g:WaitForAssert(() => assert_equal({}, lspserver.supersedableRequests))
-      assert_equal(expected, newNames, $'{cmd}, moveCursor: {moveCursor}')
+      assert_equal(expected, newNames, $'{cmd}, action: {action}')
+      assert_equal(expected->mapnew((_, _) => pos), positions)
       assert_equal("\<Esc>", getcharstr(0))
       StopAsyncReplyingLspServer(lspserver, bnr)
     endfor
@@ -8001,6 +8036,212 @@ def g:Test_BufFeatureAutocmds_FeatureDisabled()
     :%bw!
     delete('XBufFeatureDisabled.txt')
   endtry
+enddef
+
+# Returns an LSP ColorInformation for the color with the red, green and blue
+# components "rgb" (from 0 to 1) from character "schar" to character "echar"
+# of line "line".
+def ColorInfo(line: number, schar: number, echar: number,
+	      rgb: list<any>): dict<any>
+  return {range: {start: {line: line, character: schar},
+		  end: {line: line, character: echar}},
+	  color: {red: rgb[0], green: rgb[1], blue: rgb[2], alpha: 1}}
+enddef
+
+# Returns the color swatches in buffer "bnr": the line, the column and the
+# text property type of each, and its text.
+def ColorSwatches(bnr: number): list<list<any>>
+  return prop_list(1, {bufnr: bnr, end_lnum: -1})
+    ->filter((_, p) => p.type =~# '^LspDocumentColor')
+    ->mapnew((_, p) => [p.lnum, p.col, p.type, p.text])
+enddef
+
+# Returns the GUI and the terminal colors of highlight group "name".
+def HighlightColors(name: string): list<string>
+  var hl: dict<any> = hlget(name)[0]
+  return [hl->get('guifg', '')->tolower(), hl->get('ctermfg', '')]
+enddef
+
+# Returns a running and ready language server that finds the colors in the
+# current buffer, using UTF-16 positions, and sends the "replies" to the
+# requests, like MakeAsyncReplyingLspServer().
+def MakeColorServer(replies: list<any>): dict<any>
+  var lspserver = MakeAsyncReplyingLspServer(replies)
+  lspserver.isColorProvider = true
+  lspserver.posEncoding = 16
+  lspserver.needOffsetEncoding = true
+  return lspserver
+enddef
+
+# Test that a swatch of each color that the language server finds in a buffer
+# is shown before the color, in that color, at the position decoded from the
+# negotiated position encoding.  The swatches shown before are replaced, but
+# kept when the server replies without a result.
+def g:Test_DocumentColors_ShowSwatches()
+  g:LspOptionsSet({showDocumentColors: true})
+  silent! edit XDocumentColors.css
+  setline(1, ['a { color: #ff0000; }', '/* 😊 */ b { color: rgb(128 128 128); }'])
+  var bnr = bufnr()
+  # "rgb(" starts at UTF-16 code unit 20 of the second line
+  var grayCol = getline(2)->stridx('rgb(') + 1
+  g:LSPTest = false
+  try
+    var lspserver = MakeColorServer([[
+      ColorInfo(0, 11, 18, [1, 0, 0]),
+      ColorInfo(1, 20, 37, [0.5, 0.5, 0.5])
+    ]])
+    documentcolor.BufferInit(lspserver, bnr)
+    g:WaitForAssert(() => assert_equal([
+      [1, 12, 'LspDocumentColorFF0000', '■ '],
+      [2, grayCol, 'LspDocumentColor808080', '■ ']
+    ], ColorSwatches(bnr)))
+    assert_equal(['#ff0000', '196'], HighlightColors('LspDocumentColorFF0000'))
+    assert_equal(['#808080', '244'], HighlightColors('LspDocumentColor808080'))
+    StopAsyncReplyingLspServer(lspserver, bnr)
+
+    lspserver = MakeColorServer([[ColorInfo(1, 20, 37, [0, 0, 1.0])]])
+    lspserver.documentColorsUpdate(bnr)
+    var blue = [[2, grayCol, 'LspDocumentColor0000FF', '■ ']]
+    g:WaitForAssert(() => assert_equal(blue, ColorSwatches(bnr)))
+    assert_equal(['#0000ff', '21'], HighlightColors('LspDocumentColor0000FF'))
+    StopAsyncReplyingLspServer(lspserver, bnr)
+
+    lspserver = MakeColorServer([v:null])
+    lspserver.documentColorsUpdate(bnr)
+    g:WaitForAssert(() => assert_equal({}, lspserver.supersedableRequests))
+    assert_equal(blue, ColorSwatches(bnr))
+    StopAsyncReplyingLspServer(lspserver, bnr)
+  finally
+    g:LSPTest = true
+    documentcolor.BufferDeInit(bnr)
+    g:LspOptionsSet({showDocumentColors: false})
+    :%bw!
+  endtry
+enddef
+
+# Test that the colors are not shown when the buffer was changed before the
+# reply arrived.
+def g:Test_DocumentColors_DropsReplyAfterChange()
+  silent! edit XDocumentColorsChange.css
+  setline(1, ['a { color: #ff0000; }'])
+  var bnr = bufnr()
+  g:LSPTest = false
+  try
+    var lspserver = MakeColorServer([[ColorInfo(0, 11, 18, [1, 0, 0])]])
+    lspserver.documentColorsUpdate(bnr)
+    setline(1, ['ab { color: #ff0000; }'])
+    g:WaitForAssert(() => assert_equal({}, lspserver.supersedableRequests))
+    assert_equal([], ColorSwatches(bnr))
+    StopAsyncReplyingLspServer(lspserver, bnr)
+  finally
+    g:LSPTest = true
+    :%bw!
+  endtry
+enddef
+
+# Test that the colors are shown and updated only while the
+# 'showDocumentColors' option is set, that initializing a buffer again doesn't
+# add the autocmds again, that the colors are updated once after changes stop
+# for a moment, and that detaching the buffer from the language server removes
+# the swatches.
+def g:Test_DocumentColors_UpdatesAndOption()
+  documentcolor.InitOnce()
+  silent! edit XDocumentColorsOption.css
+  setline(1, ['a { color: #ff0000; }'])
+  var bnr = bufnr()
+  var srv = MakeCapsServer({colorProvider: true}, [])
+  var updates: list<number> = []
+  srv.documentColorsUpdate = (b: number) => {
+    updates->add(b)
+    documentcolor.ColorsShow(b, [ColorInfo(0, 11, 18, [1, 0, 0])])
+  }
+  buf.BufLspServerSet(bnr, srv)
+  var Events = () => autocmd_get({group: 'LspDocumentColors', bufnr: bnr})
+			->mapnew((_, a) => a.event)
+  var swatch = [[1, 12, 'LspDocumentColorFF0000', '■ ']]
+  try
+    documentcolor.BufferInit(srv, bnr)
+    assert_equal([], updates)
+    assert_equal([], ColorSwatches(bnr))
+
+    g:LspOptionsSet({showDocumentColors: true})
+    documentcolor.BufferInit(srv, bnr)
+    assert_equal([bnr, bnr], updates)
+    assert_equal(swatch, ColorSwatches(bnr))
+    assert_equal(['TextChanged'], Events())
+
+    doautocmd TextChanged
+    doautocmd TextChanged
+    assert_equal([bnr, bnr], updates)
+    g:WaitForAssert(() => assert_equal([bnr, bnr, bnr], updates))
+    :sleep 50m
+    assert_equal([bnr, bnr, bnr], updates)
+
+    doautocmd TextChanged
+    g:LspOptionsSet({showDocumentColors: false})
+    assert_equal([], ColorSwatches(bnr))
+    assert_equal([], Events())
+    :sleep 350m
+    assert_equal([bnr, bnr, bnr], updates)
+
+    g:LspOptionsSet({showDocumentColors: true})
+    assert_equal([bnr, bnr, bnr, bnr], updates)
+    assert_equal(swatch, ColorSwatches(bnr))
+    assert_equal(['TextChanged'], Events())
+
+    lsp.RemoveFile(bnr)
+    assert_equal([], ColorSwatches(bnr))
+    assert_equal([], Events())
+  finally
+    g:LspOptionsSet({showDocumentColors: false})
+    :%bw!
+  endtry
+enddef
+
+# Test that the colors in a buffer are shown for the language server that
+# finds them, when another server is the last to get ready.
+def g:Test_DocumentColors_InitForItsServer()
+  g:LspOptionsSet({showDocumentColors: true})
+  try
+    var sync = {textDocumentSync: {openClose: true, change: 1}}
+    var srv1 = MakeCapsServer(sync->extendnew({colorProvider: true}), [])
+    var updates: list<number> = []
+    srv1.documentColorsUpdate = (b: number) => {
+      updates->add(b)
+    }
+    var srv2 = MakeCapsServer(sync, [])
+    srv2.ready = false
+    :silent edit XDocumentColorsInit.css
+    var bnr = bufnr()
+    buf.BufLspServerSet(bnr, srv1)
+    buf.BufLspServerSet(bnr, srv2)
+    lsp.BufferInit(srv1.id, bnr)
+    assert_equal([], updates)
+    srv2.ready = true
+    lsp.BufferInit(srv2.id, bnr)
+    assert_equal([bnr], updates)
+    assert_equal([$'ColorsUpdateLater({bnr})'],
+		 autocmd_get({group: 'LspDocumentColors', bufnr: bnr})
+		   ->mapnew((_, a) => a.cmd))
+    lsp.RemoveFile(bnr)
+  finally
+    g:LspOptionsSet({showDocumentColors: false})
+    :%bw!
+  endtry
+enddef
+
+# Test that the swatches get their colors back after a color scheme cleared
+# their highlight groups.
+def g:Test_DocumentColors_ColorScheme()
+  documentcolor.InitOnce()
+  silent! edit XDocumentColorsScheme.css
+  setline(1, ['a { color: #00ff00; }'])
+  documentcolor.ColorsShow(bufnr(), [ColorInfo(0, 11, 18, [0, 1, 0])])
+  :highlight clear LspDocumentColor00FF00
+  assert_equal(['', ''], HighlightColors('LspDocumentColor00FF00'))
+  doautocmd ColorScheme
+  assert_equal(['#00ff00', '46'], HighlightColors('LspDocumentColor00FF00'))
+  :%bw!
 enddef
 
 # Only here to because the test runner needs it
