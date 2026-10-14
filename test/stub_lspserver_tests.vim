@@ -16,6 +16,8 @@ import '../autoload/lsp/ontypeformat.vim' as ontypeformat
 import '../autoload/lsp/textedit.vim' as textedit
 import '../autoload/lsp/inlayhints.vim' as inlayhints
 import '../autoload/lsp/documentcolor.vim' as documentcolor
+import '../autoload/lsp/inlinecompletion.vim' as inlinecompletion
+import '../autoload/lsp/snippet.vim' as snippet
 import '../autoload/lsp/capabilities.vim' as capabilities
 import '../autoload/lsp/hover.vim' as hover
 import '../autoload/lsp/options.vim' as opt
@@ -9030,6 +9032,503 @@ def g:Test_FoldExpr_FileChangedOutsideVim()
     lsp.RemoveFile(bufnr())
     :%bw!
     delete(fname)
+  endtry
+enddef
+
+# Test that the LSP snippets are converted to the text they insert when
+# nothing is typed in them.
+def g:Test_SnippetToText()
+  var cases = [
+    ['plain text', 'plain text'],
+    ['foo($1, $2)$0', 'foo(, )'],
+    ['foo(${1}, ${2:b})', 'foo(, b)'],
+    ['${1:outer ${2:inner} text}', 'outer inner text'],
+    ['${1|one,two,three|}', 'one'],
+    ['${1|a\,b,c|}', 'a,b'],
+    ['$TM_FILENAME ${TM_LINE_NUMBER} ${UNKNOWN:default}', '  default'],
+    ['${1/(.*)/${1:/upcase}/g}x', 'x'],
+    ['\$1 \} \\ \x', '$1 } \ \x'],
+    ['$1abc', 'abc'],
+    ['cost $ 5 ${', 'cost $ 5 ${'],
+    ['${1:unterminated', '${1:unterminated'],
+    ['}', '}'],
+    ["a\n\t${1:b}", "a\n\tb"],
+  ]
+  for [snip, expected] in cases
+    assert_equal(expected, snippet.SnippetToText(snip), snip)
+  endfor
+enddef
+
+# Test that the inline completion capability is advertised, and that a
+# language server that provides inline completions is recognized.
+def g:Test_InlineCompletion_Capabilities()
+  assert_equal({dynamicRegistration: false},
+	       capabilities.GetClientCaps().textDocument.inlineCompletion)
+  for [caps, expected] in [[{}, false],
+			   [{inlineCompletionProvider: false}, false],
+			   [{inlineCompletionProvider: true}, true],
+			   [{inlineCompletionProvider: {}}, true]]
+    var srv = MakeCapsServer(caps, [])
+    assert_equal(expected, srv.isInlineCompletionProvider, string(caps))
+  endfor
+enddef
+
+# Test that the inline completion autocmds are added to a buffer when its
+# language server provides inline completions and the feature isn't disabled
+# for it, and removed when the buffer is detached.
+def g:Test_InlineCompletion_BufferInit()
+  InlineCompletionInitOnce()
+  for disabled in [false, true]
+    var srv = MakeCapsServer({textDocumentSync: {openClose: true, change: 1},
+			      inlineCompletionProvider: true}, [])
+    if disabled
+      srv.features = {inlineCompletion: false}
+    endif
+    var bnr = SaveTestEdit('XInlineCompletionInit.txt', [], [srv], [])
+    var events = autocmd_get({group: 'LspInlineCompletion',
+			     pattern: $'<buffer={bnr}>'})
+      ->mapnew((_, acmd) => acmd.event)->sort()
+    assert_equal(disabled ? [] : ['BufLeave', 'CompleteChanged', 'CompleteDone',
+				  'CursorMovedI', 'InsertEnter', 'TextChangedI',
+				  'TextChangedP', 'WinLeave'],
+		 events, $'disabled: {disabled}')
+    lsp.RemoveFile(bnr)
+    assert_equal([], autocmd_get({group: 'LspInlineCompletion',
+				  pattern: $'<buffer={bnr}>'}))
+    :%bw!
+  endfor
+  delete('XInlineCompletionInit.txt')
+enddef
+
+# Define the text property type of the inline completions, which is otherwise
+# defined only when the first language server is started.
+def InlineCompletionInitOnce()
+  if prop_type_get('LspInlineCompletion')->empty()
+    inlinecompletion.InitOnce()
+  endif
+enddef
+
+# Returns a running and ready language server that provides the inline
+# completions of the current buffer.  It replies to the n-th inline completion
+# request with "replies[n]", or with none when there are fewer replies, from a
+# timer as a reply arrives after the request.  The method and the params of
+# the requests are added to "requests", the commands it is asked to execute to
+# "commands" and the notifications it is sent to "notifications".
+def MakeInlineCompletionServer(replies: list<any>,
+			       requests: list<dict<any>>,
+			       commands: list<dict<any>> = [],
+			       notifications: list<dict<any>> = []): dict<any>
+  InlineCompletionInitOnce()
+  var srv = MakeCapsServer({inlineCompletionProvider: true}, notifications)
+  srv.rpc_a = (method: string, params: any, Cbfunc: func, _ = {}): number => {
+    requests->add({method: method, params: params->deepcopy()})
+    var reply: any = replies->get(requests->len() - 1, null)
+    timer_start(0, (_) => {
+      Cbfunc(srv, reply, {})
+    })
+    return requests->len()
+  }
+  srv.executeCommand = (cmd: dict<any>) => {
+    commands->add(cmd)
+  }
+  buf.BufLspServerSet(bufnr(), srv)
+  inlinecompletion.BufferInit(srv, bufnr())
+  return srv
+enddef
+
+# Detach the language server "srv" made by MakeInlineCompletionServer() from
+# the current buffer.
+def StopInlineCompletionServer(srv: dict<any>)
+  inlinecompletion.BufferDeInit(bufnr())
+  buf.BufLspServerRemove(bufnr(), srv)
+enddef
+
+# Returns the ghost text of the inline completion in the cursor line: the
+# [column, text] of the text in the line, and then the [0, text] of the lines
+# below it, from the top.
+def GhostText(): list<list<any>>
+  var props = prop_list(line('.'), {types: ['LspInlineCompletion']})
+  # prop_list() lists the lines below from the one added last
+  return props->copy()->filter((_, p) => p.col > 0)
+	   ->mapnew((_, p) => [p.col, p.text])
+    + props->copy()->filter((_, p) => p.col == 0)
+	   ->mapnew((_, p) => [0, p.text])->reverse()
+enddef
+
+# Type "keys", which enter Insert mode, and then go through the "steps": wait
+# until the first function of a step returns true, or for 5 seconds, and then
+# type the keys that its second function returns.  Insert mode is left after
+# the last step, or after an exception.  feedkeys() stays in Insert mode with
+# the "!" flag, so a timer acts in it.
+def InsertModeSteps(keys: string, steps: list<list<func>>)
+  var step = 0
+  var tries = 0
+  timer_start(10, (timer) => {
+    try
+      tries += 1
+      var Ready: func = steps[step][0]
+      var ready: bool = Ready()
+      if !ready && tries < 500
+	return
+      endif
+      if !ready
+	assert_report($'Step {step + 1} timed out')
+      endif
+      var Act: func = steps[step][1]
+      var stepKeys: string = Act()
+      step += 1
+      tries = 0
+      if step == steps->len()
+	timer_stop(timer)
+	stepKeys ..= "\<Esc>"
+      endif
+      feedkeys(stepKeys, 't')
+    catch
+      timer_stop(timer)
+      v:errors->add($'Exception in step {step + 1}: {v:exception} at {v:throwpoint}')
+      feedkeys("\<Esc>", 't')
+    endtry
+  }, {repeat: -1})
+  feedkeys(keys, 'xt!')
+enddef
+
+# Test that inline completions are requested while typing in Insert mode and
+# shown as ghost text: the first line at the cursor, with its tabs as the
+# spaces they take, and the other lines below the cursor line.
+def g:Test_InlineCompletion_ShowsGhostTextWhileTyping()
+  g:LspOptionsSet({autoInlineCompletion: true, inlineCompletionDelay: 10})
+  silent! edit XInlineCompletionTyping.txt
+  setlocal tabstop=8
+  setline(1, ["\tfoo("])
+  var requests: list<dict<any>> = []
+  var item = {insertText: "a,\tb)\n\tbar\n\nbaz"}
+  var srv = MakeInlineCompletionServer([[item]], requests)
+  try
+    var expected = [[6, 'a,  b)'], [0, repeat(' ', 8) .. 'bar'], [0, ' '],
+		    [0, 'baz']]
+    var shown: list<list<any>>
+    InsertModeSteps('A', [
+      [() => GhostText() == expected, () => {
+	shown = GhostText()
+	assert_true(g:LspInlineCompletionVisible())
+	return ''
+      }]
+    ])
+    assert_equal(expected, shown)
+    assert_equal([], GhostText())
+    assert_false(g:LspInlineCompletionVisible())
+    assert_equal(1, requests->len())
+    assert_equal({
+      method: 'textDocument/inlineCompletion',
+      params: {
+	textDocument: {uri: util.LspBufnrToUri(bufnr()), version: 0},
+	position: {line: 0, character: 5},
+	context: {triggerKind: 2},
+	formattingOptions: {tabSize: 8, insertSpaces: false}
+      }
+    }, requests[0])
+    assert_equal(["\tfoo("], getline(1, '$'))
+  finally
+    StopInlineCompletionServer(srv)
+    g:LspOptionsSet({autoInlineCompletion: false, inlineCompletionDelay: 100})
+    :%bw!
+  endtry
+enddef
+
+# Test that an inline completion with a range is shown with the text typed in
+# its range, positions in the encoding of the language server, keeps being
+# shown while its text is typed, without asking the language server again,
+# and is hidden when other text is typed.
+def g:Test_InlineCompletion_RangeAndTypingThrough()
+  silent! edit XInlineCompletionRange.txt
+  # "😀" is two UTF-16 code units and four bytes
+  setline(1, ['😀 = f()'])
+  var requests: list<dict<any>> = []
+  var item = {insertText: 'f(a, b)',
+	      range: {start: {line: 0, character: 5},
+		      end: {line: 0, character: 8}}}
+  var srv = MakeInlineCompletionServer([{items: [item]}], requests)
+  srv.posEncoding = 16
+  try
+    var shown: list<list<list<any>>> = []
+    cursor(1, 9)
+    InsertModeSteps('a', [
+      [() => true, () => "\<Plug>(LspInlineCompletionTrigger)"],
+      # The text in the line is around the ")" that the item replaces
+      [() => !GhostText()->empty(), () => {
+	shown->add(GhostText())
+	return 'a'
+      }],
+      [() => GhostText() != shown[-1], () => {
+	shown->add(GhostText())
+	return 'x'
+      }],
+      [() => GhostText()->empty(), () => ''],
+    ])
+    assert_equal([[[10, 'a, b']], [[11, ', b']]], shown)
+    assert_equal(1, requests->len())
+    assert_equal({line: 0, character: 7}, requests[0].params.position)
+    assert_equal({triggerKind: 1}, requests[0].params.context)
+    assert_equal(['😀 = f(ax)'], getline(1, '$'))
+  finally
+    StopInlineCompletionServer(srv)
+    :%bw!
+  endtry
+enddef
+
+# Test accepting the next word, the next line and all of an inline
+# completion, which then executes its command.
+def g:Test_InlineCompletion_Accept()
+  silent! edit XInlineCompletionAccept.txt
+  setline(1, ['if x'])
+  var requests: list<dict<any>> = []
+  var commands: list<dict<any>> = []
+  var command = {title: 'Accepted', command: 'test.accepted', arguments: [1]}
+  var item = {insertText: ":\n    y = 1\n    z = 2\n", command: command}
+  var srv = MakeInlineCompletionServer([[item]], requests, commands)
+  try
+    var shown: list<list<list<any>>> = []
+    var texts: list<list<string>> = []
+    InsertModeSteps('A', [
+      [() => true, () => "\<Plug>(LspInlineCompletionTrigger)"],
+      [() => !GhostText()->empty(), () => {
+	shown->add(GhostText())
+	return "\<Plug>(LspInlineCompletionAcceptWord)"
+      }],
+      [() => getline(1) == 'if x:', () => {
+	shown->add(GhostText())
+	texts->add(getline(1, '$'))
+	return "\<Plug>(LspInlineCompletionAcceptLine)"
+      }],
+      [() => line('$') == 2, () => {
+	shown->add(GhostText())
+	texts->add(getline(1, '$'))
+	assert_equal([], commands)
+	return "\<Plug>(LspInlineCompletionAccept)"
+      }],
+      [() => line('$') == 4, () => {
+	shown->add(GhostText())
+	texts->add(getline(1, '$') + [string([line('.'), col('.')])])
+	assert_false(g:LspInlineCompletionVisible())
+	return ''
+      }],
+    ])
+    assert_equal([
+      [[5, ':'], [0, '    y = 1'], [0, '    z = 2'], [0, ' ']],
+      [[0, '    y = 1'], [0, '    z = 2'], [0, ' ']],
+      [[0, '    z = 2'], [0, ' ']],
+      []
+    ], shown)
+    assert_equal([
+      ['if x:'],
+      ['if x:', '    y = 1'],
+      ['if x:', '    y = 1', '    z = 2', '', '[4, 1]']
+    ], texts)
+    assert_equal([command], commands)
+    assert_equal(1, requests->len())
+  finally
+    StopInlineCompletionServer(srv)
+    :%bw!
+  endtry
+enddef
+
+# Test accepting an inline completion that replaces text after the cursor,
+# keeping the text after its range, and accepting the word of a snippet
+# inline completion, which is inserted as the text it inserts when nothing is
+# typed in it.
+def g:Test_InlineCompletion_AcceptReplacingText()
+  silent! edit XInlineCompletionReplace.txt
+  var requests: list<dict<any>> = []
+  for [insertText, keys, expected] in [
+      ['g(a, b)', "\<Plug>(LspInlineCompletionAccept)", 'x = g(a, b); y'],
+      ['g(a, b)', "\<Plug>(LspInlineCompletionAcceptWord)"
+		  .. "\<Plug>(LspInlineCompletionAcceptWord)", 'x = g(a,); y'],
+      [{kind: 'snippet', value: 'g(${1:a}, ${2|b,c|})$0'},
+       "\<Plug>(LspInlineCompletionAccept)", 'x = g(a, b); y']]
+    setline(1, ['x = g(); y'])
+    var item = {insertText: insertText,
+		range: {start: {line: 0, character: 4},
+			end: {line: 0, character: 7}}}
+    requests = []
+    var srv = MakeInlineCompletionServer([[item]], requests)
+    cursor(1, 6)
+    InsertModeSteps('a', [
+      [() => true, () => "\<Plug>(LspInlineCompletionTrigger)"],
+      [() => !GhostText()->empty(), () => keys],
+      [() => getline(1) != 'x = g(); y', () => ''],
+    ])
+    assert_equal([expected], getline(1, '$'), string(insertText) .. keys)
+    StopInlineCompletionServer(srv)
+  endfor
+  :%bw!
+enddef
+
+# Test showing the next and the previous inline completions: when the inline
+# completions were requested while typing, they are asked for first.
+def g:Test_InlineCompletion_Cycle()
+  g:LspOptionsSet({autoInlineCompletion: true, inlineCompletionDelay: 10})
+  silent! edit XInlineCompletionCycle.txt
+  setline(1, ['x = '])
+  var requests: list<dict<any>> = []
+  var items = [{insertText: 'one'}, {insertText: 'two'}, {insertText: 'three'}]
+  var srv = MakeInlineCompletionServer([[items[0]], {items: items}], requests)
+  try
+    var shown: list<string> = []
+    var Ghost = (): string => GhostText()->get(0, [0, ''])[1]
+    InsertModeSteps('A', [
+      [() => Ghost() == 'one', () => "\<Plug>(LspInlineCompletionNext)"],
+      [() => Ghost() != 'one', () => {
+	shown->add(Ghost())
+	return "\<Plug>(LspInlineCompletionNext)"
+      }],
+      [() => true, () => {
+	shown->add(Ghost())
+	return "\<Plug>(LspInlineCompletionNext)"
+      }],
+      [() => true, () => {
+	shown->add(Ghost())
+	return "\<Plug>(LspInlineCompletionPrev)"
+      }],
+      [() => true, () => {
+	shown->add(Ghost())
+	return ''
+      }],
+    ])
+    assert_equal(['two', 'three', 'one', 'three'], shown)
+    assert_equal([2, 1], requests->mapnew((_, r) => r.params.context.triggerKind))
+  finally
+    StopInlineCompletionServer(srv)
+    g:LspOptionsSet({autoInlineCompletion: false, inlineCompletionDelay: 100})
+    :%bw!
+  endtry
+enddef
+
+# Test that an inline completion is hidden when dismissed and while the
+# completion popup menu is shown, and that the reply to a request is dropped
+# when the text changes before it arrives, and the request is cancelled.
+def g:Test_InlineCompletion_HideAndDrop()
+  silent! edit XInlineCompletionHide.txt
+  setline(1, ['foobar foobaz', ''])
+  var requests: list<dict<any>> = []
+  var notifications: list<dict<any>> = []
+  var srv = MakeInlineCompletionServer([[{insertText: 'fooqux'}],
+					[{insertText: 'fooqux'}],
+					[{insertText: 'foozzz'}]],
+				       requests, [], notifications)
+  var save_completeopt = &completeopt
+  set completeopt=menuone,noselect
+  try
+    var shown: list<list<list<any>>> = []
+    var ticks = 0
+    cursor(2, 1)
+    InsertModeSteps('A', [
+      [() => true, () => "\<Plug>(LspInlineCompletionTrigger)"],
+      [() => !GhostText()->empty(), () => {
+	shown->add(GhostText())
+	return "\<Plug>(LspInlineCompletionDismiss)"
+      }],
+      [() => true, () => {
+	shown->add(GhostText())
+	return "\<Plug>(LspInlineCompletionTrigger)"
+      }],
+      [() => !GhostText()->empty(), () => 'fo'],
+      [() => GhostText() == [[3, 'oqux']], () => "\<C-N>"],
+      [() => pumvisible(), () => {
+	shown->add(GhostText())
+	return "\<C-E>"
+      }],
+      [() => !pumvisible() && !GhostText()->empty(), () => {
+	shown->add(GhostText())
+	# The text changes before the reply arrives
+	return "\<Plug>(LspInlineCompletionTrigger)o"
+      }],
+      [() => {
+	ticks += 1
+	return ticks > 10
+      }, () => {
+	shown->add(GhostText())
+	return ''
+      }],
+    ])
+    assert_equal([[[1, 'fooqux']], [], [], [[3, 'oqux']], [[4, 'qux']]], shown)
+    assert_equal(3, requests->len())
+    assert_equal([{method: '$/cancelRequest', params: {id: 3}}],
+		 notifications->copy()
+		   ->filter((_, n) => n.method == '$/cancelRequest'))
+    assert_equal(['foobar foobaz', 'foo'], getline(1, '$'))
+  finally
+    &completeopt = save_completeopt
+    StopInlineCompletionServer(srv)
+    :%bw!
+  endtry
+enddef
+
+# Test that an inline completion is shown when the reply of a language server
+# job arrives.  The request is sent before Vim waits, which reads the reply.
+def g:Test_InlineCompletion_AsyncReply()
+  InlineCompletionInitOnce()
+  silent! edit XInlineCompletionAsync.txt
+  setline(1, ['x = '])
+  var bnr = bufnr()
+  var srv = MakeAsyncReplyingLspServer([{items: [{insertText: 'y'}]}])
+  srv.isInlineCompletionProvider = true
+  inlinecompletion.BufferInit(srv, bnr)
+  try
+    var shown: list<list<any>>
+    InsertModeSteps("A\<Plug>(LspInlineCompletionTrigger)", [
+      [() => !GhostText()->empty(), () => {
+	shown = GhostText()
+	return ''
+      }],
+    ])
+    assert_equal([[5, 'y']], shown)
+  finally
+    inlinecompletion.BufferDeInit(bnr)
+    StopAsyncReplyingLspServer(srv, bnr)
+    :%bw!
+  endtry
+enddef
+
+# Test that an inline completion is hidden when CTRL-C ends Insert mode,
+# which doesn't trigger InsertLeave.
+def g:Test_InlineCompletion_HiddenAfterCtrlC()
+  silent! edit XInlineCompletionCtrlC.txt
+  setline(1, ['x'])
+  var requests: list<dict<any>> = []
+  var srv = MakeInlineCompletionServer([[{insertText: 'yz'}]], requests)
+  try
+    InsertModeSteps('A', [
+      [() => true, () => "\<Plug>(LspInlineCompletionTrigger)"],
+      [() => !GhostText()->empty(), () => "\<C-C>"],
+    ])
+    assert_equal('n', mode())
+    assert_equal([], GhostText())
+    assert_equal(['x'], getline(1, '$'))
+  finally
+    StopInlineCompletionServer(srv)
+    :%bw!
+  endtry
+enddef
+
+# Test a mapping that accepts the inline completion shown, and else types the
+# key it maps.
+def g:Test_InlineCompletion_ConditionalMapping()
+  silent! edit XInlineCompletionMapping.txt
+  setline(1, ['x'])
+  var requests: list<dict<any>> = []
+  var srv = MakeInlineCompletionServer([[{insertText: 'yz'}]], requests)
+  imap <buffer> <expr> <Tab> g:LspInlineCompletionVisible() ? "\<Plug>(LspInlineCompletionAccept)" : "\<Tab>"
+  try
+    InsertModeSteps('A', [
+      [() => true, () => "\<Tab>\<Plug>(LspInlineCompletionTrigger)"],
+      [() => !GhostText()->empty(), () => "\<Tab>"],
+      [() => getline(1) =~ 'z$', () => "\<Tab>"],
+    ])
+    assert_equal(["x\tyz\t"], getline(1, '$'))
+  finally
+    iunmap <buffer> <Tab>
+    StopInlineCompletionServer(srv)
+    :%bw!
   endtry
 enddef
 
