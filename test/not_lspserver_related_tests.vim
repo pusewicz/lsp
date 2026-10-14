@@ -1429,6 +1429,8 @@ def g:Test_DiagnosticTagsAndRelatedInfoCapability()
     assert_equal({valueSet: [1, 2]}, caps[kind].tagSupport, kind)
     assert_true(caps[kind].relatedInformation, kind)
   endfor
+enddef
+
 # Test for the renameProvider server capability and the rename client
 # capability, which leaves the name to rename to the client when the server
 # replies to "textDocument/prepareRename" with "defaultBehavior".

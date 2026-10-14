@@ -3121,13 +3121,13 @@ The following highlight groups are used by the LSP plugin.  You can define
 these highlight groups in your .vimrc file before sourcing this plugin to
 override them.
 
-*LspDiagInlineDeprecated*	Used to highlight the text of a diagnostic
-				tagged as deprecated, see |lsp-diags-tags|.
-				By default, the text is struck through.
 *LspCodeLens*			Used to highlight the code lenses shown above
 				their lines (|lsp-opt-showCodeLens|).  By
 				default, linked to the "Comment" highlight
 				group.
+*LspDiagInlineDeprecated*	Used to highlight the text of a diagnostic
+				tagged as deprecated, see |lsp-diags-tags|.
+				By default, the text is struck through.
 *LspDiagInlineError*		Used to highlight inline error diagnostics.
 				By default, linked to the "SpellBad" highlight
 				group.
