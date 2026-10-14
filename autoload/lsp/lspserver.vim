@@ -25,6 +25,7 @@ import './codeaction.vim'
 import './codelens.vim'
 import './documentcolor.vim'
 import './documentlink.vim'
+import './folding.vim'
 import './callhierarchy.vim' as callhier
 import './typehierarchy.vim' as typehier
 import './inlayhints.vim'
@@ -3018,38 +3019,23 @@ def FoldRange(lspserver: dict<any>, fname: string)
 		    $'textDocument/foldingRange {bnr}',
 		    'textDocument/foldingRange', params,
 		    (_: dict<any>, result: any, _) => {
-    FoldRangeReply(result)
+    folding.CreateManualFolds(result)
   })
 enddef
 
-# Replace the folds in the current window with the ranges in the reply
-# "result" to the "textDocument/foldingRange" request.
-# Result: FoldingRange[] | null
-def FoldRangeReply(result: any)
-  # Remove all the current folds
-  :normal! zE
-
-  if result->empty()
-    return
-  endif
-
-  var end_lnum: number
-  for foldRange in result
-    var start_lnum = foldRange.startLine + 1
-    end_lnum = foldRange.endLine + 1
-
-    if end_lnum < start_lnum
-      end_lnum = start_lnum
-    endif
-    exe $':{start_lnum}, {end_lnum}fold'
-    # Open all the folds, otherwise the subsequently created folds are not
-    # correct.
-    :silent! foldopen!
-  endfor
-
-  if &foldcolumn == 0
-    :setlocal foldcolumn=2
-  endif
+# Request the folding ranges of buffer "bnr" for the folds computed with
+# folding.FoldExpr().  The reply is dropped when the buffer changed before it
+# arrived.
+# Request: "textDocument/foldingRange"
+# Param: FoldingRangeParams
+def FoldingRangesUpdate(lspserver: dict<any>, bnr: number)
+  var params = {textDocument: {uri: util.LspBufnrToUri(bnr)}}
+  AsyncRpcInContext(lspserver, util.RequestContextGet('buffer', bnr),
+		    $'textDocument/foldingRange foldexpr {bnr}',
+		    'textDocument/foldingRange', params,
+		    (_: dict<any>, result: any, error: dict<any>) => {
+    folding.FoldingRangesReply(lspserver, bnr, result, error)
+  }, {handleError: false})
 enddef
 
 # process the 'workspace/executeCommand' reply from the LSP server
@@ -3377,6 +3363,7 @@ export def NewLspServer(serverParams: dict<any>): dict<any>
     selectionExpand: function(SelectionExpand, [lspserver]),
     selectionShrink: function(SelectionShrink, [lspserver]),
     foldRange: function(FoldRange, [lspserver]),
+    foldingRangesUpdate: function(FoldingRangesUpdate, [lspserver]),
     executeCommand: function(ExecuteCommand, [lspserver]),
     workspaceConfigGet: function(WorkspaceConfigGet, [lspserver]),
     semanticHighlightUpdate: function(SemanticHighlightUpdate, [lspserver]),
