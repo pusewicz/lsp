@@ -1351,10 +1351,10 @@ def g:Test_LspSelection()
   assert_equal('v', visualmode())
   assert_equal([4, 5, 6, 5], [line("'<"), col("'<"), line("'>"), col("'>")])
 
-  # Expand the visual selection.  The mappings wait for the selection range
-  # reply, as a user does before typing the next key.
-  xnoremap <silent> le <Cmd>LspSelectionExpand<CR><Cmd>call g:WaitForReplies()<CR>
-  xnoremap <silent> ls <Cmd>LspSelectionShrink<CR><Cmd>call g:WaitForReplies()<CR>
+  # Expand the visual selection.  The keys after the mappings wait for the
+  # selection range reply.
+  xnoremap <silent> le <Cmd>LspSelectionExpand<CR>
+  xnoremap <silent> ls <Cmd>LspSelectionShrink<CR>
   cursor(5, 8)
   normal vley
   assert_equal([5, 8, 5, 12], [line("'<"), col("'<"), line("'>"), col("'>")])
@@ -2543,19 +2543,13 @@ def g:Test_LspSymbolSearch()
   g:WaitForReplies()
   assert_equal([5, 6], [line('.'), col('.')])
 
-  # Type in the symbol menu once it shows the symbols of the reply
+  # The keys typed in the symbol menu wait for the symbols of the replies
   cursor(1, 1)
-  feedkeys(":LspSymbolSearch lsptest_func\<CR>", "xt")
-  g:WaitForReplies()
-  feedkeys("\<Down>\<Down>\<CR>", "xt")
+  feedkeys(":LspSymbolSearch lsptest_func\<CR>\<Down>\<Down>\<CR>", "xt")
   assert_equal([9, 6], [line('.'), col('.')])
 
   cursor(1, 1)
-  feedkeys(":LspSymbolSearch lsptest_func\<CR>", "xt")
-  g:WaitForReplies()
-  feedkeys("A\<BS>B", "xt")
-  g:WaitForReplies()
-  feedkeys("\<CR>", "xt")
+  feedkeys(":LspSymbolSearch lsptest_func\<CR>A\<BS>B\<CR>", "xt")
   assert_equal([5, 6], [line('.'), col('.')])
 
   var output = execute([':LspSymbolSearch lsptest_nonexist',

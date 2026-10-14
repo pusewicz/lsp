@@ -13,7 +13,7 @@ Fork of yegappan/lsp for MacVim / Vim 9.2+ only: no compat code for older Vims o
 
 - `cd test && ./run_tests.sh <file>|clangd|others` - run single files locally; the full suite starts clangd, gopls, rust-analyzer and tsserver and belongs to CI.
 - Never run two test runs in the same `test/` directory at once: they share `results.txt`.
-- Async requests reply asynchronously in tests (#124): wait for effects with `g:WaitForAssert()` or `g:WaitForReplies()`, and wait for the reply before feeding more keys.
+- Async requests reply asynchronously in tests (#124): wait for effects with `g:WaitForAssert()` or `g:WaitForReplies()`.  Keys pending after a command in the same `feedkeys()`, `:normal` or mapping wait for its reply (#123), the next line of a test doesn't.
 - Prefer stub-server tests in `test/stub_lspserver_tests.vim` over real servers; `StartStubServerJob()` gives a real job channel.
 - CI's MacVim (Homebrew cask) is older than a local build, so typeahead and timing behaviour can differ.
 - The runner fails a file whose declared `Test_` functions don't all run (e.g. an `enddef` moved below the next test nests it), so read such a FAIL after a conflict fix as a broken merge.
@@ -21,6 +21,7 @@ Fork of yegappan/lsp for MacVim / Vim 9.2+ only: no compat code for older Vims o
 ## Gotchas
 
 - Most server requests are async since #81; code that needs the reply before continuing (e.g. before a write) must request it synchronously, like `textDocFormat()`'s `sync` flag.
+- The request of a user command, or of a key in a menu, passes `beforePendingKeys: true` to `rpc_a()` so that keys pending after it wait for its reply; background requests (autocommands, timers, `'foldexpr'`) must not, as they would block macros.
 - `setline()` drops every text property on the line; change text with `textedit.ReplaceText()` (`:keeppatterns substitute`) to keep diagnostic and semantic highlights and snippet tabstops.
 - Avoid multi-line text properties: a charwise delete across lines and `:join` then raise E340/E685 (Vim bug); mark a range with zero-width properties at both ends, as the snippet tabstops do.
 - An unbuffered `listener_add()` callback still fires for the next change after `listener_remove()` (Vim bug; see `autoload/lsp/folding.vim`).
