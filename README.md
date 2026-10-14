@@ -26,7 +26,7 @@ You will also need to download and install one or more language servers correspo
 
 The following language server protocol (LSP) features are supported:
 
-* Code completion
+* Code completion, with the expansion of snippets
 * Jump to definition, declaration, implementation, type definition
 * Peek definition, declaration, implementation, type definition and references
 * Display warning and error diagnostics, with their related information and

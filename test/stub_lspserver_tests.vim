@@ -10376,6 +10376,41 @@ def g:Test_LinkedEditing_InitAndDetach()
   endtry
 enddef
 
+# Test that accepting a snippet completion item of a language server expands
+# its snippet, and that the cursor goes to its tabstops.
+def g:Test_Completion_ExpandsSnippet()
+  silent! edit XCompletionSnippet.c
+  setline(1, ['int n = pri'])
+  var bnr = bufnr()
+  var lspserver = MakeAsyncReplyingLspServer([{isIncomplete: false, items: [{
+    label: 'printf', kind: 3, insertTextFormat: 2,
+    textEdit: {range: {start: {line: 0, character: 8},
+		       end: {line: 0, character: 11}},
+	       newText: 'printf(${1:fmt}, ${2:args})$0'},
+  }]}])
+  lspserver->extend({
+    isCompletionProvider: true,
+    isCompletionResolveProvider: false,
+    completionLazyDoc: false,
+    completionTriggerChars: [],
+    featureEnabled: (_) => true,
+  })
+  var next = "\<Plug>(LspSnippetJumpNext)"
+  try
+    completion.OmniComplSet('c', true)
+    completion.BufferInit(lspserver, bnr, 'c')
+    setlocal completeopt=menuone,noinsert,noselect
+    g:FeedOmniCompleteKeys("A\<C-X>\<C-O>\<C-N>\<C-Y>\"%d\"" .. next .. 'x'
+			   .. next .. ";\<Esc>")
+    assert_equal(['int n = printf("%d", x);'], getline(1, '$'))
+    assert_false(g:LspSnippetJumpable(1))
+  finally
+    completion.OmniComplSet('c', false)
+    StopAsyncReplyingLspServer(lspserver, bnr)
+    :%bw!
+  endtry
+enddef
+
 # Only here to because the test runner needs it
 def g:StartLangServer(): bool
   return true
