@@ -16,10 +16,11 @@ Fork of yegappan/lsp for MacVim / Vim 9.2+ only: no compat code for older Vims o
 - Async requests reply asynchronously in tests (#124): wait for effects with `g:WaitForAssert()` or `g:WaitForReplies()`, and wait for the reply before feeding more keys.
 - Prefer stub-server tests in `test/stub_lspserver_tests.vim` over real servers; `StartStubServerJob()` gives a real job channel.
 - CI's MacVim (Homebrew cask) is older than a local build, so typeahead and timing behaviour can differ.
-- After resolving conflicts in a test file, compare the `Test_` counts before and after: a dropped `enddef` nests the next test and it silently stops running.
+- The runner fails a file whose declared `Test_` functions don't all run (e.g. an `enddef` moved below the next test nests it), so read such a FAIL after a conflict fix as a broken merge.
 
 ## Gotchas
 
 - Most server requests are async since #81; code that needs the reply before continuing (e.g. before a write) must request it synchronously, like `textDocFormat()`'s `sync` flag.
-- `setline()` drops every text property on the line; use `:keeppatterns substitute` to keep diagnostic and semantic highlights.
+- `setline()` drops every text property on the line; change text with `textedit.ReplaceText()` (`:keeppatterns substitute`) to keep diagnostic and semantic highlights and snippet tabstops.
+- Avoid multi-line text properties: a charwise delete across lines and `:join` then raise E340/E685 (Vim bug); mark a range with zero-width properties at both ends, as the snippet tabstops do.
 - An unbuffered `listener_add()` callback still fires for the next change after `listener_remove()` (Vim bug; see `autoload/lsp/folding.vim`).
