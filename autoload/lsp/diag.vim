@@ -664,6 +664,14 @@ def AleLinterNamesGet(bnr: number): list<string>
     ->uniq()
 enddef
 
+# Returns the type of an ALE loclist entry for the LSP DiagnosticSeverity
+# "severity".  ALE has no type for hints and draws and counts an entry of any
+# type other than "W" and "I" as an error, so a hint is information to ALE.
+# Any other severity is an error.
+def DiagSevToAleType(severity: number): string
+  return severity == 2 ? 'W' : severity == 3 || severity == 4 ? 'I' : 'E'
+enddef
+
 # Returns the ALE loclist entry for diagnostic "diag" in buffer "bnr", as
 # returned by DiagInBuf().  ALE highlights up to and including "end_col", so
 # the end of the entry is the last byte in the diagnostic range.  An empty
@@ -689,7 +697,7 @@ def AleLocListItem(bnr: number, diag: dict<any>): dict<any>
   endif
   var item: dict<any> = {text: diag.message, lnum: lnum, col: col,
     end_lnum: endLnum, end_col: endCol,
-    type: "EWIH"[get(diag, "severity", 1) - 1]}
+    type: DiagSevToAleType(diag->get('severity', 1))}
   if !DiagRelatedInfo(diag)->empty()
     item.detail = DiagDisplayText(diag)
   endif
