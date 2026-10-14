@@ -1518,7 +1518,13 @@ export def Rename(a_newName: string)
     return
   endif
 
-  lspserver.prepareRename((sym: string) => {
+  # The symbol to rename is the one under the cursor now.  Only a change of the
+  # buffer cancels renaming it to "a_newName", but after the cursor moved, the
+  # prompt for a new name would be confusing and is not opened.
+  var bnr: number = bufnr()
+  var pos: dict<number> = lspserver.getPosition(true)
+  var reqctx = util.RequestContextGet(a_newName->empty() ? 'cursor' : 'buffer')
+  lspserver.prepareRename(reqctx, pos, (sym: string) => {
     var newName: string = a_newName
     if newName->empty()
       newName = input($"Rename symbol '{sym}' to: ", sym)
@@ -1530,7 +1536,7 @@ export def Rename(a_newName: string)
       :echo "\r"
     endif
 
-    lspserver.renameSymbol(newName)
+    lspserver.renameSymbol(bnr, pos, newName)
   })
 enddef
 
