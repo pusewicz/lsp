@@ -218,6 +218,9 @@ export var lspOptions: dict<any> = {
   # Show a diagnostic messages with virtual text
   showDiagWithVirtualText: false,
 
+  # Show a swatch of each color that the language server finds in a buffer
+  showDocumentColors: false,
+
   # enable inlay hints
   showInlayHints: false,
 

@@ -43,6 +43,7 @@ The following language server protocol (LSP) features are supported:
 * Formatting code
 * Folding code
 * Inlay hints
+* Document colors
 * Visually select symbol block/region
 * Semantic Highlight
 
@@ -156,6 +157,7 @@ call LspOptionsSet(#{
         \   showDiagOnStatusLine: v:false,
         \   showDiagWithSign: v:true,
         \   showDiagWithVirtualText: v:false,
+        \   showDocumentColors: v:false,
         \   showInlayHints: v:false,
         \   showSignature: v:true,
         \   showSignatureDocs: v:false,
