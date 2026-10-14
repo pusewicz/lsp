@@ -2269,6 +2269,75 @@ def TypeHierarchyPrepareReply(lspserver: dict<any>, reqctx: dict<number>,
   GetTypeHierarchy(lspserver, typeHierItem, isSuper, {pending: 0, Done: Show})
 enddef
 
+# Check that the symbol at the cursor can be renamed, and call "Cbfunc" with
+# its current name.  A server that supports "textDocument/prepareRename" is
+# asked first: when it refuses, a message tells why and "Cbfunc" is not
+# called, nor is it when the cursor moved or the buffer changed before the
+# reply arrived.  Otherwise "Cbfunc" is called right away with the word under
+# the cursor.
+# Request: "textDocument/prepareRename"
+# Param: PrepareRenameParams
+def PrepareRename(lspserver: dict<any>, Cbfunc: func(string))
+  if !lspserver.isRenamePrepareProvider
+    Cbfunc(expand('<cword>'))
+    return
+  endif
+
+  # interface PrepareRenameParams
+  #   interface TextDocumentPositionParams
+  var param: dict<any> = lspserver.getTextDocPosition(true)
+  var bnr: number = bufnr()
+  AsyncRpcInContext(lspserver, util.RequestContextGet('cursor'),
+		    'textDocument/prepareRename', 'textDocument/prepareRename',
+		    param, (_: dict<any>, result: any, error: dict<any>) => {
+    if !error->empty()
+      # The server says why the symbol cannot be renamed
+      if !IsStaleRequestError(error)
+	util.ErrMsg(error.message)
+      endif
+      return
+    endif
+
+    # Result: Range | {range: Range, placeholder: string}
+    #	      | {defaultBehavior: boolean} | null
+    if result->type() != v:t_dict && result->type() != v:t_none
+      util.ErrMsg('prepareRename response from the language server is not a Dict')
+      return
+    endif
+    if result->empty() || !result->get('defaultBehavior', true)
+      util.WarnMsg('Nothing to rename at the cursor')
+      return
+    endif
+
+    Cbfunc(PrepareRenameName(lspserver, bnr, result))
+  }, {handleError: false})
+enddef
+
+# Return the current name of the symbol to rename in buffer "bnr", given the
+# reply "result" of the language server to "textDocument/prepareRename": its
+# placeholder, or else the text in its range, or else, when the server leaves
+# it to the client or the range is not on one line, the word under the
+# cursor.
+def PrepareRenameName(lspserver: dict<any>, bnr: number,
+		      result: dict<any>): string
+  if !result->get('placeholder', '')->empty()
+    return result.placeholder
+  endif
+
+  var range: dict<any> = result->get('range', result)
+  if !range->has_key('start') || !range->has_key('end')
+      || range.start.line != range.end.line
+    return expand('<cword>')
+  endif
+
+  lspserver.decodeRange(bnr, range)
+  var ltext: string = bnr->getbufline(range.start.line + 1)->get(0, '')
+  var startByte: number = util.GetLineByteFromPos(bnr, range.start)
+  var name: string = ltext->strpart(startByte,
+	util.GetLineByteFromPos(bnr, range.end) - startByte)
+  return name->empty() ? expand('<cword>') : name
+enddef
+
 # Request: "textDocument/rename"
 # Param: RenameParams
 def RenameSymbol(lspserver: dict<any>, newName: string)
@@ -3187,6 +3256,7 @@ export def NewLspServer(serverParams: dict<any>): dict<any>
     getOutgoingCalls: function(GetOutgoingCalls, [lspserver]),
     inlayHintsShow: function(InlayHintsShow, [lspserver]),
     typeHierarchy: function(TypeHierarchy, [lspserver]),
+    prepareRename: function(PrepareRename, [lspserver]),
     renameSymbol: function(RenameSymbol, [lspserver]),
     codeActionAsync: function(CodeActionAsync, [lspserver]),
     pullDiagnostics: function(PullDiagnostics, [lspserver]),
