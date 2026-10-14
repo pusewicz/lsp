@@ -11,6 +11,7 @@ import './folding.vim'
 import './inlayhints.vim'
 import './semantichighlight.vim'
 import './textedit.vim'
+import './watchedfiles.vim'
 
 # process a diagnostic notification message from the LSP server
 # Notification: textDocument/publishDiagnostics
@@ -468,6 +469,13 @@ def ProcessClientRegisterCap(lspserver: dict<any>, request: dict<any>)
     return
   endif
 
+  var errmsg: string = watchedfiles.Register(lspserver,
+					      request.params.registrations)
+  if !errmsg->empty()
+    SendInvalidParamsError(lspserver, request, errmsg)
+    return
+  endif
+
   lspserver.sendResponse(request, null, {})
 enddef
 
@@ -490,6 +498,7 @@ def ProcessClientUnregisterCap(lspserver: dict<any>, request: dict<any>)
     return
   endif
 
+  watchedfiles.Unregister(lspserver, request.params.unregisterations)
   lspserver.sendResponse(request, null, {})
 enddef
 

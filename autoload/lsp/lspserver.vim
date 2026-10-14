@@ -32,6 +32,7 @@ import './inlayhints.vim'
 import './inlinecompletion.vim'
 import './semantichighlight.vim'
 import './buffer.vim' as buf
+import './watchedfiles.vim'
 
 const DIAG_PULL_DEBOUNCE_MSEC = 200
 const LSP_ERROR_SERVER_CANCELLED = -32802
@@ -73,6 +74,7 @@ def Exit_cb(lspserver: dict<any>, job: job, status: number): void
   ClearMap(lspserver.pendingRequests)
   lspserver.running = false
   lspserver.ready = false
+  watchedfiles.RemoveServer(lspserver)
 enddef
 
 # Remove all the items of "map", one of the typed maps of the server dict (see
@@ -326,6 +328,7 @@ def StopServer(lspserver: dict<any>): number
   ClearMap(lspserver.pendingRequests)
   lspserver.running = false
   lspserver.ready = false
+  watchedfiles.RemoveServer(lspserver)
   return 0
 enddef
 
@@ -2940,6 +2943,7 @@ def AddWorkspaceFolder(lspserver: dict<any>, dirName_arg: string): void
   lspserver.sendNotification('workspace/didChangeWorkspaceFolders', params)
 
   lspserver.workspaceFolders->add(dirName)
+  watchedfiles.WorkspaceFoldersChanged()
 enddef
 
 # Remove a workspace folder from the language server.
@@ -2974,6 +2978,7 @@ def RemoveWorkspaceFolder(lspserver: dict<any>, dirName_arg: string): void
   lspserver.sendNotification('workspace/didChangeWorkspaceFolders', params)
 
   lspserver.workspaceFolders->remove(idx)
+  watchedfiles.WorkspaceFoldersChanged()
 enddef
 
 def DecodeSelectionRange(lspserver: dict<any>, bnr: number, selRange: dict<any>)
