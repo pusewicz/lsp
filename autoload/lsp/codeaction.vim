@@ -2,6 +2,7 @@ vim9script
 
 # Functions related to handling LSP code actions to fix diagnostics.
 
+import './offset.vim'
 import './util.vim'
 import './textedit.vim'
 import './options.vim' as opt
@@ -437,11 +438,12 @@ enddef
 
 # Returns a copy of "diag", a diagnostic of buffer "bnr", as it is sent to
 # "lspserver" in the context of a "textDocument/codeAction" request: with its
-# range in the position encoding of "lspserver".
+# range and its related information in the position encoding of "lspserver".
 export def ContextDiag(lspserver: dict<any>, bnr: number,
 		       diag: dict<any>): dict<any>
   var d: dict<any> = diag->deepcopy()
   lspserver.encodeRange(bnr, d.range)
+  offset.EncodeRelatedInfo(lspserver, d)
   return d
 enddef
 
