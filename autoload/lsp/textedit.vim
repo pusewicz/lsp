@@ -1,6 +1,7 @@
 vim9script
 
 import './util.vim'
+import './watchedfiles.vim'
 
 # sort the list of edit operations in the descending order of line and column
 # numbers.
@@ -284,9 +285,13 @@ def FileCreate(createFile: dict<any>): string
     # existed, it asks what to do (W13), so write the buffer, which has no
     # text, to create the file.  "++bin" writes no BOM.
     util.ExecuteInBuffer(bnr, 'noautocmd write! ++bin')
+    watchedfiles.VimChangedFile(fname, watchedfiles.FILE_CREATED)
     return ''
   endif
   []->writefile(fname)
+  var change: number = fileExists ? watchedfiles.FILE_CHANGED
+				  : watchedfiles.FILE_CREATED
+  watchedfiles.VimChangedFile(fname, change)
   if bnr > 0 && bnr->bufloaded()
     ReloadBuffer(bnr)
   else
@@ -327,6 +332,7 @@ def FileDelete(deleteFile: dict<any>): string
   if path->delete(flags) != 0
     return $'File delete failed for {path}'
   endif
+  watchedfiles.VimChangedFile(path, watchedfiles.FILE_DELETED)
   for bnr in bnrs
     exe $'bwipe {bnr}'
   endfor
@@ -448,10 +454,16 @@ def FileRename(renameFile: dict<any>): string
     endif
   endfor
 
+  # When only the case of the name changes, the new name is a new file.
+  var replaced: bool = !newPath->getftype()->empty() && oldPath !=? newPath
   newPath->fnamemodify(':h')->mkdir('p')
   if oldPath->rename(newPath) != 0
     return $'File rename failed, {oldPath} to {newPath}'
   endif
+  var change: number = replaced ? watchedfiles.FILE_CHANGED
+				: watchedfiles.FILE_CREATED
+  watchedfiles.VimChangedFile(oldPath, watchedfiles.FILE_DELETED)
+  watchedfiles.VimChangedFile(newPath, change)
 
   for move in moves
     if move.bnr > 0 && move.bnr->bufloaded()

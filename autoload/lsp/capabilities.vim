@@ -4,6 +4,7 @@ vim9script
 
 import './options.vim' as opt
 import './protocol.vim'
+import './watchedfiles.vim'
 
 # PrepareSupportDefaultBehavior.Identifier: the client selects the identifier
 # at the position according to the language's syntax rule.
@@ -701,6 +702,13 @@ export def GetClientCaps(): dict<any>
     # https://clangd.llvm.org/extensions#utf-8-offsets
     offsetEncoding: ['utf-32', 'utf-16', 'utf-8']
   }
+
+  if watchedfiles.CanWatch()
+    clientCaps.workspace.didChangeWatchedFiles = {
+      dynamicRegistration: true,
+      relativePatternSupport: true
+    }
+  endif
 
   return clientCaps
 enddef

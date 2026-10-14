@@ -204,12 +204,17 @@ export def LspFileToUri(fname: string): string
     return resolvedUris[fname_full]
   endif
 
-  if LspUriRemote(fname_full)
-    resolvedUris[fname_full] = fname_full
-    return fname_full
-  endif
+  var uri: string = LspUriRemote(fname_full) ? fname_full
+						: LspPathToUri(fname_full)
+  resolvedUris[fname_full] = uri
+  return uri
+enddef
 
-  var uri: string = fname_full
+# Convert the full path "path" of a local file to an LSP "file:" URI.  Unlike
+# LspFileToUri(), this doesn't remember the URI, for a path that is converted
+# once, like that of a file change reported to a language server.
+export def LspPathToUri(path: string): string
+  var uri: string = path
 
   if has("win32unix")
     # We're in Cygwin, convert POSIX style paths to Windows style.
@@ -236,7 +241,6 @@ export def LspFileToUri(fname: string): string
     uri = $'file://{uri_encoded}'
   endif
 
-  resolvedUris[fname_full] = uri
   return uri
 enddef
 
