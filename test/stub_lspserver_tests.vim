@@ -2551,6 +2551,109 @@ def g:Test_DiagTags_Highlights()
   assert_equal(strikethrough, Deprecated()->filter((k, _) => k =~ 'term\|gui'))
 enddef
 
+# Return the diagnostics for Test_DiagTags_Listed() and Test_DiagTags_Ale():
+# an error, a hint with each tag, a hint without one and a warning with a tag.
+def ListedTestDiags(): list<dict<any>>
+  return [
+    MakeDiag(0, 0, 1, 'error'),
+    MakeDiag(1, 4, 4, 'unused')->extend({tags: [1]}),
+    MakeDiag(2, 0, 4, 'plain hint'),
+    MakeDiag(3, 0, 4, 'deprecated')->extend({tags: [2]}),
+    MakeDiag(4, 0, 2, 'tagged warning')->extend({tags: [1]})
+  ]
+enddef
+
+# A hint displayed only by the highlight for its tag is skipped by the
+# ":LspDiag" jumps and left out of the counts and the diagnostics location
+# list, which is updated right away when "highlightDiagInline" changes.
+# ":LspDiag current" still displays it.  A diagnostic of another severity with
+# a tag is listed, and with "highlightDiagInline" off, so is the hint.
+def g:Test_DiagTags_Listed()
+  DiagInitOnce()
+  silent! edit XDiagTagsListed.txt
+  setline(1, ['int a;', 'int unused;', 'int b;', 'old_api();', 'int c;'])
+  var bnr = bufnr()
+  var winid = win_getid()
+  g:LspOptionsSet({autoPopulateDiags: true, showDiagInPopup: false})
+  var lspserver = MakeDiagServer('srv')
+  diag.DiagNotification(lspserver, util.LspBufnrToUri(bnr), ListedTestDiags(),
+			'push')
+  # Returns the line that the ":LspDiag" command "cmd" jumps to from the start
+  # of line "lnum".
+  var JumpFrom = (lnum: number, cmd: string): number => {
+    cursor(lnum, 1)
+    execute(cmd)
+    return line('.')
+  }
+  try
+    assert_equal({Error: 1, Warn: 1, Info: 0, Hint: 1},
+		 diag.DiagsGetErrorCount(bnr))
+    assert_equal([['error', 'plain hint', 'tagged warning']],
+		 DiagLocListTexts(winid))
+
+    assert_equal(3, JumpFrom(1, 'LspDiag next'))
+    assert_equal(5, JumpFrom(3, 'LspDiag next'))
+    assert_equal(5, JumpFrom(1, ':2LspDiag next'))
+    assert_equal(1, JumpFrom(5, 'LspDiag nextWrap'))
+    assert_equal(3, JumpFrom(5, 'LspDiag prev'))
+    assert_equal(1, JumpFrom(3, 'LspDiag prev'))
+    assert_equal(5, JumpFrom(1, 'LspDiag prevWrap'))
+    assert_equal(1, JumpFrom(3, 'LspDiag first'))
+    assert_equal(5, JumpFrom(1, 'LspDiag last'))
+    cursor(2, 1)
+    assert_match('No more diagnostics found on this line',
+		 execute('LspDiag here'))
+    assert_equal([2, 1], [line('.'), col('.')])
+    assert_equal(['unused'], execute('LspDiag current')->split("\n"))
+
+    g:LspOptionsSet({highlightDiagInline: false})
+    assert_equal({Error: 1, Warn: 1, Info: 0, Hint: 3},
+		 diag.DiagsGetErrorCount(bnr))
+    assert_equal([['error', 'unused', 'plain hint', 'deprecated',
+		   'tagged warning']], DiagLocListTexts(winid))
+    assert_equal(2, JumpFrom(1, 'LspDiag next'))
+    assert_equal(4, JumpFrom(5, 'LspDiag prev'))
+
+    g:LspOptionsSet({highlightDiagInline: true})
+    assert_equal([['error', 'plain hint', 'tagged warning']],
+		 DiagLocListTexts(winid))
+  finally
+    g:LspOptionsSet({highlightDiagInline: true, showDiagInPopup: true})
+    DiagLocListTestCleanup([bnr])
+  endtry
+enddef
+
+# A hint displayed only by the highlight for its tag isn't sent to ALE.  The
+# diagnostics are sent again right away when "highlightDiagInline" changes.
+def g:Test_DiagTags_Ale()
+  DiagInitOnce()
+  var aleStub = InstallAleStub()
+  silent! edit XDiagTagsAle.c
+  setline(1, ['int a;', 'int unused;', 'int b;', 'old_api();', 'int c;'])
+  var bnr = bufnr()
+  var clangd = MakeDiagServer('clangd')
+  buf.BufLspServerSet(bnr, clangd)
+  try
+    diag.DiagNotification(clangd, util.LspBufnrToUri(bnr), ListedTestDiags(),
+			  'push')
+    assert_equal({clangd: ['error', 'plain hint', 'tagged warning']},
+		 AleResultsByLinter())
+
+    g:LspOptionsSet({highlightDiagInline: false})
+    assert_equal({clangd: ['error', 'unused', 'plain hint', 'deprecated',
+			   'tagged warning']}, AleResultsByLinter())
+    g:LspOptionsSet({highlightDiagInline: true})
+    assert_equal({clangd: ['error', 'plain hint', 'tagged warning']},
+		 AleResultsByLinter())
+  finally
+    g:LspOptionsSet({highlightDiagInline: true})
+    diag.DiagRemoveFile(bnr)
+    buf.BufLspServerRemove(bnr, clangd)
+    RemoveAleStub(aleStub)
+    :%bw!
+  endtry
+enddef
+
 # Write the file "fname" for the related information of a diagnostic, with a
 # multibyte character before the location on its second line.  Returns its
 # full path.
