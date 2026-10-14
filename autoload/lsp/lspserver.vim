@@ -24,6 +24,7 @@ import './hover.vim'
 import './signature.vim'
 import './codeaction.vim'
 import './codelens.vim'
+import './documentcolor.vim'
 import './documentlink.vim'
 import './callhierarchy.vim' as callhier
 import './typehierarchy.vim' as typehier
@@ -2635,6 +2636,31 @@ def GetDocumentLinks(lspserver: dict<any>, bnr: number, reqctx: dict<number>,
   })
 enddef
 
+# Get the colors in buffer "bnr" and show them, unless the buffer was changed
+# before the reply arrived.  Without a result, as when the request was
+# cancelled, the colors shown before are kept.
+# Request: "textDocument/documentColor"
+# Param: DocumentColorParams
+def DocumentColorsUpdate(lspserver: dict<any>, bnr: number)
+  var params = {textDocument: {uri: util.LspBufnrToUri(bnr)}}
+  AsyncRpcInContext(lspserver, util.RequestContextGet('buffer', bnr),
+		    $'textDocument/documentColor {bnr}',
+		    'textDocument/documentColor', params,
+		    (_: dict<any>, result: any, _) => {
+    # Result: ColorInformation[]
+    if result->type() != v:t_list
+      return
+    endif
+    var colors: list<dict<any>> = result
+    if lspserver.needOffsetEncoding
+      for colorInfo in colors
+	lspserver.decodeRange(bnr, colorInfo.range)
+      endfor
+    endif
+    documentcolor.ColorsShow(bnr, colors)
+  })
+enddef
+
 # Display the links in buffer "bnr" in a location or quickfix list.
 def ShowDocumentLinks(lspserver: dict<any>, bnr: number)
   if !lspserver.isDocumentLinkProvider
@@ -3272,6 +3298,7 @@ export def NewLspServer(serverParams: dict<any>): dict<any>
     codeLens: function(CodeLens, [lspserver]),
     resolveCodeAction: function(ResolveCodeAction, [lspserver]),
     resolveCodeLens: function(ResolveCodeLens, [lspserver]),
+    documentColorsUpdate: function(DocumentColorsUpdate, [lspserver]),
     showDocumentLinks: function(ShowDocumentLinks, [lspserver]),
     openDocumentLink: function(OpenDocumentLink, [lspserver]),
     resolveDocumentLink: function(ResolveDocumentLink, [lspserver]),
