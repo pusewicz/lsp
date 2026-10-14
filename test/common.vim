@@ -1,6 +1,8 @@
 vim9script
 # Common routines used for running the unit tests
 
+import '../autoload/lsp/buffer.vim' as buf
+
 # Load the LSP plugin.  Also enable syntax, file type detection.
 def g:LoadLspPlugin()
   syntax on
@@ -20,6 +22,8 @@ def g:LoadLspPlugin()
       profile! file */lsp/*
   endif
 
+  # Show the hover on CursorHold and update the inlay hints without waiting
+  # for their timers
   g:LSPTest = true
   source ../plugin/lsp.vim
 
@@ -131,6 +135,23 @@ def g:WaitForDiags(diagCount: number, severity: string = 'Error')
     assert_report(getloclist(0)->string())
     :lclose
   endif
+enddef
+
+# Wait for up to ten seconds for the language servers of the current buffer
+# to reply to all the asynchronous requests sent to them, e.g. by an LSP
+# command, and for the replies to be processed.
+def g:WaitForReplies()
+  for lspserver in buf.CurbufGetServers()
+    g:WaitForAssert(() => assert_equal({}, lspserver.pendingRequests), 10000)
+  endfor
+enddef
+
+# Execute "keys" that start omni completion, e.g. "A\<C-X>\<C-O>".  They are
+# not handled as if typed: a typed key, like the <Esc> with which feedkeys()
+# ends Insert mode, makes 'omnifunc' stop waiting for the reply of the
+# language server.
+def g:FeedOmniCompleteKeys(keys: string)
+  feedkeys(keys, 'x')
 enddef
 
 # Wait for the LSP server to load and process a file.  This works by waiting
