@@ -651,6 +651,9 @@ export def GetClientCaps(): dict<any>
 	failureHandling: 'abort'
       },
       configuration: true,
+      codeLens: {
+	refreshSupport: true
+      },
       diagnostics: {
 	refreshSupport: true
       },

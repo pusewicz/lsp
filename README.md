@@ -37,6 +37,7 @@ The following language server protocol (LSP) features are supported:
 * Display type and documentation on hover
 * Signature help
 * Code action
+* Code lens
 * Display Call hierarchy
 * Display Type hierarchy
 * Highlight current symbol references
@@ -152,6 +153,7 @@ call LspOptionsSet(#{
         \   popupHighlight: 'Normal',
         \   popupOpacity: 100,
         \   semanticHighlight: v:true,
+        \   showCodeLens: v:false,
         \   showDiagInBalloon: v:true,
         \   showDiagInPopup: v:true,
         \   showDiagOnStatusLine: v:false,
@@ -201,6 +203,7 @@ Command|Description
 `:LspFixAll`|Request source.fixAll code actions for the current file from all eligible language servers, then apply the selected action.
 `:LspOrganizeImports`|Request source.organizeImports code actions for the current file from all eligible language servers, then apply the selected action.
 `:LspCodeLens`|Display a list of code lens commands and apply a selected code lens command to the current file.
+`:LspCodeLensRun`|Run the code lens command for the current line, or a selected one when the line has several.
 `:LspDiag current`|Display the diagnostic message for the current line.
 `:LspDiag first`|Jump to the first diagnostic message for the current buffer.
 `:LspDiag here`|Jump to the next diagnostic message in the current line.

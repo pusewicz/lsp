@@ -2495,9 +2495,13 @@ def CodeActionAsync(lspserver: dict<any>, fname_arg: string, line1: number,
   endif
 enddef
 
+# Let the user select one of the code lenses of the file "fname" in the
+# current buffer and run its command.  With "onCursorLine", only one of the
+# code lenses of the cursor line, and run it right away when it is the only
+# one.
 # Request: "textDocument/codeLens"
 # Param: CodeLensParams
-def CodeLens(lspserver: dict<any>, fname: string)
+def CodeLens(lspserver: dict<any>, fname: string, onCursorLine: bool = false)
   # Check whether LSP server supports code lens operation
   if !lspserver.isCodeLensProvider
     util.ErrMsg('LSP server does not support code lens operation')
@@ -2505,18 +2509,25 @@ def CodeLens(lspserver: dict<any>, fname: string)
   endif
 
   var bnr = bufnr()
-  var reqctx = util.RequestContextGet('window', bnr)
+  var lnum = line('.') - 1
+  var reqctx = util.RequestContextGet(onCursorLine ? 'cursor' : 'window', bnr)
   var params = {textDocument: {uri: util.LspFileToUri(fname)}}
   AsyncRpcInContext(lspserver, reqctx, $'textDocument/codeLens {bnr}',
 		    'textDocument/codeLens', params,
 		    (_: dict<any>, result: any, _) => {
     # Result: CodeLens[] | null
-    if result->empty()
-      util.WarnMsg($'No code lens actions found for the current file')
+    var codeLensItems: list<dict<any>> =
+      result->type() == v:t_list ? result : []
+    if onCursorLine
+      codeLensItems->filter((_, item) => item.range.start.line == lnum)
+    endif
+    if codeLensItems->empty()
+      util.WarnMsg(onCursorLine
+	? 'No code lens actions found for the current line'
+	: 'No code lens actions found for the current file')
       return
     endif
 
-    var codeLensItems: list<dict<any>> = result
     # Decode the position encoding in all the code lens items
     if lspserver.needOffsetEncoding
       for codeLensItem in codeLensItems
@@ -2526,11 +2537,60 @@ def CodeLens(lspserver: dict<any>, fname: string)
 
     ResolveCodeLenses(lspserver, bnr, codeLensItems,
 		      (resolvedItems: list<dict<any>>) => {
-      if util.RequestContextMatches(reqctx)
+      if !util.RequestContextMatches(reqctx)
+	return
+      endif
+      if onCursorLine
+	codelens.RunCodeLens(lspserver, resolvedItems)
+      else
 	codelens.ProcessCodeLens(lspserver, resolvedItems)
       endif
     })
   })
+enddef
+
+# Request the code lenses of buffer "bnr", resolve them and show them above
+# their lines, unless the buffer changed or was detached from the server in
+# the meantime.
+# Request: "textDocument/codeLens"
+# Param: CodeLensParams
+def CodeLensShow(lspserver: dict<any>, bnr: number)
+  if !lspserver.isCodeLensProvider
+    return
+  endif
+
+  var changedtick: number = bnr->getbufvar('changedtick')
+  var IsCurrent = (): bool => bnr->getbufvar('changedtick', -1) == changedtick
+    && !buf.BufLspServerGetById(bnr, lspserver.id)->empty()
+  var params = {textDocument: {uri: util.LspBufnrToUri(bnr)}}
+  AsyncRpcSupersede(lspserver, $'codeLens/show {bnr}',
+		    'textDocument/codeLens', params,
+		    (_: dict<any>, result: any, error: dict<any>) => {
+    if !error->empty()
+      lspserver.traceLog($'Code lens failed: {error->get("message", "")}')
+      return
+    endif
+    # Result: CodeLens[] | null.  Without a result, as when the request was
+    # cancelled or the content was modified, the code lenses are left as they
+    # are.
+    if result->type() != v:t_list || !IsCurrent()
+      return
+    endif
+
+    var codeLensItems: list<dict<any>> = result
+    if lspserver.needOffsetEncoding
+      for codeLensItem in codeLensItems
+	lspserver.decodeRange(bnr, codeLensItem.range)
+      endfor
+    endif
+
+    ResolveCodeLenses(lspserver, bnr, codeLensItems,
+		      (resolvedItems: list<dict<any>>) => {
+      if IsCurrent()
+	codelens.ShowCodeLenses(bnr, resolvedItems)
+      endif
+    })
+  }, {handleError: false})
 enddef
 
 # Resolve the items in "codeLensItems" of buffer "bnr" that have no command,
@@ -3296,6 +3356,7 @@ export def NewLspServer(serverParams: dict<any>): dict<any>
     queuePullDiagnostics: function(QueuePullDiagnostics, [lspserver]),
     queuePullDiagnosticsAllBuffers: function(QueuePullDiagnosticsAllBuffers, [lspserver]),
     codeLens: function(CodeLens, [lspserver]),
+    codeLensShow: function(CodeLensShow, [lspserver]),
     resolveCodeAction: function(ResolveCodeAction, [lspserver]),
     resolveCodeLens: function(ResolveCodeLens, [lspserver]),
     documentColorsUpdate: function(DocumentColorsUpdate, [lspserver]),

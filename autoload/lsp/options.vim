@@ -202,6 +202,9 @@ export var lspOptions: dict<any> = {
   # Delay in milliseconds for semantic highlighting requests
   semanticHighlightDelay: 1000,
 
+  # Show the code lenses above their lines
+  showCodeLens: false,
+
   # Show diagnostic text in a balloon when the mouse is over the diagnostic
   showDiagInBalloon: true,
 

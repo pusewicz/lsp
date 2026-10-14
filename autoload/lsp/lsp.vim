@@ -20,6 +20,7 @@ import './symbol.vim'
 import './outline.vim'
 import './signature.vim'
 import './codeaction.vim'
+import './codelens.vim'
 import './hover.vim'
 import './inlayhints.vim'
 import './documentcolor.vim'
@@ -50,6 +51,7 @@ def LspInitOnce()
   prop_type_add('LspReadRef', {highlight: 'LspReadRef', override: override})
   prop_type_add('LspWriteRef', {highlight: 'LspWriteRef', override: override})
 
+  codelens.InitOnce()
   completion.InitOnce()
   diag.InitOnce()
   inlayhints.InitOnce()
@@ -727,6 +729,11 @@ export def BufferInit(lspserverId: number, bnr: number): void
 	documentcolor.BufferInit(lspsrv, bnr)
       endif
 
+      var codeLensServer = buf.BufLspServerGet(bnr, 'codeLens')
+      if !codeLensServer->empty() && serverId == codeLensServer.id
+	codelens.BufferInit(lspsrv, bnr)
+      endif
+
       var onTypeFormatServer = buf.BufLspServerGet(bnr, 'documentOnTypeFormatting')
       if !onTypeFormatServer->empty() && serverId == onTypeFormatServer.id
 	ontypeformat.BufferInit(lspsrv, bnr)
@@ -863,6 +870,7 @@ export def RemoveFile(bnr: number): void
     inlayhints.BufferDeInit(bnr)
     documentcolor.BufferDeInit(bnr)
     semantichighlight.BufferDeInit(bnr)
+    codelens.BufferDeInit(bnr)
     diag.BufferDeInit(bnr)
   endif
   # Iterate over a copy because BufLspServerRemove mutates the underlying list.
@@ -1644,6 +1652,18 @@ export def CodeLens()
   endif
 
   lspserver.codeLens(@%)
+enddef
+
+# Run the code lens on the cursor line, or the selected one when there are
+# several.
+# Uses LSP "textDocument/codeLens" and "codeLens/resolve" requests
+export def CodeLensRun()
+  var lspserver: dict<any> = buf.CurbufGetServerChecked('codeLens')
+  if lspserver->empty()
+    return
+  endif
+
+  lspserver.codeLens(@%, true)
 enddef
 
 # Display the links in the current buffer in a location or quickfix list

@@ -5,6 +5,7 @@ vim9script
 # for the Language Server Protocol (LSP) specification.
 
 import './util.vim'
+import './codelens.vim'
 import './diag.vim'
 import './inlayhints.vim'
 import './semantichighlight.vim'
@@ -382,8 +383,8 @@ enddef
 # open documents, because that changed without an edit (e.g. the server
 # finished indexing): reply, and then call "Refresh" with the server to request
 # it again.
-# Request: "workspace/diagnostic/refresh", "workspace/inlayHint/refresh" or
-#	   "workspace/semanticTokens/refresh"
+# Request: "workspace/codeLens/refresh", "workspace/diagnostic/refresh",
+#	   "workspace/inlayHint/refresh" or "workspace/semanticTokens/refresh"
 # Param: none
 def ProcessRefreshReq(Refresh: func(dict<any>), lspserver: dict<any>,
 		      request: dict<any>)
@@ -515,6 +516,8 @@ const lsp_request_handlers: dict<func> =
     'window/showMessageRequest': ProcessShowMessageRequest,
     'workspace/applyEdit': ProcessApplyEditReq,
     'workspace/configuration': ProcessWorkspaceConfiguration,
+    'workspace/codeLens/refresh':
+      function(ProcessRefreshReq, [codelens.Refresh]),
     'workspace/diagnostic/refresh':
       function(ProcessRefreshReq, [PullAllDiagnostics]),
     'workspace/inlayHint/refresh':

@@ -4,6 +4,7 @@ vim9script
 import '../autoload/lsp/lspserver.vim' as lserver
 import '../autoload/lsp/lsp.vim' as lsp
 import '../autoload/lsp/codeaction.vim' as codeaction
+import '../autoload/lsp/codelens.vim' as codelens
 import '../autoload/lsp/signature.vim' as signature
 import '../autoload/lsp/completion.vim' as completion
 import '../autoload/lsp/handlers.vim' as handlers
@@ -1297,10 +1298,10 @@ def g:Test_DiagnosticRefresh_PullsDocumentsOpenOnTheServer()
   endtry
 enddef
 
-# Returns a running test language server providing inlay hints and semantic
-# tokens, which adds the replies it sends to "responses" and the buffer number
-# of each document it requests the inlay hints or the semantic tokens of to
-# "requested".
+# Returns a running test language server providing inlay hints, semantic
+# tokens and code lenses, which adds the replies it sends to "responses" and
+# the buffer number of each document it requests the inlay hints, the semantic
+# tokens or the code lenses of to "requested".
 def MakeRefreshTestLspServer(responses: list<dict<any>>,
 			     requested: list<number>): dict<any>
   var lspserver = MakeTestLspServer([])
@@ -1308,11 +1309,15 @@ def MakeRefreshTestLspServer(responses: list<dict<any>>,
   lspserver.ready = true
   lspserver.isInlayHintProvider = true
   lspserver.isSemanticTokensProvider = true
+  lspserver.isCodeLensProvider = true
   lspserver.sendResponse = function(CaptureResponse, [responses])
   lspserver.inlayHintsShow = (bnr: number) => {
     requested->add(bnr)
   }
   lspserver.semanticHighlightUpdate = (bnr: number) => {
+    requested->add(bnr)
+  }
+  lspserver.codeLensShow = (bnr: number) => {
     requested->add(bnr)
   }
   return lspserver
@@ -1324,6 +1329,8 @@ enddef
 # Returns the buffer numbers.
 def OpenRefreshTestDocuments(lspserver: dict<any>,
 			     otherServer: dict<any>): list<number>
+  # Showing a buffer attached to a language server refreshes its diagnostics
+  DiagInitOnce()
   silent! edit XRefresh1.txt
   silent! new XRefresh2.txt
   :hide
@@ -1395,6 +1402,57 @@ def g:Test_InlayHintRefresh_UpdatesShownDocuments()
   finally
     opt.lspOptions.showInlayHints = false
     unlet g:InlayHintRefreshTest
+    CloseRefreshTestDocuments(lspserver, otherServer, bufnrs)
+  endtry
+enddef
+
+# Test that a "workspace/codeLens/refresh" request gets a reply, and then
+# updates the code lenses from the server right away in the documents shown
+# in a window when in Normal mode, and else after a CursorHold in them.  Not
+# when the code lenses are not shown, and not the code lenses of a document
+# from another server.
+def g:Test_CodeLensRefresh_UpdatesShownDocuments()
+  var responses: list<dict<any>> = []
+  var requested: list<number> = []
+  var otherRequested: list<number> = []
+  var lspserver = MakeRefreshTestLspServer(responses, requested)
+  var otherServer = MakeRefreshTestLspServer([], otherRequested)
+  var bufnrs = OpenRefreshTestDocuments(lspserver, otherServer)
+  var NeedsUpdate = () => bufnrs->mapnew((_, bnr) =>
+    bnr->getbufvar('LspCodeLensNeedsUpdate', true))
+  g:CodeLensRefreshTest = (id: number) => {
+    lspserver.processRequest({jsonrpc: '2.0', id: id,
+			      method: 'workspace/codeLens/refresh'})
+  }
+  try
+    for bnr in bufnrs
+      setbufvar(bnr, 'LspCodeLensNeedsUpdate', false)
+    endfor
+    g:CodeLensRefreshTest(1)
+    assert_equal([{id: 1, result: null, error: {}}], responses)
+    assert_equal([false, false, false], NeedsUpdate())
+
+    # Not with g:LspOptionsSet(), which would show the code lenses in every
+    # buffer.
+    opt.lspOptions.showCodeLens = true
+    feedkeys("i\<Cmd>call g:CodeLensRefreshTest(2)\<CR>\<Esc>", 'xt')
+    assert_equal([], requested)
+    assert_equal([true, true, false], NeedsUpdate())
+
+    g:CodeLensRefreshTest(3)
+    assert_equal([bufnrs[0]], requested)
+    assert_equal([false, true, false], NeedsUpdate())
+    assert_equal([1, 2, 3], responses->mapnew((_, r) => r.id))
+
+    codelens.BufferInit(lspserver, bufnrs[1])
+    assert_equal([bufnrs[0]], requested)
+    exe $'sbuffer {bufnrs[1]}'
+    doautocmd CursorHold
+    assert_equal(bufnrs[0 : 1], requested)
+    assert_equal([], otherRequested)
+  finally
+    opt.lspOptions.showCodeLens = false
+    unlet g:CodeLensRefreshTest
     CloseRefreshTestDocuments(lspserver, otherServer, bufnrs)
   endtry
 enddef
@@ -6402,6 +6460,223 @@ def g:Test_LspCodeLens_ResolvesItems()
     feedkeys(":LspCodeLens\<CR>2\<CR>", 'xt')
     assert_equal(['unresolvable', 'resolvable'], resolveRequests)
     assert_equal(['debug'], execCmds)
+  finally
+    buf.BufLspServerRemove(bufnr(), lspserver)
+    :%bw!
+  endtry
+enddef
+
+# Define the code lens highlight group and text property type, which are
+# otherwise defined only when the first language server is started.
+def CodeLensInitOnce()
+  if prop_type_get('LspCodeLens')->empty()
+    codelens.InitOnce()
+  endif
+enddef
+
+# Returns the LSP range of the character at "character" on the zero-based
+# line "line".
+def CodeLensRange(line: number, character: number): dict<any>
+  return {start: {line: line, character: character},
+	  end: {line: line, character: character + 1}}
+enddef
+
+# Returns the texts of the code lenses shown above each line of the current
+# buffer.
+def CodeLensTexts(): list<list<string>>
+  return range(1, line('$'))->mapnew((_, lnum) =>
+    prop_list(lnum, {types: ['LspCodeLens']})->mapnew((_, p) => p.text))
+enddef
+
+# Returns a running test language server providing code lenses, attached to
+# the current buffer.  It replies to "textDocument/codeLens" with "lenses",
+# and to "codeLens/resolve" with the item in "resolved" for the "data" of the
+# code lens, or with null.  The methods of the requests it gets are added to
+# "requests", and the commands it runs to "execCmds".
+def MakeCodeLensServer(lenses: list<dict<any>>, resolved: dict<dict<any>>,
+		       requests: list<string>,
+		       execCmds: list<string>): dict<any>
+  var lspserver = MakeTestLspServer([])
+  lspserver.running = true
+  lspserver.ready = true
+  lspserver.isCodeLensProvider = true
+  lspserver.isCodeLensResolveProvider = true
+  lspserver.rpc_a = (method: string, params: any, Cbfunc: func, _ = {}) => {
+    requests->add(method)
+    var result: any = null
+    if method == 'textDocument/codeLens'
+      result = lenses->deepcopy()
+    elseif resolved->has_key(params->get('data', ''))
+      result = resolved[params.data]->deepcopy()
+    endif
+    Cbfunc(lspserver, result, {})
+    return 1
+  }
+  lspserver.executeCommand = (cmd: dict<any>) => {
+    execCmds->add(cmd.command)
+  }
+  buf.BufLspServerSet(bufnr(), lspserver)
+  return lspserver
+enddef
+
+# Test that setting the "showCodeLens" option shows the code lenses above
+# their lines, indented like the line: the resolved ones, on one line for a
+# line with several, in the order of their columns.  Resetting the option
+# removes them.
+def g:Test_CodeLens_ShownAboveTheirLines()
+  CodeLensInitOnce()
+  silent! edit XCodeLensShow.txt
+  setlocal tabstop=4
+  setline(1, ['fn a() {}', "\t  fn b() {}", 'fn c() {}', 'fn d() {}'])
+  var lenses = [
+    {range: CodeLensRange(0, 3), command: {title: 'Run', command: 'run'}},
+    {range: CodeLensRange(0, 0), command: {title: 'Debug', command: 'debug'}},
+    {range: CodeLensRange(1, 3), data: 'refs'},
+    {range: CodeLensRange(2, 0), data: 'unresolvable'},
+    {range: CodeLensRange(3, 0), command: {title: "two\nlines", command: 'x'}}
+  ]
+  var resolved = {refs: {range: CodeLensRange(1, 3),
+			 command: {title: '2 references', command: 'refs'}}}
+  var requests: list<string> = []
+  var lspserver = MakeCodeLensServer(lenses, resolved, requests, [])
+  try
+    g:LspOptionsSet({showCodeLens: true})
+    assert_equal(['textDocument/codeLens', 'codeLens/resolve',
+		  'codeLens/resolve'], requests)
+    assert_equal([['Debug | Run'], ['      2 references'], [], ['two lines']],
+		 CodeLensTexts())
+    assert_equal('above', prop_list(1, {types: ['LspCodeLens']})[0].text_align)
+
+    g:LspOptionsSet({showCodeLens: false})
+    assert_equal([[], [], [], []], CodeLensTexts())
+    assert_equal([], autocmd_get({group: 'LspCodeLens',
+				  pattern: $'<buffer={bufnr()}>'}))
+  finally
+    g:LspOptionsSet({showCodeLens: false})
+    buf.BufLspServerRemove(bufnr(), lspserver)
+    :%bw!
+  endtry
+enddef
+
+# Test that the code lenses are updated when the cursor rests after a change,
+# that a reply to a request made before a change is dropped, and that the code
+# lenses are not updated in Insert mode, but when the cursor rests after it.
+def g:Test_CodeLens_UpdatedAfterChange()
+  CodeLensInitOnce()
+  silent! edit XCodeLensChange.txt
+  setline(1, ['one', 'two'])
+  var bnr = bufnr()
+  var lenses = [
+    {range: CodeLensRange(0, 0), command: {title: 'One', command: 'one'}}
+  ]
+  var requests: list<string> = []
+  var lspserver = MakeCodeLensServer(lenses, {}, requests, [])
+  opt.lspOptions.showCodeLens = true
+  try
+    codelens.BufferInit(lspserver, bnr)
+    assert_equal([['One'], []], CodeLensTexts())
+
+    # Without a change, the code lenses are not requested again
+    doautocmd CursorHold
+    assert_equal(1, requests->len())
+
+    lenses[0] = {range: CodeLensRange(1, 0),
+		 command: {title: 'Two', command: 'two'}}
+    append(0, 'zero')
+    doautocmd TextChanged
+    doautocmd CursorHold
+    assert_equal(2, requests->len())
+    assert_equal([[], ['Two'], []], CodeLensTexts())
+
+    # The reply to a request made before a change is dropped
+    var Replies: list<func> = []
+    lspserver.rpc_a = (_, _, Cbfunc: func, _ = {}) => {
+      Replies->add(() => Cbfunc(lspserver, lenses->deepcopy(), {}))
+      return 1
+    }
+    lenses[0].range = CodeLensRange(2, 0)
+    doautocmd TextChanged
+    doautocmd CursorHold
+    deletebufline(bnr, 1)
+    Replies[0]()
+    assert_equal([['Two'], []], CodeLensTexts())
+
+    # The code lenses are not shown in Insert mode, but after it
+    g:CodeLensShowTest = () => {
+      codelens.ShowCodeLenses(bnr, [{range: CodeLensRange(0, 0),
+				   command: {title: 'Ins', command: 'ins'}}])
+    }
+    feedkeys("i\<Cmd>call g:CodeLensShowTest()\<CR>\<Esc>", 'xt')
+    assert_equal([['Two'], []], CodeLensTexts())
+    assert_true(bnr->getbufvar('LspCodeLensNeedsUpdate'))
+  finally
+    opt.lspOptions.showCodeLens = false
+    silent! unlet g:CodeLensShowTest
+    buf.BufLspServerRemove(bnr, lspserver)
+    :%bw!
+  endtry
+enddef
+
+# Test that detaching a buffer from its language servers removes the code
+# lenses shown in it and stops updating them.
+def g:Test_CodeLens_RemovedWhenDetached()
+  CodeLensInitOnce()
+  silent! edit XCodeLensDetach.txt
+  setline(1, ['one'])
+  var bnr = bufnr()
+  var lenses = [
+    {range: CodeLensRange(0, 0), command: {title: 'One', command: 'one'}}
+  ]
+  var lspserver = MakeCodeLensServer(lenses, {}, [], [])
+  opt.lspOptions.showCodeLens = true
+  try
+    codelens.BufferInit(lspserver, bnr)
+    assert_equal([['One']], CodeLensTexts())
+    lsp.RemoveFile(bnr)
+    assert_equal([[]], CodeLensTexts())
+    assert_equal([], autocmd_get({group: 'LspCodeLens',
+				  pattern: $'<buffer={bnr}>'}))
+  finally
+    opt.lspOptions.showCodeLens = false
+    buf.BufLspServerRemove(bnr, lspserver)
+    :%bw!
+  endtry
+enddef
+
+# Test that ":LspCodeLensRun" runs the code lens on the cursor line, without
+# a menu when it is the only one, and resolves only the code lenses on that
+# line.
+def g:Test_LspCodeLensRun()
+  silent! edit XCodeLensRun.txt
+  setline(1, ['one', 'two', 'three'])
+  var lenses = [
+    {range: CodeLensRange(0, 0), command: {title: 'Run', command: 'run'}},
+    {range: CodeLensRange(1, 0), command: {title: 'A', command: 'a'}},
+    {range: CodeLensRange(1, 2), data: 'b'}
+  ]
+  var resolved = {b: {range: CodeLensRange(1, 2),
+		      command: {title: 'B', command: 'b'}}}
+  var requests: list<string> = []
+  var execCmds: list<string> = []
+  var lspserver = MakeCodeLensServer(lenses, resolved, requests, execCmds)
+  try
+    cursor(1, 1)
+    :LspCodeLensRun
+    assert_equal(['textDocument/codeLens'], requests)
+    assert_equal(['run'], execCmds)
+
+    # Select the second code lens on the line
+    cursor(2, 1)
+    feedkeys(":LspCodeLensRun\<CR>2\<CR>", 'xt')
+    assert_equal(['textDocument/codeLens', 'codeLens/resolve'],
+		 requests[1 :])
+    assert_equal(['run', 'b'], execCmds)
+
+    cursor(3, 1)
+    :LspCodeLensRun
+    assert_equal('Warn: No code lens actions found for the current line',
+		 LastMessage())
+    assert_equal(['run', 'b'], execCmds)
   finally
     buf.BufLspServerRemove(bufnr(), lspserver)
     :%bw!
