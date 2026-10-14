@@ -7,6 +7,7 @@ vim9script
 import './util.vim'
 import './codelens.vim'
 import './diag.vim'
+import './folding.vim'
 import './inlayhints.vim'
 import './semantichighlight.vim'
 import './textedit.vim'
@@ -428,7 +429,8 @@ enddef
 # finished indexing): reply, and then call "Refresh" with the server to request
 # it again.
 # Request: "workspace/codeLens/refresh", "workspace/diagnostic/refresh",
-#	   "workspace/inlayHint/refresh" or "workspace/semanticTokens/refresh"
+#	   "workspace/foldingRange/refresh", "workspace/inlayHint/refresh" or
+#	   "workspace/semanticTokens/refresh"
 # Param: none
 def ProcessRefreshReq(Refresh: func(dict<any>), lspserver: dict<any>,
 		      request: dict<any>)
@@ -565,6 +567,8 @@ const lsp_request_handlers: dict<func> =
       function(ProcessRefreshReq, [codelens.Refresh]),
     'workspace/diagnostic/refresh':
       function(ProcessRefreshReq, [PullAllDiagnostics]),
+    'workspace/foldingRange/refresh':
+      function(ProcessRefreshReq, [folding.Refresh]),
     'workspace/inlayHint/refresh':
       function(ProcessRefreshReq, [inlayhints.Refresh]),
     'workspace/semanticTokens/refresh':

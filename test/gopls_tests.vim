@@ -155,6 +155,44 @@ def g:Test_LspFold()
   bw!
 enddef
 
+# Test for the folds computed with lsp#lsp#FoldExpr(), which follow the
+# changes to the buffer
+def g:Test_LspFoldExpr()
+  :silent! edit XLspFoldExpr1.go
+  var lines =<< trim END
+    package main
+
+    // Some comment
+    // Some other comment
+
+    func plus(a int, b int) int {
+	return a + b
+    }
+
+    func main() {
+    }
+  END
+
+  setline(1, lines)
+  :redraw!
+  g:WaitForServerFileLoad(0)
+  cursor(1, 1)
+
+  :setlocal foldmethod=expr foldexpr=lsp#lsp#FoldExpr() foldlevel=0
+  g:WaitForAssert(() => assert_equal([0, 0, 1, 1, 0, 1, 1, 0, 0, 0, 0],
+	range(1, line('$'))->map((_, v) => foldlevel(v))))
+  assert_equal([-1, -1, 3, 3, -1, 6, 6, -1, -1, -1, -1],
+	       range(1, line('$'))->map((_, v) => foldclosed(v)))
+
+  append(4, '// Another comment')
+  g:WaitForAssert(() => assert_equal([0, 0, 1, 1, 1, 0, 1, 1, 0, 0, 0, 0],
+	range(1, line('$'))->map((_, v) => foldlevel(v))))
+  assert_equal([-1, -1, 3, 3, 3, -1, 7, 7, -1, -1, -1, -1],
+	       range(1, line('$'))->map((_, v) => foldclosed(v)))
+
+  :%bw!
+enddef
+
 # Test for :LspFixAll
 # TODO: Manually running this test passes.  Need to debug why this fails.
 def g:DISABLED_Test_LspFixAll()
