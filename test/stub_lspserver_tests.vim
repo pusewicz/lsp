@@ -2326,6 +2326,35 @@ def g:Test_AleSupport_InclusiveEndColumn()
   :%bw!
 enddef
 
+# ALE has the "E", "W" and "I" types and treats any other one as an error, so
+# a hint is sent to ALE as information.  A diagnostic without a severity is an
+# error.
+def g:Test_AleSupport_DiagTypes()
+  var aleStub = InstallAleStub()
+  silent! edit XAleSupportTypes.c
+  setline(1, ['int a;', 'int b;', 'int c;', 'int d;', 'int e;'])
+  var bnr = bufnr()
+  var clangd = MakeDiagServer('clangd')
+  buf.BufLspServerSet(bnr, clangd)
+
+  var diags: list<dict<any>> = [
+    MakeDiag(0, 0, 1, 'error'),
+    MakeDiag(1, 0, 2, 'warning'),
+    MakeDiag(2, 0, 3, 'info'),
+    MakeDiag(3, 0, 4, 'hint'),
+    MakeDiag(4, 0, 0, 'no severity')
+  ]
+  diag.DiagNotification(clangd, util.LspBufnrToUri(bnr), diags, 'push')
+  assert_equal([['error', 'E'], ['warning', 'W'], ['info', 'I'],
+		['hint', 'I'], ['no severity', 'E']],
+	       g:LspTestAleCalls[-1][4]->mapnew((_, v) => [v.text, v.type]))
+
+  diag.DiagRemoveFile(bnr)
+  buf.BufLspServerRemove(bnr, clangd)
+  RemoveAleStub(aleStub)
+  :%bw!
+enddef
+
 # Define the diagnostic signs and text property types, which are otherwise
 # defined only when the first language server is started.
 def DiagInitOnce()

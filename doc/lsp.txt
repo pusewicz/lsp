@@ -1745,6 +1745,8 @@ aleSupport		|Boolean| option. If true, diagnostics will be sent to
 			The related information of a diagnostic
 			(|lsp-diags-related-info|) is added after its message
 			in the detail that |:ALEDetail| displays.
+			Hints are sent as information, as Ale has no type for
+			them.
 
 						*lsp-opt-autoComplete*
 autoComplete		|Boolean| option. In insert mode, automatically
