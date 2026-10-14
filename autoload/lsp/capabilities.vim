@@ -661,6 +661,15 @@ export def GetClientCaps(): dict<any>
 	failureHandling: 'abort'
       },
       configuration: true,
+      diagnostics: {
+	refreshSupport: true
+      },
+      inlayHint: {
+	refreshSupport: true
+      },
+      semanticTokens: {
+	refreshSupport: true
+      },
       symbol: {
 	dynamicRegistration: false
       }

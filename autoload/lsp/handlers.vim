@@ -6,6 +6,8 @@ vim9script
 
 import './util.vim'
 import './diag.vim'
+import './inlayhints.vim'
+import './semantichighlight.vim'
 import './textedit.vim'
 import './protocol.vim'
 
@@ -376,16 +378,25 @@ def ProcessShowMessageRequest(lspserver: dict<any>, req: dict<any>)
   endif
 enddef
 
-# process the workspace/diagnostic/refresh LSP server request
-# Request: "workspace/diagnostic/refresh"
+# process a request from the LSP server to refresh what it provides for the
+# open documents, because that changed without an edit (e.g. the server
+# finished indexing): reply, and then call "Refresh" with the server to request
+# it again.
+# Request: "workspace/diagnostic/refresh", "workspace/inlayHint/refresh" or
+#	   "workspace/semanticTokens/refresh"
 # Param: none
-# Re-pull diagnostics for all open buffers served by this server.
-def ProcessDiagnosticRefreshReq(lspserver: dict<any>, request: dict<any>)
-  if !ValidateNoParams(lspserver, request, 'workspace/diagnostic/refresh')
+def ProcessRefreshReq(Refresh: func(dict<any>), lspserver: dict<any>,
+		      request: dict<any>)
+  if !ValidateNoParams(lspserver, request, request.method)
     return
   endif
 
   lspserver.sendResponse(request, null, {})
+  Refresh(lspserver)
+enddef
+
+# Pull the diagnostics of every document open on "lspserver".
+def PullAllDiagnostics(lspserver: dict<any>)
   for bnr in lspserver.docBufnrs->values()
     lspserver.pullDiagnostics(bnr)
   endfor
@@ -504,13 +515,13 @@ const lsp_request_handlers: dict<func> =
     'window/showMessageRequest': ProcessShowMessageRequest,
     'workspace/applyEdit': ProcessApplyEditReq,
     'workspace/configuration': ProcessWorkspaceConfiguration,
-    'workspace/diagnostic/refresh': ProcessDiagnosticRefreshReq,
+    'workspace/diagnostic/refresh':
+      function(ProcessRefreshReq, [PullAllDiagnostics]),
+    'workspace/inlayHint/refresh':
+      function(ProcessRefreshReq, [inlayhints.Refresh]),
+    'workspace/semanticTokens/refresh':
+      function(ProcessRefreshReq, [semantichighlight.Refresh]),
     'workspace/workspaceFolders': ProcessWorkspaceFoldersReq
-    # TODO: Handle the following requests from the server:
-    #     workspace/codeLens/refresh
-    #     workspace/inlayHint/refresh
-    #     workspace/inlineValue/refresh
-    #     workspace/semanticTokens/refresh
   }
 
 # Explicitly ignored requests

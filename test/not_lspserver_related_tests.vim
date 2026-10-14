@@ -1390,17 +1390,6 @@ def g:Test_StaleRequestSupportCapability()
 	       capabilities.GetClientCaps().general.staleRequestSupport)
 enddef
 
-# Test that the client advertises the workspace edits that it applies: text
-# document edits for a version of a document and the file operations, up to
-# the first change that fails, but not the change annotations, which it
-# doesn't support.
-def g:Test_WorkspaceEditCapability()
-  assert_equal({documentChanges: true,
-		resourceOperations: ['rename', 'create', 'delete'],
-		failureHandling: 'abort'},
-	       capabilities.GetClientCaps().workspace.workspaceEdit)
-enddef
-
 # Test for the "willSave" and "willSaveWaitUntil" text document sync server
 # capabilities and the synchronization client capability
 def g:Test_WillSaveCapability()
@@ -1423,6 +1412,27 @@ def g:Test_WillSaveCapability()
   assert_equal({dynamicRegistration: false, didSave: true, willSave: true,
 		willSaveWaitUntil: true},
 	       capabilities.GetClientCaps().textDocument.synchronization)
+enddef
+
+# Test that the client advertises the workspace edits that it applies: text
+# document edits for a version of a document and the file operations, up to
+# the first change that fails, but not the change annotations, which it
+# doesn't support.
+def g:Test_WorkspaceEditCapability()
+  assert_equal({documentChanges: true,
+		resourceOperations: ['rename', 'create', 'delete'],
+		failureHandling: 'abort'},
+	       capabilities.GetClientCaps().workspace.workspaceEdit)
+enddef
+
+# Test that the client advertises the "workspace/*/refresh" requests that it
+# handles, and not the one for inline values, which it doesn't support.
+def g:Test_RefreshCapabilities()
+  var workspaceCaps: dict<any> = capabilities.GetClientCaps().workspace
+  for feature in ['diagnostics', 'inlayHint', 'semanticTokens']
+    assert_equal({refreshSupport: true}, workspaceCaps->get(feature), feature)
+  endfor
+  assert_false(workspaceCaps->has_key('inlineValue'))
 enddef
 
 # Test for parsing the line and column fragment in a document link file URI
