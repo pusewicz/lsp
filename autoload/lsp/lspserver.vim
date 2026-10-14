@@ -650,6 +650,77 @@ def Rpc(lspserver: dict<any>, method: string, params: any,
   return {}
 enddef
 
+# While keys pending in the typeahead wait for the replies to asynchronous
+# requests (see AsyncRpc()):
+#   requests	   the requests whose replies were not processed yet, as
+#		   {server: lspserver, id: id} Dicts
+#   callbackDepth  how many reply callbacks of these requests are running
+#   inAutocmd	   whether the keys started waiting in an autocommand
+#   timeout	   how long to wait for a reply, in milliseconds
+#   lastProgress   when a request was last added or its reply processed
+# Empty when no keys wait.
+var keysWait: dict<any> = {}
+
+# Returns true when keys are pending in the typeahead: keys from a mapping,
+# ":normal", feedkeys() or a register being executed, or keys that the user
+# typed ahead and Vim already read.
+def KeysPending(): bool
+  return state('m') != ''
+enddef
+
+# Make the pending keys wait for the reply to the request "id" that was just
+# sent to "lspserver".
+def KeysWaitAdd(lspserver: dict<any>, id: number)
+  keysWait.requests->add({server: lspserver, id: id})
+  keysWait.timeout = max([keysWait.timeout,
+	lspserver.job->job_getchannel()->ch_info().out_timeout])
+  keysWait.lastProgress = reltime()
+enddef
+
+# Stop waiting for the reply to the request "id" of "lspserver", which
+# arrived, before the pending keys run.  Returns "keysWait" when they waited
+# for it, otherwise an empty Dict.
+def KeysWaitReplied(lspserver: dict<any>, id: number): dict<any>
+  if keysWait->empty()
+    return {}
+  endif
+  var idx: number = keysWait.requests->indexof((_, r) =>
+    r.server is lspserver && r.id == id)
+  if idx < 0
+    return {}
+  endif
+  keysWait.requests->remove(idx)
+  keysWait.lastProgress = reltime()
+  return keysWait
+enddef
+
+# Wait until the replies to the requests in "keysWait" were processed, and
+# the replies to the requests that their callbacks send, before the pending
+# keys run.  The channel callbacks process the replies while Vim sleeps.  A
+# reply is waited for as long as Rpc() waits for one, after the request was
+# sent or another reply was processed; then the keys run, and the requests
+# carry on asynchronously.  When a callback used up the pending keys, e.g.
+# for a prompt, the replies are not waited for anymore.
+def WaitBeforePendingKeys()
+  while true
+    # A language server that exited forgot its pending requests
+    keysWait.requests->filter((_, r) => r.server.pendingRequests->has_key(r.id))
+    if keysWait.requests->empty() || !KeysPending()
+      return
+    endif
+    if keysWait.lastProgress->reltime()->reltimefloat() * 1000
+	>= keysWait.timeout
+      for r in keysWait.requests
+	if r.server.debug
+	  r.server.traceLog($'Stopped waiting for the reply to request {r.id} before the pending keys')
+	endif
+      endfor
+      return
+    endif
+    :sleep 1m
+  endwhile
+enddef
+
 # LSP server asynchronous RPC callback for the request "method" with "params",
 # sent by AsyncRpc() with "opts" after "retries" times sent again.  When
 # "opts.handleError" is false, an error is not reported and "RpcCb" gets it,
@@ -657,17 +728,30 @@ enddef
 def AsyncRpcCb(lspserver: dict<any>, method: string, params: any, RpcCb: func,
 	       opts: dict<any>, retries: number, chan: channel,
 	       reply: dict<any>)
-  if reply->has_key('id') && lspserver.pendingRequests->has_key(reply.id)
-    lspserver.pendingRequests->remove(reply.id)
+  var wait: dict<any> = {}
+  if reply->has_key('id')
+    if lspserver.pendingRequests->has_key(reply.id)
+      lspserver.pendingRequests->remove(reply.id)
+    endif
+    wait = KeysWaitReplied(lspserver, reply.id)
   endif
 
   if lspserver.debug
     lspserver.traceLog($'Got response {reply->json_encode()}')
   endif
 
+  # The pending keys also wait for the requests sent while the reply is
+  # processed: the request sent again, or the ones that the callback sends
+  if !wait->empty()
+    wait.callbackDepth += 1
+  endif
+
   if reply->has_key('error')
       && RetryOnContentModified(method, reply.error, retries)
       && AsyncRpc(lspserver, method, params, RpcCb, opts, retries + 1) > 0
+    if !wait->empty()
+      wait.callbackDepth -= 1
+    endif
     return
   endif
 
@@ -723,6 +807,10 @@ def AsyncRpcCb(lspserver: dict<any>, method: string, params: any, RpcCb: func,
       lspserver.errorLog($'Callback for {method} raised exception: {v:exception}')
     endif
   endtry
+
+  if !wait->empty()
+    wait.callbackDepth -= 1
+  endif
 enddef
 
 # Send an async RPC request message to the LSP server with a callback function.
@@ -737,6 +825,13 @@ enddef
 # the last reply is passed to the callback; "retries" counts the times it was
 # sent again so far.  When "opts.request" is a Dict, its "id" is set to the
 # message id each time the request is sent, to cancel the one pending.
+#
+# "opts.beforePendingKeys" is true for a request that does what the user asked
+# for, e.g. with a command or a key in a menu.  Keys that are pending in the
+# typeahead, as from a mapping, ":normal" or a register, would run before its
+# reply arrives, on the state before it.  So then the reply is waited for, and
+# the replies to the requests that its callback sends, before returning (see
+# WaitBeforePendingKeys()): the callback runs before this returns.
 def AsyncRpc(lspserver: dict<any>, method: string, params: any, Cbfunc: func,
 	     opts: dict<any> = {}, retries: number = 0): number
   var req = {
@@ -771,6 +866,26 @@ def AsyncRpc(lspserver: dict<any>, method: string, params: any, Cbfunc: func,
     lspserver.traceLog($'Sent request {logreq->json_encode()}')
   endif
 
+  if !keysWait->empty()
+    # Sent by the reply callback of a request that the pending keys wait for,
+    # e.g. to resolve an item, but not by an autocommand that the callback
+    # triggered, e.g. by opening a buffer: the keys wait for its reply too.
+    # WaitBeforePendingKeys() already waits for it.
+    if keysWait.callbackDepth > 0 && (keysWait.inAutocmd || state('x') == '')
+	&& KeysPending()
+      KeysWaitAdd(lspserver, reply.id)
+    endif
+  elseif opts->get('beforePendingKeys', false) && KeysPending()
+    keysWait = {requests: [], callbackDepth: 0, inAutocmd: state('x') != '',
+		timeout: 0, lastProgress: reltime()}
+    KeysWaitAdd(lspserver, reply.id)
+    try
+      WaitBeforePendingKeys()
+    finally
+      keysWait = {}
+    endtry
+  endif
+
   return reply.id
 enddef
 
@@ -796,9 +911,9 @@ def AsyncRpcSupersede(lspserver: dict<any>, key: string, method: string,
   CancelSupersedableRequest(lspserver, key)
 
   # The callback identifies its request by this Dict and not by the message
-  # id, which is known only once rpc_a() returns: a stand-in for it, as in the
-  # tests, can invoke the callback before that.  The id changes when the
-  # request is sent again (see AsyncRpc()).
+  # id, which is known only once rpc_a() returns: when keys pending in the
+  # typeahead wait for the reply, the callback runs before that.  The id
+  # changes when the request is sent again (see AsyncRpc()).
   var req: dict<number> = {id: -1}
   lspserver.supersedableRequests[key] = req
   var id = lspserver.rpc_a(method, params, (_: dict<any>, reply, error) => {
@@ -1454,7 +1569,7 @@ def GotoSymbolLoc(lspserver: dict<any>, msg: string, peekSymbol: bool,
 		    (_: dict<any>, result: any, error: dict<any>) => {
     GotoSymbolLocReply(lspserver, msg, peekSymbol, cmdmods, count, cword,
 		       vcount, error->empty() ? result : null)
-  }, {handleError: false})
+  }, {handleError: false, beforePendingKeys: true})
 enddef
 
 # Process the reply "result" to the "msg" request sent by GotoSymbolLoc() for
@@ -1605,7 +1720,7 @@ def SwitchSourceHeader(lspserver: dict<any>)
 		    'textDocument/switchSourceHeader', param,
 		    (_: dict<any>, result: any, _) => {
     SwitchSourceHeaderReply(result)
-  })
+  }, {beforePendingKeys: true})
 enddef
 
 # process the 'textDocument/switchSourceHeader' reply from the LSP server
@@ -1764,7 +1879,7 @@ def ShowReferences(lspserver: dict<any>, peek: bool): void
 		    (_: dict<any>, result: any, _) => {
     ShowLocationsReply(lspserver, result, peek, 'Symbol References',
 		       'No references found')
-  })
+  }, {beforePendingKeys: true})
 enddef
 
 # send custom locations request
@@ -1775,7 +1890,7 @@ def FindLocations(lspserver: dict<any>, peek: bool, method: string, args: dict<a
 		    method, param, (_: dict<any>, result: any, _) => {
     ShowLocationsReply(lspserver, result, peek, 'Symbol Locations',
 		       'No location found')
-  })
+  }, {beforePendingKeys: true})
 enddef
 
 # Display the locations in the reply "result" to a references or a custom
@@ -1893,13 +2008,15 @@ def GetDocSymbols(lspserver: dict<any>, fname: string, showOutline: bool): void
   # interface DocumentSymbolParams
   # interface TextDocumentIdentifier
   var params = {textDocument: {uri: util.LspFileToUri(fname)}}
+  # Pending keys don't wait for the outline, which is refreshed as the user
+  # moves around
   lspserver.rpc_a('textDocument/documentSymbol', params, (_: dict<any>, reply, error) => {
     if showOutline
       symbol.DocSymbolOutline(lspserver, reply, error, fname)
     else
       symbol.DocSymbolPopup(lspserver, reply, error, fname)
     endif
-  })
+  }, {beforePendingKeys: !showOutline})
 enddef
 
 # Format the current buffer, or the lines "start_lnum" to "end_lnum" in it if
@@ -1964,7 +2081,7 @@ def TextDocFormat(lspserver: dict<any>, fname: string, rangeFormat: bool,
     AsyncRpcInContext(lspserver, util.RequestContextGet('buffer', bnr), key,
 		      cmd, param, (_: dict<any>, result: any, _) => {
       TextDocFormatReply(lspserver, bnr, result)
-    })
+    }, {beforePendingKeys: true})
     return
   endif
 
@@ -2146,7 +2263,7 @@ def PrepareCallHierarchy(lspserver: dict<any>,
       DecodeCallHierarchyItem(lspserver, item)
     endfor
     Cbfunc(items)
-  })
+  }, {beforePendingKeys: true})
 enddef
 
 # Request: "callHierarchy/incomingCalls"
@@ -2194,7 +2311,7 @@ def GetHierarchyCalls(lspserver: dict<any>, method: string, itemKey: string,
       endfor
     endif
     Cbfunc(calls)
-  })
+  }, {beforePendingKeys: true})
   if id < 0
     Cbfunc([])
   endif
@@ -2334,7 +2451,7 @@ def TypeHierarchy(lspserver: dict<any>, direction: number)
 		    'textDocument/prepareTypeHierarchy', param,
 		    (_: dict<any>, result: any, _) => {
     TypeHierarchyPrepareReply(lspserver, reqctx, direction == 1, result)
-  })
+  }, {beforePendingKeys: true})
 enddef
 
 # Process the reply "result" to the "textDocument/prepareTypeHierarchy"
@@ -2420,7 +2537,7 @@ def PrepareRename(lspserver: dict<any>, reqctx: dict<number>,
     endif
 
     Cbfunc(PrepareRenameName(lspserver, bnr, result, cword))
-  }, {handleError: false})
+  }, {handleError: false, beforePendingKeys: true})
 enddef
 
 # Return the current name of the symbol to rename in buffer "bnr", given the
@@ -2476,7 +2593,7 @@ def RenameSymbol(lspserver: dict<any>, bnr: number, pos: dict<number>,
     endif
 
     textedit.ApplyWorkspaceEdit(result, lspserver)
-  })
+  }, {beforePendingKeys: true})
 enddef
 
 # Parse a code action query for request-side filtering.
@@ -2589,7 +2706,7 @@ def CodeActionAsync(lspserver: dict<any>, fname_arg: string, line1: number,
 	  endif
 
 	  Cbfunc(lspserver, actionList, reqInfo.selectorQuery, rpcError)
-	})
+	}, {beforePendingKeys: true})
 
   if reqid < 0
     # Normalize send failures into callback error flow for one-path handling.
@@ -2651,7 +2768,7 @@ def CodeLens(lspserver: dict<any>, fname: string, onCursorLine: bool = false)
 	codelens.ProcessCodeLens(lspserver, resolvedItems)
       endif
     })
-  })
+  }, {beforePendingKeys: true})
 enddef
 
 # Request the code lenses of buffer "bnr", resolve them and show them above
@@ -2738,7 +2855,7 @@ def ResolveCodeAction(lspserver: dict<any>, codeAction: dict<any>,
   var id = lspserver.rpc_a('codeAction/resolve', codeAction,
 			   (_: dict<any>, result: any, _) => {
     Cbfunc(result->type() == v:t_dict ? result : {})
-  })
+  }, {beforePendingKeys: true})
   if id < 0
     Cbfunc({})
   endif
@@ -2798,7 +2915,7 @@ def GetDocumentLinks(lspserver: dict<any>, bnr: number, reqctx: dict<number>,
       endfor
     endif
     Cbfunc(links)
-  })
+  }, {beforePendingKeys: true})
 enddef
 
 # Get the colors in buffer "bnr" and show them, unless the buffer was changed
@@ -2920,7 +3037,7 @@ def WorkspaceQuerySymbols(lspserver: dict<any>, query: string, firstCall: bool, 
     if current
       WorkspaceQuerySymbolsReply(lspserver, query, firstCall, cmdmods, result)
     endif
-  })
+  }, {beforePendingKeys: true})
 enddef
 
 # Process the reply "result" to the "workspace/symbol" request for "query".
@@ -3106,7 +3223,7 @@ def SelectionRange(lspserver: dict<any>, fname: string)
     endif
 
     selection.SelectionStart(lspserver, selRanges)
-  })
+  }, {beforePendingKeys: true})
 enddef
 
 # Expand the previous selection or start a new one
@@ -3150,7 +3267,7 @@ def FoldRange(lspserver: dict<any>, fname: string)
 		    'textDocument/foldingRange', params,
 		    (_: dict<any>, result: any, _) => {
     folding.CreateManualFolds(result)
-  })
+  }, {beforePendingKeys: true})
 enddef
 
 # Request the folding ranges of buffer "bnr" for the folds computed with
@@ -3196,7 +3313,9 @@ def ExecuteCommand(lspserver: dict<any>, cmd: dict<any>)
     params.arguments = cmd.arguments
   endif
 
-  lspserver.rpc_a('workspace/executeCommand', params, (_: dict<any>, reply, error) => WorkspaceExecuteReply(lspserver, reply, error))
+  lspserver.rpc_a('workspace/executeCommand', params,
+		  (_: dict<any>, reply, error) => WorkspaceExecuteReply(lspserver, reply, error),
+		  {beforePendingKeys: true})
 enddef
 
 # Display the LSP server capabilities (received during the initialization

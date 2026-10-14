@@ -244,16 +244,30 @@ def g:Test_ProcessMessages_PassesBackSyncRpcReply()
   assert_equal([], traceMsgs)
 enddef
 
-# Start a job that stands in for a language server: it sends "messages" and
-# then reads what it is sent without ever replying.
-def StartStubServerJob(messages: list<dict<any>>, jobOpts: dict<any> = {}): job
-  var output = messages->mapnew((_, msg) => {
+# Returns the LSP "messages" as a language server sends them.
+def EncodeLspMessages(messages: list<dict<any>>): string
+  return messages->mapnew((_, msg) => {
     var body = msg->json_encode()
     return $"Content-Length: {body->len()}\r\n\r\n{body}"
   })->join('')
+enddef
+
+# Start a job that stands in for a language server: it sends "messages" and
+# then reads what it is sent without ever replying.
+def StartStubServerJob(messages: list<dict<any>>, jobOpts: dict<any> = {}): job
   return job_start(['sh', '-c', 'printf "%s" "$1"; exec cat >/dev/null', 'sh',
-		    output],
+		    EncodeLspMessages(messages)],
 		   {in_mode: 'lsp', out_mode: 'lsp', noblock: 1}->extend(jobOpts))
+enddef
+
+# Start a job like StartStubServerJob() that sends the messages in each of
+# "steps" a second after the ones in the step before.
+def StartSteppedStubServerJob(steps: list<list<dict<any>>>): job
+  var script: string = range(1, steps->len())
+    ->mapnew((_, i) => $'printf "%s" "${i}"')->join('; sleep 1; ')
+  return job_start(['sh', '-c', $'{script}; exec cat >/dev/null', 'sh']
+		     + steps->mapnew((_, msgs) => EncodeLspMessages(msgs)),
+		   {in_mode: 'lsp', out_mode: 'lsp', noblock: 1})
 enddef
 
 # Test that a synchronous request is cancelled when its reply doesn't arrive
@@ -897,6 +911,213 @@ def g:Test_GotoDefinition_RetriesOnContentModified()
 		 notifications->copy()->filter((_, n) => n.method == '$/cancelRequest'))
   finally
     StopAsyncReplyingLspServer(lspserver, bnr)
+    :%bw!
+  endtry
+enddef
+
+# Test that the keys pending after ":LspGotoDefinition", from a mapping,
+# ":normal", a register or feedkeys(), wait for the reply and act on the
+# definition.
+def g:Test_GotoDefinition_PendingKeysWaitForReply()
+  silent! edit XGotoDefinitionPendingKeys.txt
+  var bnr = bufnr()
+  var pos = {line: 1, character: 1}
+  var location = {uri: util.LspBufnrToUri(bnr), range: {start: pos, end: pos}}
+  nnoremap <buffer> <F2> <Cmd>LspGotoDefinition<CR>rX
+  setreg('q', ":LspGotoDefinition\<CR>rX")
+  try
+    for [source, Run] in [
+	['mapping', () => feedkeys("\<F2>", 'xt')],
+	[':normal', () => execute("normal :LspGotoDefinition\<CR>rX")],
+	['register', () => execute('normal @q')],
+	['feedkeys()', () => feedkeys(":LspGotoDefinition\<CR>rX", 'xt')]]
+      setline(1, ['use def', 'def'])
+      var lspserver = MakeAsyncReplyingLspServer([location])
+      lspserver.isDefinitionProvider = true
+      cursor(1, 5)
+      Run()
+      assert_equal(['use def', 'dXf'], getline(1, '$'), source)
+      assert_equal([2, 2], [line('.'), col('.')], source)
+      StopAsyncReplyingLspServer(lspserver, bnr)
+    endfor
+  finally
+    nunmap <buffer> <F2>
+    setreg('q', [])
+    :%bw!
+  endtry
+enddef
+
+# Test that the keys pending after ":LspGotoDefinition" also wait for the
+# request sent again when the language server replies ContentModified.
+def g:Test_GotoDefinition_PendingKeysWaitForRetry()
+  silent! edit XGotoDefinitionPendingRetry.txt
+  setline(1, ['use def', 'def'])
+  var bnr = bufnr()
+  var pos = {line: 1, character: 1}
+  var location = {uri: util.LspBufnrToUri(bnr), range: {start: pos, end: pos}}
+  var lspserver = MakeAsyncReplyingLspServer([])
+  lspserver.isDefinitionProvider = true
+  try
+    job_stop(lspserver.job)
+    # The reply to the request sent again comes a second later
+    lspserver.job = StartSteppedStubServerJob([ContentModifiedReplies(1),
+      [{jsonrpc: '2.0', id: 2, result: location}]])
+    cursor(1, 5)
+    exe "normal :LspGotoDefinition\<CR>rX"
+    assert_equal(['use def', 'dXf'], getline(1, '$'))
+  finally
+    StopAsyncReplyingLspServer(lspserver, bnr)
+    :%bw!
+  endtry
+enddef
+
+# Test that the keys pending after ":LspRename" in a mapping are read by the
+# prompt for the new name, which opens when the language server replied to
+# "textDocument/prepareRename", and that the keys after them act on the
+# renamed text.
+def g:Test_LspRename_PendingKeysWaitForRename()
+  silent! edit XLspRenamePendingKeys.txt
+  setline(1, ['foo bar foo'])
+  var bnr = bufnr()
+  var edit = {changes: {[util.LspBufnrToUri(bnr)]: [
+    MakeTextEdit(0, 0, 0, 3, 'baz'), MakeTextEdit(0, 8, 0, 11, 'baz')]}}
+  var range = {start: {line: 0, character: 0}, end: {line: 0, character: 3}}
+  var lspserver = MakeAsyncReplyingLspServer([])
+  lspserver.isRenameProvider = true
+  lspserver.isRenamePrepareProvider = true
+  job_stop(lspserver.job)
+  # The reply to the rename comes a second after the one to prepareRename
+  lspserver.job = StartSteppedStubServerJob([
+    [{jsonrpc: '2.0', id: 1, result: range}],
+    [{jsonrpc: '2.0', id: 2, result: edit}]])
+  nnoremap <buffer> <F2> <Cmd>LspRename<CR><C-U>baz<CR>$rX
+  try
+    cursor(1, 1)
+    feedkeys("\<F2>", 'xt')
+    assert_equal(['baz bar baX'], getline(1, '$'))
+  finally
+    StopAsyncReplyingLspServer(lspserver, bnr)
+    nunmap <buffer> <F2>
+    :%bw!
+  endtry
+enddef
+
+# Test that the keys pending after an LSP command stop waiting for the reply
+# after the channel timeout, and that the request is not cancelled then.
+def g:Test_PendingKeys_StopWaitingAfterTimeout()
+  silent! edit XPendingKeysTimeout.txt
+  setline(1, ['use def', 'def'])
+  var bnr = bufnr()
+  var notifications: list<dict<any>> = []
+  var lspserver = MakeTestLspServer(notifications)
+  lspserver.running = true
+  lspserver.ready = true
+  lspserver.isDefinitionProvider = true
+  # A language server that never replies
+  lspserver.job = StartStubServerJob([], {timeout: 100})
+  buf.BufLspServerSet(bnr, lspserver)
+  try
+    cursor(1, 5)
+    exe "normal :LspGotoDefinition\<CR>rX"
+    assert_equal(['use Xef', 'def'], getline(1, '$'))
+    assert_equal(['textDocument/definition'],
+		 lspserver.pendingRequests->values())
+    assert_equal([], notifications->copy()
+      ->filter((_, n) => n.method == '$/cancelRequest'))
+  finally
+    StopAsyncReplyingLspServer(lspserver, bnr)
+    :%bw!
+  endtry
+enddef
+
+# Test that the keys pending after ":LspHover", which only shows something,
+# don't wait for the reply.
+def g:Test_LspHover_PendingKeysDontWait()
+  silent! edit XLspHoverPendingKeys.txt
+  setline(1, ['foo'])
+  var bnr = bufnr()
+  var lspserver = MakeAsyncReplyingLspServer([{contents: 'Foo'}])
+  lspserver.isHoverProvider = true
+  try
+    cursor(1, 1)
+    exe "normal :LspHover\<CR>rX"
+    assert_equal(['Xoo'], getline(1, '$'))
+    assert_equal(['textDocument/hover'], lspserver.pendingRequests->values())
+    g:WaitForReplies()
+  finally
+    popup_clear()
+    StopAsyncReplyingLspServer(lspserver, bnr)
+    :%bw!
+  endtry
+enddef
+
+# The language server and the events of Test_PendingKeys_ChainedRequests().
+var chainServer: dict<any> = {}
+var chainEvents: list<string> = []
+
+# Send the request "first" for a user action to "chainServer".  Its reply
+# callback sends the request "second" and triggers the LspTestChain User
+# autocommand.
+def g:ChainRequests()
+  chainServer.rpc_a('first', {}, (_, result: any, _) => {
+    chainEvents->add($'{result} start')
+    chainServer.rpc_a('second', {}, (_, r: any, _) => {
+      chainEvents->add(r)
+    })
+    doautocmd <nomodeline> User LspTestChain
+    chainEvents->add($'{result} end')
+  }, {beforePendingKeys: true})
+enddef
+
+# Send the request "third" to "chainServer", for the LspTestChain User
+# autocommand.
+def ChainAutocmdRequest()
+  chainServer.rpc_a('third', {}, (_, result: any, _) => {
+    chainEvents->add(result)
+  })
+enddef
+
+# Record that the keys after g:ChainRequests() ran.
+def g:ChainKeys()
+  chainEvents->add('keys')
+enddef
+
+# Test that the keys pending after a request for a user action also wait for
+# the requests that its reply callback sends, which the callback doesn't wait
+# for itself, but not for the requests that an autocommand triggered by the
+# callback sends.
+def g:Test_PendingKeys_ChainedRequests()
+  silent! edit XPendingKeysChained.txt
+  var bnr = bufnr()
+  chainEvents = []
+  chainServer = MakeTestLspServer([])
+  chainServer.running = true
+  chainServer.ready = true
+  # Vim numbers the requests from 1, in the order they are sent.  Each reply
+  # comes a second after the one before, so that the keys wait for the reply
+  # to "second" only if they wait for the request, and run before the reply
+  # to "third" unless they wait for that request.
+  chainServer.job = StartSteppedStubServerJob([
+    [{jsonrpc: '2.0', id: 1, result: 'first'}],
+    [{jsonrpc: '2.0', id: 2, result: 'second'}],
+    [{jsonrpc: '2.0', id: 3, result: 'third'}]])
+  buf.BufLspServerSet(bnr, chainServer)
+  augroup TestPendingKeysChain
+    autocmd User LspTestChain ChainAutocmdRequest()
+  augroup END
+  try
+    feedkeys(":call g:ChainRequests()\<CR>:call g:ChainKeys()\<CR>", 'xt')
+    assert_equal(['first start', 'first end', 'second', 'keys'], chainEvents)
+    g:WaitForReplies()
+    assert_equal(['first start', 'first end', 'second', 'keys', 'third'],
+		 chainEvents)
+  finally
+    augroup TestPendingKeysChain
+      autocmd!
+    augroup END
+    augroup! TestPendingKeysChain
+    StopAsyncReplyingLspServer(chainServer, bnr)
+    chainServer = {}
     :%bw!
   endtry
 enddef
@@ -3018,7 +3239,7 @@ def MakeDiagCodeActionServer(posEncoding: number, diags: list<dict<any>>,
   lspserver.features = {diagnostics: true}
   lspserver.featureEnabled = (_) => true
   lspserver.isCodeActionProvider = true
-  lspserver.rpc_a = (_, params, _) => {
+  lspserver.rpc_a = (_, params, _, _: dict<any> = {}) => {
     sentParams->add(params->deepcopy())
     return 1
   }
@@ -4938,7 +5159,7 @@ def MakeAutoFixServer(posEncoding: number, diags: list<dict<any>>,
   lspserver.name = 'autofix'
   lspserver.running = true
   lspserver.ready = true
-  lspserver.rpc_a = (_, params, Cbfunc) => {
+  lspserver.rpc_a = (_, params, Cbfunc, _: dict<any> = {}) => {
     Cbfunc({}, (echo ? params.context.diagnostics : diags)
       ->mapnew((_, d) => AutoFixAction(d)), {})
     return 1
@@ -6730,14 +6951,15 @@ def g:Test_LspRename_PrepareRenameAfterCursorMoved()
       var lspserver = MakePrepareRenameLspServer({result: range}, newNames,
 						 positions)
       cursor(1, 1)
-      # A prompt would read the <Esc> and cancel
-      feedkeys("\<Esc>", 't')
       exe cmd
       if action == 'move'
 	cursor(1, 5)
       elseif action == 'change'
 	setline(1, ['foo baz'])
       endif
+      # A prompt would read the <Esc> and cancel.  Fed after the command, as
+      # the command waits for the reply when keys are pending.
+      feedkeys("\<Esc>", 't')
       g:WaitForAssert(() => assert_equal({}, lspserver.supersedableRequests))
       assert_equal(expected, newNames, $'{cmd}, action: {action}')
       assert_equal(expected->mapnew((_, _) => pos), positions)
@@ -7651,7 +7873,7 @@ def MakeOutlineServer(): dict<any>
   lspserver.running = true
   lspserver.ready = true
   lspserver.isDocumentSymbolProvider = true
-  lspserver.rpc_a = (method: string, params: any, Cbfunc: func): number => {
+  lspserver.rpc_a = (method: string, params: any, Cbfunc: func, _: dict<any> = {}): number => {
     var symbols: list<dict<any>> = []
     var lines = util.LspUriToBufnr(params.textDocument.uri)->getbufline(1, '$')
     for idx in range(lines->len())
@@ -7774,7 +7996,7 @@ def g:Test_LspOutline_InTwoTabPages_KeepsSymbolsUntilReply()
     :LspOutline
     var outlineBnr: number = ScratchBufsInTab()[0]
     var outlineLines: list<string> = outlineBnr->getbufline(1, '$')
-    lspserver.rpc_a = (method: string, params: any, Cbfunc: func): number => 1
+    lspserver.rpc_a = (method: string, params: any, Cbfunc: func, ..._): number => 1
 
     :tab split
     :LspOutline
@@ -7850,7 +8072,7 @@ def g:Test_LspOutline_RefreshesAfterError()
     var outlineBnr: number = ScratchBufsInTab()[0]
 
     # A symbol whose selection range has no line
-    lspserver.rpc_a = (method: string, params: any, Cbfunc: func): number => {
+    lspserver.rpc_a = (method: string, params: any, Cbfunc: func, _: dict<any> = {}): number => {
       var symRange = {start: {line: 0, character: 5},
 		      end: {line: 0, character: 17}}
       Cbfunc(lspserver, [{name: 'aOutlineFunc', kind: 12, range: symRange,
@@ -7927,7 +8149,7 @@ def MakeDocSymbolsServer(hierarchical: bool): dict<any>
   lspserver.running = true
   lspserver.ready = true
   lspserver.isDocumentSymbolProvider = true
-  lspserver.rpc_a = (method: string, params: any, Cbfunc: func): number => {
+  lspserver.rpc_a = (method: string, params: any, Cbfunc: func, _: dict<any> = {}): number => {
     Cbfunc(lspserver, DocSymbolsReply(params.textDocument.uri, hierarchical),
 	   {})
     return 1

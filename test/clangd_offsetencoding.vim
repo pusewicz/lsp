@@ -497,10 +497,9 @@ def g:Test_LspSelection_multibyte()
   END
   setline(1, lines)
   g:WaitForServerFileLoad(0)
-  # The mappings wait for the selection range reply, as a user does before
-  # typing the next key.
-  xnoremap <silent> le <Cmd>LspSelectionExpand<CR><Cmd>call g:WaitForReplies()<CR>
-  xnoremap <silent> ls <Cmd>LspSelectionShrink<CR><Cmd>call g:WaitForReplies()<CR>
+  # The keys after the mappings wait for the selection range reply
+  xnoremap <silent> le <Cmd>LspSelectionExpand<CR>
+  xnoremap <silent> ls <Cmd>LspSelectionShrink<CR>
 
   var body: string = join(lines[1 : 5], "\n")
   var expected: list<string> = ['"ééé😊 x"', 'char *s = "ééé😊 x"',
