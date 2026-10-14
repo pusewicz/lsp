@@ -466,6 +466,9 @@ export def GetClientCaps(): dict<any>
       codeLens: {
 	dynamicRegistration: false
       },
+      colorProvider: {
+	dynamicRegistration: false
+      },
       completion: {
 	dynamicRegistration: false,
 	completionItem: {
