@@ -45,14 +45,17 @@ def g:Test_LspCodeAction_multibyte()
   cursor(5, 5)
   redraw!
   :LspCodeAction 1
+  g:WaitForReplies()
   assert_equal('    printf("😊😊😊😊 = %d\n", aVar);', getline(5))
   cursor(6, 5)
   redraw!
   :LspCodeAction 1
+  g:WaitForReplies()
   assert_equal('    printf("áb́áb́ = %d\n", aVar);', getline(6))
   cursor(7, 5)
   redraw!
   :LspCodeAction 1
+  g:WaitForReplies()
   assert_equal('    printf("ą́ą́ą́ą́ = %d\n", aVar);', getline(7))
 
   :%bw!
@@ -155,6 +158,7 @@ def g:Test_LspDocumentLink_multibyte()
   g:WaitForServerFileLoad(0)
   setlocal nomodified
   :LspDocumentLink
+  g:WaitForReplies()
   var loclist: list<dict<any>> = getloclist(0)
   assert_equal(1, loclist->len())
   assert_equal([1, 10, 1, 26, 'Xdoclink😊.h'],
@@ -165,6 +169,7 @@ def g:Test_LspDocumentLink_multibyte()
   # The cursor is on the closing quote, the last character of the link
   cursor(1, 25)
   :LspDocumentLinkOpen
+  g:WaitForReplies()
   assert_equal('Xdoclink😊.h', expand('%:t'))
 
   :%bw!
@@ -217,6 +222,7 @@ def g:Test_LspFormat_multibyte()
   g:WaitForServerFileLoad(0)
   :redraw!
   :LspFormat
+  g:WaitForReplies()
   var expected =<< trim END
     void fn(int aVar) {
       int 😊😊😊😊 = aVar + 1;
@@ -246,6 +252,7 @@ def g:Test_LspFormat_range_multibyte()
   finally
     lspserver.rpc_a = SavedRpc
   endtry
+  g:WaitForReplies()
 
   # Length of the second line in the UTF-8, UTF-16 and UTF-32 encodings
   var lineLen: dict<number> = {8: 21, 16: 19, 32: 19}
@@ -277,6 +284,7 @@ def g:Test_LspGotoDefinition_multibyte()
   for [lnum, colnr] in [[4, 27], [5, 39], [6, 35], [7, 43]]
     cursor(lnum, colnr)
     :LspGotoDefinition
+    g:WaitForReplies()
     assert_equal([2, 13], [line('.'), col('.')])
   endfor
 
@@ -305,27 +313,35 @@ def g:Test_LspGotoDefinition_after_multibyte()
   :redraw!
   cursor(7, 5)
   :LspGotoDefinition
+  g:WaitForReplies()
   assert_equal([3, 88], [line('.'), col('.')])
   cursor(8, 5)
   :LspGotoDefinition
+  g:WaitForReplies()
   assert_equal([4, 96], [line('.'), col('.')])
   cursor(9, 5)
   :LspGotoDefinition
+  g:WaitForReplies()
   assert_equal([5, 92], [line('.'), col('.')])
   cursor(10, 5)
   :LspGotoDefinition
+  g:WaitForReplies()
   assert_equal([6, 100], [line('.'), col('.')])
   cursor(11, 12)
   :LspGotoDefinition
+  g:WaitForReplies()
   assert_equal([3, 78], [line('.'), col('.')])
   cursor(11, 23)
   :LspGotoDefinition
+  g:WaitForReplies()
   assert_equal([4, 78], [line('.'), col('.')])
   cursor(11, 42)
   :LspGotoDefinition
+  g:WaitForReplies()
   assert_equal([5, 78], [line('.'), col('.')])
   cursor(11, 57)
   :LspGotoDefinition
+  g:WaitForReplies()
   assert_equal([6, 78], [line('.'), col('.')])
 
   :%bw!
@@ -351,17 +367,17 @@ def g:Test_OmniComplete_multibyte()
   redraw!
 
   cursor(6, 4)
-  feedkeys("aaV\<C-X>\<C-O> = 😊😊\<C-X>\<C-O>;", 'xt')
+  g:FeedOmniCompleteKeys("aaV\<C-X>\<C-O> = 😊😊\<C-X>\<C-O>;")
   assert_equal('    aVar = 😊😊😊😊;', getline('.'))
   cursor(7, 4)
-  feedkeys("abV\<C-X>\<C-O> = áb́\<C-X>\<C-O>;", 'xt')
+  g:FeedOmniCompleteKeys("abV\<C-X>\<C-O> = áb́\<C-X>\<C-O>;")
   assert_equal('    bVar = áb́áb́;', getline('.'))
   cursor(8, 4)
-  feedkeys("acV\<C-X>\<C-O> = ą́ą́\<C-X>\<C-O>;", 'xt')
+  g:FeedOmniCompleteKeys("acV\<C-X>\<C-O> = ą́ą́\<C-X>\<C-O>;")
   assert_equal('    cVar = ą́ą́ą́ą́;', getline('.'))
-  feedkeys("oáb́\<C-X>\<C-O> = ą́ą́\<C-X>\<C-O>;", 'xt')
+  g:FeedOmniCompleteKeys("oáb́\<C-X>\<C-O> = ą́ą́\<C-X>\<C-O>;")
   assert_equal('    áb́áb́ = ą́ą́ą́ą́;', getline('.'))
-  feedkeys("oą́ą́\<C-X>\<C-O> = áb́\<C-X>\<C-O>;", 'xt')
+  g:FeedOmniCompleteKeys("oą́ą́\<C-X>\<C-O> = áb́\<C-X>\<C-O>;")
   assert_equal('    ą́ą́ą́ą́ = áb́áb́;', getline('.'))
   :%bw!
 enddef
@@ -392,6 +408,7 @@ def g:Test_Outline_multibyte()
 
   cursor(1, 1)
   :LspOutline
+  g:WaitForReplies()
   assert_equal(2, winnr('$'))
   assert_equal(['Class@', '  😊😊😊😊',
 		"  a\u0301b\u0301a\u0301b\u0301",
@@ -450,6 +467,7 @@ def g:Test_LspRename_multibyte()
   redraw!
   cursor(2, 12)
   :LspRename bVar
+  g:WaitForReplies()
   redraw!
   var expected: list<string> =<< trim END
     #include <stdio.h>
@@ -479,8 +497,10 @@ def g:Test_LspSelection_multibyte()
   END
   setline(1, lines)
   g:WaitForServerFileLoad(0)
-  xnoremap <silent> le <Cmd>LspSelectionExpand<CR>
-  xnoremap <silent> ls <Cmd>LspSelectionShrink<CR>
+  # The mappings wait for the selection range reply, as a user does before
+  # typing the next key.
+  xnoremap <silent> le <Cmd>LspSelectionExpand<CR><Cmd>call g:WaitForReplies()<CR>
+  xnoremap <silent> ls <Cmd>LspSelectionShrink<CR><Cmd>call g:WaitForReplies()<CR>
 
   var body: string = join(lines[1 : 5], "\n")
   var expected: list<string> = ['"ééé😊 x"', 'char *s = "ééé😊 x"',
@@ -528,6 +548,7 @@ def g:Test_LspShowReferences_multibyte()
   redraw!
   cursor(4, 27)
   :LspShowReferences
+  g:WaitForReplies()
   assert_equal([[2, 13, 2, 17], [4, 27, 4, 31], [5, 39, 5, 43], [6, 35, 6, 39],
 		[7, 43, 7, 47]],
 	       getloclist(0)->mapnew((_, v) => [v.lnum, v.col, v.end_lnum, v.end_col]))
@@ -552,11 +573,13 @@ def g:Test_LspShowReferences_multibyte_symbol()
   redraw!
   cursor(4, 5)
   :LspShowReferences
+  g:WaitForReplies()
   assert_equal([[3, 9, 3, 25], [4, 5, 4, 21], [4, 39, 4, 55]],
 	       getloclist(0)->mapnew((_, v) => [v.lnum, v.col, v.end_lnum, v.end_col]))
   :lclose
   cursor(4, 24)
   :LspShowReferences
+  g:WaitForReplies()
   assert_equal([[3, 31, 3, 43], [4, 24, 4, 36]],
 	       getloclist(0)->mapnew((_, v) => [v.lnum, v.col, v.end_lnum, v.end_col]))
   :lclose
@@ -615,12 +638,15 @@ def g:Test_LspSymbolSearch_multibyte()
 
   cursor(1, 1)
   feedkeys(":LspSymbolSearch Func1\<CR>", "xt")
+  g:WaitForReplies()
   assert_equal([5, 18], [line('.'), col('.')])
   cursor(1, 1)
   feedkeys(":LspSymbolSearch Func2\<CR>", "xt")
+  g:WaitForReplies()
   assert_equal([9, 14], [line('.'), col('.')])
   cursor(1, 1)
   feedkeys(":LspSymbolSearch Func3\<CR>", "xt")
+  g:WaitForReplies()
   assert_equal([13, 22], [line('.'), col('.')])
 
   :%bw!
@@ -679,31 +705,37 @@ def g:Test_LspTypeHier_multibyte()
 
   cursor(1, 42)
   :LspSubTypeHierarchy
+  g:WaitForReplies()
   call feedkeys("\<CR>", 'xt')
   assert_equal([1, 36], [line('.'), col('.')])
   cursor(1, 42)
 
   :LspSubTypeHierarchy
+  g:WaitForReplies()
   call feedkeys("\<Down>\<CR>", 'xt')
   assert_equal([4, 42], [line('.'), col('.')])
 
   cursor(1, 42)
   :LspSubTypeHierarchy
+  g:WaitForReplies()
   call feedkeys("\<Down>\<Down>\<CR>", 'xt')
   assert_equal([7, 42], [line('.'), col('.')])
 
   cursor(7, 42)
   :LspSuperTypeHierarchy
+  g:WaitForReplies()
   call feedkeys("\<CR>", 'xt')
   assert_equal([7, 36], [line('.'), col('.')])
 
   cursor(7, 42)
   :LspSuperTypeHierarchy
+  g:WaitForReplies()
   call feedkeys("\<Down>\<CR>", 'xt')
   assert_equal([4, 42], [line('.'), col('.')])
 
   cursor(7, 42)
   :LspSuperTypeHierarchy
+  g:WaitForReplies()
   call feedkeys("\<Down>\<Down>\<CR>", 'xt')
   assert_equal([1, 42], [line('.'), col('.')])
 

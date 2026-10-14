@@ -50,7 +50,7 @@ def g:Test_LspCompletion1()
   g:LSPTest_complItems = []
   inoremap <buffer> <F5> <Cmd>call add(g:LSPTest_complItems, complete_info(['items']).items->map((_, v) => v.word))<CR>
   # Complete "http.cr", then "http.cre" and then "http.cr" again
-  feedkeys("GA\<C-X>\<C-O>\<F5>\<C-E>e\<C-X>\<C-O>\<F5>\<C-E>\<BS>\<C-X>\<C-O>\<F5>\<C-E>\<Esc>", 'xt')
+  g:FeedOmniCompleteKeys("GA\<C-X>\<C-O>\<F5>\<C-E>e\<C-X>\<C-O>\<F5>\<C-E>\<BS>\<C-X>\<C-O>\<F5>\<C-E>\<Esc>")
   assert_equal([
     ['crawl', 'createConnection', 'createServer'],
     ['createConnection', 'createServer'],
@@ -85,20 +85,19 @@ def g:Test_LspGoto()
   g:WaitForServerFileLoad(0)
 
   cursor(8, 1)
-  assert_equal('', execute('LspGotoDefinition'))
+  assert_equal('', execute(['LspGotoDefinition', 'g:WaitForReplies()']))
   assert_equal([1, 10], [line('.'), col('.')])
 
   cursor(9, 1)
-  assert_equal('', execute('LspGotoDefinition'))
+  assert_equal('', execute(['LspGotoDefinition', 'g:WaitForReplies()']))
   assert_equal([2, 10], [line('.'), col('.')])
 
   cursor(9, 1)
-  assert_equal('', execute('LspGotoDefinition'))
+  assert_equal('', execute(['LspGotoDefinition', 'g:WaitForReplies()']))
   assert_equal([2, 10], [line('.'), col('.')])
 
   cursor(7, 8)
-  assert_equal('', execute('LspGotoDefinition'))
-  sleep 200m
+  assert_equal('', execute(['LspGotoDefinition', 'g:WaitForReplies()']))
   var loclist: list<dict<any>> = getloclist(0)
   assert_equal('quickfix', getwinvar(winnr('$'), '&buftype'))
   assert_equal(3, loclist->len())
@@ -110,8 +109,7 @@ def g:Test_LspGoto()
 
   g:LspOptionsSet({ useQuickfixForLocations: true })
   cursor(7, 8)
-  assert_equal('', execute('LspGotoDefinition'))
-  sleep 200m
+  assert_equal('', execute(['LspGotoDefinition', 'g:WaitForReplies()']))
   var qfl: list<dict<any>> = getqflist()
   assert_equal('quickfix', getwinvar(winnr('$'), '&buftype'))
   assert_equal(3, qfl->len())
@@ -128,7 +126,7 @@ def g:Test_LspGoto()
   setlocal nomodified
   cursor(7, 8)
   :LspPeekDefinition
-  sleep 10m
+  g:WaitForReplies()
   var ids = popup_list()
   assert_equal(2, ids->len())
   var filePopupAttrs = ids[0]->popup_getoptions()
@@ -160,10 +158,12 @@ def g:Test_LspUtf16Positions()
   # Decoding: the definition is after the emoji.
   cursor(2, 27)
   :LspGotoDefinition
+  g:WaitForReplies()
   assert_equal([1, 33], [line('.'), col('.')])
 
   # Encoding: the cursor is after the emoji.
   :LspShowReferences
+  g:WaitForReplies()
   var qfl: list<dict<any>> = getloclist(0)
   assert_equal(2, qfl->len())
   assert_equal([1, 33], [qfl[0].lnum, qfl[0].col])
@@ -197,11 +197,13 @@ def g:Test_LspCodeActionDocumentVersion()
   try
     cursor(1, 27)
     :LspCodeAction
+    g:WaitForReplies()
     var winid = popup_list()[0]
     var choice = getbufline(winbufnr(winid), 1, '$')->match('Change spelling')
     assert_true(choice >= 0)
     append('$', '// changed while the menu is shown')
     feedkeys(repeat('j', choice) .. "\<CR>", 'xt')
+    g:WaitForReplies()
     assert_equal([], popup_list())
     assert_equal([line, '// changed while the menu is shown'], getline(1, '$'))
     assert_match('^Error: Text document edit failed, the edit is for version ',
@@ -210,6 +212,7 @@ def g:Test_LspCodeActionDocumentVersion()
     :$delete
     cursor(1, 27)
     :LspCodeAction /Change spelling
+    g:WaitForReplies()
     assert_equal(["const smile = '😀😀'; console.log(smile);"], getline(1, '$'))
   finally
     g:LspOptionsSet({usePopupInCodeAction: false})

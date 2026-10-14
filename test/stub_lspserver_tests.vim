@@ -298,41 +298,56 @@ def g:Test_Rpc_CancelsInterruptedRequest()
   endtry
 enddef
 
+# Test that an asynchronous request is pending until its reply arrives.
+def g:Test_AsyncRpc_PendingUntilReplied()
+  var lspserver = MakeTestLspServer([])
+  # Vim numbers the asynchronous requests on a new channel from 1.
+  lspserver.job = StartStubServerJob([{jsonrpc: '2.0', id: 1, result: {}}])
+  try
+    var replied = false
+    lspserver.rpc_a('test/replied', {}, (_, _, _) => {
+      replied = true
+    })
+    lspserver.rpc_a('test/noReply', {}, (_, _, _) => {
+    })
+    assert_equal({1: 'test/replied', 2: 'test/noReply'},
+		 lspserver.pendingRequests)
+    g:WaitForAssert(() => assert_true(replied))
+    assert_equal({2: 'test/noReply'}, lspserver.pendingRequests)
+  finally
+    job_stop(lspserver.job)
+  endtry
+enddef
+
 # Test that a reply saying that the request was cancelled, by the client or by
 # the server, or that the content it was about was modified, is not reported
 # as an error, and that the callback of an asynchronous request then gets no
 # result.
 def g:Test_Rpc_StaleRequestReplyIsNotAnError()
-  # Send the asynchronous requests asynchronously, as outside the tests.
-  g:LSPTest = false
-  try
-    for code in [-32800, -32801, -32802]
-      var notifications: list<dict<any>> = []
-      var lspserver = MakeTestLspServer(notifications)
-      var syncId = lspserver.nextSyncRpcId
-      var stale = {code: code, message: 'stale'}
-      # Vim numbers the asynchronous requests on a new channel from 1.
-      lspserver.job = StartStubServerJob([
-	{jsonrpc: '2.0', id: 1, error: stale},
-	{jsonrpc: '2.0', id: syncId, error: stale}
-      ])
-      var beforeMessages = execute('messages')
+  for code in [-32800, -32801, -32802]
+    var notifications: list<dict<any>> = []
+    var lspserver = MakeTestLspServer(notifications)
+    var syncId = lspserver.nextSyncRpcId
+    var stale = {code: code, message: 'stale'}
+    # Vim numbers the asynchronous requests on a new channel from 1.
+    lspserver.job = StartStubServerJob([
+      {jsonrpc: '2.0', id: 1, error: stale},
+      {jsonrpc: '2.0', id: syncId, error: stale}
+    ])
+    var beforeMessages = execute('messages')
 
-      var replies: list<list<any>> = []
-      assert_equal(1, lspserver.rpc_a('test/stale', {},
-	(_, reply, error) => {
-	  replies->add([reply, error])
-	}))
-      assert_equal({}, lspserver.rpc('test/stale', {}))
-      g:WaitForAssert(() => assert_equal([[v:null, {}]], replies))
-      job_stop(lspserver.job)
+    var replies: list<list<any>> = []
+    assert_equal(1, lspserver.rpc_a('test/stale', {},
+      (_, reply, error) => {
+	replies->add([reply, error])
+      }))
+    assert_equal({}, lspserver.rpc('test/stale', {}))
+    g:WaitForAssert(() => assert_equal([[v:null, {}]], replies))
+    job_stop(lspserver.job)
 
-      assert_equal(beforeMessages, execute('messages'))
-      assert_equal([], notifications)
-    endfor
-  finally
-    g:LSPTest = true
-  endtry
+    assert_equal(beforeMessages, execute('messages'))
+    assert_equal([], notifications)
+  endfor
 enddef
 
 # Test that the maps and lists in the server dict that grow with the number of
@@ -343,6 +358,7 @@ def g:Test_ServerState_StaysTyped()
   var types = {
     messages: 'list<string>',
     syncRpcReplies: 'dict<dict<any>>',
+    pendingRequests: 'dict<string>',
     supersedableRequests: 'dict<dict<number>>',
     diagnosticResultIds: 'dict<string>',
     pendingPullBufnrs: 'dict<bool>',
@@ -391,18 +407,15 @@ def g:Test_ServerState_StaysTyped()
   endtry
   AssertTyped(lspserver, 'after a document was closed and the queued pulls were sent')
 
-  # Start the server asynchronously, as outside the tests, and let it exit.
+  # Start the server and let it exit.
   lspserver.running = false
   lspserver.path = 'sh'
   lspserver.args = ['-c', 'exec cat >/dev/null']
-  g:LSPTest = false
-  try
-    lspserver.startServer(bnr)
-    job_stop(lspserver.job)
-    g:WaitForAssert(() => assert_false(lspserver.running))
-  finally
-    g:LSPTest = true
-  endtry
+  lspserver.startServer(bnr)
+  job_stop(lspserver.job)
+  g:WaitForAssert(() => assert_false(lspserver.running))
+  # The initialize request that it didn't reply to is no longer pending
+  assert_equal({}, lspserver.pendingRequests)
   AssertTyped(lspserver, 'after the server was started and exited')
   :%bw!
 enddef
@@ -412,9 +425,7 @@ enddef
 def g:Test_ServerExit_ReportsHow()
   silent! edit XServerExit.txt
   var bnr = bufnr()
-  # Start the server asynchronously, as outside the tests.  It exits once it
-  # has read the start of the "initialize" request.
-  g:LSPTest = false
+  # The server exits once it has read the start of the "initialize" request.
   try
     for [cmd, how] in [['read l; exit 3', 'exited with status 3'],
 		       ['read l; kill -SEGV $$', 'was killed by signal SEGV']]
@@ -432,7 +443,6 @@ def g:Test_ServerExit_ReportsHow()
       assert_equal([$'LSP server {how}'], traceMsgs)
     endfor
   finally
-    g:LSPTest = true
     :%bw!
   endtry
 enddef
@@ -513,7 +523,7 @@ enddef
 # document that the request is about is sent first.
 def g:Test_Rpc_SendsPendingChangesOfItsDocumentFirst()
   var messages: list<dict<any>> = []
-  var [lspserver, bufnrs, listenerIds] = OpenTwoTestDocuments(messages, [[]])
+  var [lspserver, bufnrs, listenerIds] = OpenTwoTestDocuments(messages, [])
   try
     setbufline(bufnrs[0], 1, 'ONE')
     setbufline(bufnrs[1], 1, 'TWO')
@@ -557,8 +567,6 @@ enddef
 def g:Test_AsyncRpc_SendsPendingChangesOfAllDocumentsForWorkspaceRequest()
   var messages: list<dict<any>> = []
   var [lspserver, bufnrs, listenerIds] = OpenTwoTestDocuments(messages, [])
-  # Send the request asynchronously, as outside the tests
-  g:LSPTest = false
   try
     setbufline(bufnrs[0], 1, 'ONE')
     lspserver.rpc_a('workspace/symbol', {query: ''}, (_, _, _) => {
@@ -570,7 +578,6 @@ def g:Test_AsyncRpc_SendsPendingChangesOfAllDocumentsForWorkspaceRequest()
 		 messages[0].params.textDocument.uri)
     assert_equal([{text: "ONE\n"}], messages[0].params.contentChanges)
   finally
-    g:LSPTest = true
     CloseTwoTestDocuments(lspserver, bufnrs, listenerIds)
   endtry
 enddef
@@ -587,8 +594,6 @@ def g:Test_SemanticHighlightUpdate_ContentModifiedIsNotAnError()
   lspserver.errorLog = (msg: string) => {
     errors->add(msg)
   }
-  # Send the request asynchronously, as outside the tests.
-  g:LSPTest = false
   # Vim numbers the asynchronous requests on a new channel from 1.
   lspserver.job = StartStubServerJob([{jsonrpc: '2.0', id: 1,
     error: {code: -32801, message: 'content modified'}}])
@@ -600,7 +605,6 @@ def g:Test_SemanticHighlightUpdate_ContentModifiedIsNotAnError()
     assert_equal([], errors)
     assert_equal('previous', getbufvar(bufnr(), 'LspSemanticResultId'))
   finally
-    g:LSPTest = true
     job_stop(lspserver.job)
   endtry
   :%bw!
@@ -613,8 +617,6 @@ def g:Test_ShowHoverInfo_ContentModifiedIsNotCached()
   silent! edit XHoverContentModified.txt
   var lspserver = MakeTestLspServer([])
   lspserver.isHoverProvider = true
-  # Send the request asynchronously, as outside the tests.
-  g:LSPTest = false
   # Vim numbers the asynchronous requests on a new channel from 1.
   lspserver.job = StartStubServerJob([{jsonrpc: '2.0', id: 1,
     error: {code: -32801, message: 'content modified'}}])
@@ -629,7 +631,6 @@ def g:Test_ShowHoverInfo_ContentModifiedIsNotCached()
     hover.HoverReply(lspserver, {contents: ''}, {}, 'silent', reqctx)
     assert_true(hover.HoverShowCached(reqctx, lspserver, 'silent'))
   finally
-    g:LSPTest = true
     job_stop(lspserver.job)
   endtry
   :%bw!
@@ -664,8 +665,6 @@ def g:Test_ErrorReply_ReportedOnce()
     [() => lspserver.getDocSymbols(fname, false),
      'textDocument/documentSymbol', true]
   ]
-  # Send the requests asynchronously, as outside the tests.
-  g:LSPTest = false
   try
     for [Request, method, reported] in requests
       # Vim numbers the asynchronous requests on a new channel from 1.
@@ -686,7 +685,6 @@ def g:Test_ErrorReply_ReportedOnce()
       job_stop(lspserver.job)
     endfor
   finally
-    g:LSPTest = true
     job_stop(lspserver.job)
   endtry
   :%bw!
@@ -773,7 +771,6 @@ def g:Test_GotoDefinition_DropsReplyAfterCursorMoved()
   var bnr = bufnr()
   var pos = {line: 1, character: 1}
   var location = {uri: util.LspBufnrToUri(bnr), range: {start: pos, end: pos}}
-  g:LSPTest = false
   try
     for moveCursor in [false, true]
       var lspserver = MakeAsyncReplyingLspServer([location])
@@ -790,7 +787,6 @@ def g:Test_GotoDefinition_DropsReplyAfterCursorMoved()
       StopAsyncReplyingLspServer(lspserver, bnr)
     endfor
   finally
-    g:LSPTest = true
     :%bw!
   endtry
 enddef
@@ -800,7 +796,6 @@ enddef
 def g:Test_LspFormat_DropsReplyAfterChange()
   silent! edit XLspFormatAsync.txt
   var bnr = bufnr()
-  g:LSPTest = false
   try
     for change in [false, true]
       setline(1, ['int  x;'])
@@ -818,7 +813,6 @@ def g:Test_LspFormat_DropsReplyAfterChange()
       :%d _
     endfor
   finally
-    g:LSPTest = true
     :%bw!
   endtry
 enddef
@@ -840,12 +834,10 @@ def g:Test_LspFormat_InBufWritePreFormatsBeforeWriting()
   augroup TestLspFormatOnWrite
     autocmd BufWritePre <buffer> LspFormat
   augroup END
-  g:LSPTest = false
   try
     :write
     assert_equal(['int x;'], readfile('XLspFormatOnWrite.txt'))
   finally
-    g:LSPTest = true
     autocmd! TestLspFormatOnWrite
     augroup! TestLspFormatOnWrite
     StopAsyncReplyingLspServer(lspserver, bnr)
@@ -868,12 +860,10 @@ def g:Test_LspFormatBang_WaitsForReply()
   lspserver.job = StartStubServerJob([{jsonrpc: '2.0',
     id: lspserver.nextSyncRpcId, result: [MakeTextEdit(0, 3, 0, 4, '')]}])
   buf.BufLspServerSet(bnr, lspserver)
-  g:LSPTest = false
   try
     LspFormat! | write
     assert_equal(['int x;'], readfile('XLspFormatBang.txt'))
   finally
-    g:LSPTest = true
     StopAsyncReplyingLspServer(lspserver, bnr)
     :%bw!
     delete('XLspFormatBang.txt')
@@ -895,7 +885,6 @@ def g:Test_PullDiagnostics_Async()
     queued->add(queuedBnr)
   }
   var DiagMessages = () => diag.GetDiagsForBuf(bnr)->mapnew((_, d) => d.message)
-  g:LSPTest = false
   try
     job_stop(lspserver.job)
     lspserver.job = StartStubServerJob([{jsonrpc: '2.0', id: 1,
@@ -912,7 +901,6 @@ def g:Test_PullDiagnostics_Async()
     assert_equal('r1', lspserver.diagnosticResultIds[bnr])
     assert_equal([bnr], queued)
   finally
-    g:LSPTest = true
     diag.DiagRemoveFile(bnr)
     StopAsyncReplyingLspServer(lspserver, bnr)
     :%bw!
@@ -930,7 +918,6 @@ def g:Test_PullDiagnostics_CancelledWhenDocumentClosed()
     {kind: 'full', items: [MakeLineDiag(0, 'stale')]}, v:null], notifications)
   lspserver.features = {diagnostics: true}
   lspserver.isDiagnosticsProvider = true
-  g:LSPTest = false
   try
     lspserver.pullDiagnostics(bnr)
     lspserver.textdocDidClose(bnr)
@@ -947,7 +934,6 @@ def g:Test_PullDiagnostics_CancelledWhenDocumentClosed()
     assert_equal([], diag.GetDiagsForBuf(bnr))
     assert_false(lspserver.diagnosticResultIds->has_key(bnr))
   finally
-    g:LSPTest = true
     StopAsyncReplyingLspServer(lspserver, bnr)
     :%bw!
   endtry
@@ -975,7 +961,6 @@ def g:Test_TypeHierarchy_RetrievesAllLevels()
     [MakeTypeHierarchyItem('A', uri, 0)],
     []])
   lspserver.isTypeHierarchyProvider = true
-  g:LSPTest = false
   try
     cursor(3, 7)
     lspserver.typeHierarchy(1)
@@ -984,7 +969,6 @@ def g:Test_TypeHierarchy_RetrievesAllLevels()
     assert_equal(['▾ C (C)', '| ▾ B (C)', '| |   A (C)'],
 		 lspserver.typeHierPopup->winbufnr()->getbufline(1, '$'))
   finally
-    g:LSPTest = true
     popup_clear()
     StopAsyncReplyingLspServer(lspserver, bnr)
     :%bw!
@@ -1034,23 +1018,24 @@ def g:Test_GotoDefinitionAndTagFunc_ErrorReplyFindsNothing()
   var lspserver = MakeTestLspServer([])
   lspserver.isDefinitionProvider = true
   lspserver.isWorkspaceSymbolProvider = true
-  var lookups: list<func> = [
-    () => {
-      lspserver.gotoDefinition(false, '', 0)
-    },
-    () => {
-      assert_equal(null, lspserver.tagFunc('XNoSuchTag', '', {}))
-    }
-  ]
-  for Lookup in lookups
-    lspserver.job = StartStubServerJob([{jsonrpc: '2.0',
-      id: lspserver.nextSyncRpcId, error: {code: -32603, message: 'failed'}}])
-    try
-      Lookup()
-    finally
-      job_stop(lspserver.job)
-    endtry
-  endfor
+  var failed = {code: -32603, message: 'failed'}
+
+  # Vim numbers the asynchronous requests on a new channel from 1.
+  lspserver.job = StartStubServerJob([{jsonrpc: '2.0', id: 1, error: failed}])
+  try
+    lspserver.gotoDefinition(false, '', 0)
+    g:WaitForAssert(() => assert_equal({}, lspserver.supersedableRequests))
+  finally
+    job_stop(lspserver.job)
+  endtry
+
+  lspserver.job = StartStubServerJob([{jsonrpc: '2.0',
+    id: lspserver.nextSyncRpcId, error: failed}])
+  try
+    assert_equal(null, lspserver.tagFunc('XNoSuchTag', '', {}))
+  finally
+    job_stop(lspserver.job)
+  endtry
   assert_equal('Warn: symbol definition is not found', LastMessage())
   :%bw!
 enddef
@@ -1091,8 +1076,8 @@ def g:Test_DocHighlight_CancelsSupersededRequestForSameBuffer()
   :%bw!
 enddef
 
-# Test that a request whose reply was processed before rpc_a() returned, as in
-# tests, is not cancelled by the next request.
+# Test that a request whose reply was processed before rpc_a() returned, as a
+# stand-in for it can do, is not cancelled by the next request.
 def g:Test_GetCompletion_DoesNotCancelAnsweredRequest()
   silent! edit XGetCompletionAnswered.txt
   var notifications: list<dict<any>> = []
@@ -1232,11 +1217,11 @@ def PullDiagnosticsWithError(error: dict<any>): list<number>
   lspserver.queuePullDiagnostics = (bnr: number) => {
     queued->add(bnr)
   }
-  lspserver.job = StartStubServerJob(
-    [{jsonrpc: '2.0', id: lspserver.nextSyncRpcId, error: error}])
+  lspserver.job = StartStubServerJob([{jsonrpc: '2.0', id: 1, error: error}])
   buf.BufLspServerSet(bufnr(), lspserver)
   try
     lspserver.pullDiagnostics(bufnr())
+    g:WaitForAssert(() => assert_equal({}, lspserver.supersedableRequests))
   finally
     buf.BufLspServerRemove(bufnr(), lspserver)
     job_stop(lspserver.job)
@@ -6193,7 +6178,6 @@ def g:Test_LspRename_PrepareRenamePrefillsPrompt()
   setline(1, ["😀 = $foo + 'a", 'b'])
   var bnr = bufnr()
   var range = {start: {line: 0, character: 5}, end: {line: 0, character: 9}}
-  g:LSPTest = false
   try
     for [result, name] in [
 	[range, '$foo'],
@@ -6218,7 +6202,6 @@ def g:Test_LspRename_PrepareRenamePrefillsPrompt()
     assert_equal(['fooX'], newNames)
     StopAsyncReplyingLspServer(lspserver, bnr)
   finally
-    g:LSPTest = true
     DiscardTypeahead()
     :%bw!
   endtry
@@ -6232,7 +6215,6 @@ def g:Test_LspRename_PrepareRenameRefused()
   setline(1, ['foo'])
   var bnr = bufnr()
   var nothing = 'Warn: Nothing to rename at the cursor'
-  g:LSPTest = false
   try
     for [reply, msg] in [
 	[{result: v:null}, nothing],
@@ -6257,7 +6239,6 @@ def g:Test_LspRename_PrepareRenameRefused()
       StopAsyncReplyingLspServer(lspserver, bnr)
     endfor
   finally
-    g:LSPTest = true
     DiscardTypeahead()
     :%bw!
   endtry
@@ -6273,7 +6254,6 @@ def g:Test_LspRename_PrepareRenameAfterCursorMoved()
   var bnr = bufnr()
   var pos = {line: 0, character: 0}
   var range = {start: pos, end: {line: 0, character: 3}}
-  g:LSPTest = false
   try
     for [cmd, action, expected] in [
 	['LspRename baz', '', ['baz']],
@@ -6301,7 +6281,6 @@ def g:Test_LspRename_PrepareRenameAfterCursorMoved()
       StopAsyncReplyingLspServer(lspserver, bnr)
     endfor
   finally
-    g:LSPTest = true
     DiscardTypeahead()
     :%bw!
   endtry
@@ -8389,7 +8368,6 @@ def g:Test_DocumentColors_ShowSwatches()
   var bnr = bufnr()
   # "rgb(" starts at UTF-16 code unit 20 of the second line
   var grayCol = getline(2)->stridx('rgb(') + 1
-  g:LSPTest = false
   try
     var lspserver = MakeColorServer([[
       ColorInfo(0, 11, 18, [1, 0, 0]),
@@ -8417,7 +8395,6 @@ def g:Test_DocumentColors_ShowSwatches()
     assert_equal(blue, ColorSwatches(bnr))
     StopAsyncReplyingLspServer(lspserver, bnr)
   finally
-    g:LSPTest = true
     documentcolor.BufferDeInit(bnr)
     g:LspOptionsSet({showDocumentColors: false})
     :%bw!
@@ -8430,7 +8407,6 @@ def g:Test_DocumentColors_DropsReplyAfterChange()
   silent! edit XDocumentColorsChange.css
   setline(1, ['a { color: #ff0000; }'])
   var bnr = bufnr()
-  g:LSPTest = false
   try
     var lspserver = MakeColorServer([[ColorInfo(0, 11, 18, [1, 0, 0])]])
     lspserver.documentColorsUpdate(bnr)
@@ -8439,7 +8415,6 @@ def g:Test_DocumentColors_DropsReplyAfterChange()
     assert_equal([], ColorSwatches(bnr))
     StopAsyncReplyingLspServer(lspserver, bnr)
   finally
-    g:LSPTest = true
     :%bw!
   endtry
 enddef
