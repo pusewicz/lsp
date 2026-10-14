@@ -25,6 +25,7 @@ CONTENTS                                                     *lsp-contents*
      6. Configuration............................... |lsp-configuration|
      7. Insert Mode Completion ..................... |lsp-ins-mode-completion|
        7.1. Forcing completion without characters .. |lsp-ins-force|
+       7.2. Inline completion ...................... |lsp-inline-completion|
      8. Diagnostics ................................ |lsp-diagnostics|
      9. Tag Function ............................... |lsp-tagfunc|
     10. LSP Formatting ............................. |lsp-format|
@@ -1756,6 +1757,20 @@ autoHighlightDiags	|Boolean| option. Automatically place signs on the
 			lines with a diagnostic message from the language
 			server. By default this is set to true.
 
+					*lsp-opt-autoInlineCompletion*
+autoInlineCompletion	|Boolean| option. In insert mode, request inline
+			completions from the language server while typing and
+			show them as ghost text.  Otherwise they are only
+			requested with <Plug>(LspInlineCompletionTrigger).
+			See |lsp-inline-completion|.
+			By default this is set to false.
+
+					*lsp-opt-inlineCompletionDelay*
+inlineCompletionDelay	|Number| option. Debounce delay in milliseconds
+			before requesting inline completions while typing,
+			when |lsp-opt-autoInlineCompletion| is enabled.
+			By default this is set to 100.
+
 						*lsp-opt-autoPopulateDiags*
 autoPopulateDiags	|Boolean| option. Automatically populate the location
 			list of each window with the diagnostics from the
@@ -2604,6 +2619,70 @@ Example mapping: >
 (Note that <C-space> in particular is limited to gVim due to input limitations
 of terminal Vim)
 
+------------------------------------------------------------------------------
+						*lsp-inline-completion*
+7.2. Inline completion~
+
+A language server that supports inline completions
+("textDocument/inlineCompletion"), such as the GitHub Copilot language server,
+can suggest the text that follows the cursor, often several lines of it.  In
+insert mode, the suggestion is shown as ghost text after the cursor (see
+|LspInlineCompletion|): its first line in the cursor line, around the text
+after the cursor that it replaces, and the other lines below the cursor line.
+The text after the end of the suggestion's range stays in the cursor line, but
+is moved after the last line when the suggestion is accepted.
+
+The suggestions are independent of the insert-completion popup menu.  While
+the menu is shown, they are hidden, and they are not requested.
+
+To request the suggestions while typing, set the |lsp-opt-autoInlineCompletion|
+option to true.  A suggestion keeps being shown while its text is typed.
+
+The plugin defines the following Insert mode mappings, but doesn't map any key
+to them.  Except for the first one, they act on the suggestion shown.
+
+					*<Plug>(LspInlineCompletionTrigger)*
+<Plug>(LspInlineCompletionTrigger)
+			Request the suggestions at the cursor now.
+					*<Plug>(LspInlineCompletionAccept)*
+<Plug>(LspInlineCompletionAccept)
+			Insert all of the suggestion, and execute its command.
+				*<Plug>(LspInlineCompletionAcceptWord)*
+<Plug>(LspInlineCompletionAcceptWord)
+			Insert the next word of the suggestion.
+				*<Plug>(LspInlineCompletionAcceptLine)*
+<Plug>(LspInlineCompletionAcceptLine)
+			Insert the rest of the suggestion's line, or its next
+			line when nothing is left of it.
+					*<Plug>(LspInlineCompletionNext)*
+					*<Plug>(LspInlineCompletionPrev)*
+<Plug>(LspInlineCompletionNext)
+<Plug>(LspInlineCompletionPrev)
+			Show the next or the previous suggestion.  The
+			suggestions requested while typing are requested again
+			first, as a language server may then return only one.
+					*<Plug>(LspInlineCompletionDismiss)*
+<Plug>(LspInlineCompletionDismiss)
+			Hide the suggestion, until the text or the cursor
+			changes.
+
+						*g:LspInlineCompletionVisible()*
+g:LspInlineCompletionVisible() returns true when a suggestion is shown.  Use
+it to accept the suggestion with a key that otherwise keeps its meaning.  For
+example, to use the keys of the GitHub Copilot plugin for Vim: >
+
+    imap <expr> <Tab> g:LspInlineCompletionVisible()
+		\ ? "\<Plug>(LspInlineCompletionAccept)" : "\<Tab>"
+    imap <M-Right> <Plug>(LspInlineCompletionAcceptWord)
+    imap <M-C-Right> <Plug>(LspInlineCompletionAcceptLine)
+    imap <M-]> <Plug>(LspInlineCompletionNext)
+    imap <M-[> <Plug>(LspInlineCompletionPrev)
+    imap <C-]> <Plug>(LspInlineCompletionDismiss)
+    imap <M-\> <Plug>(LspInlineCompletionTrigger)
+<
+A suggestion in the snippet format is inserted as the text it inserts when
+nothing is typed in it: its placeholders with their default text.
+
 ==============================================================================
 							*lsp-diagnostics*
 8. Diagnostics~
@@ -3233,6 +3312,10 @@ override them.
 				"Conceal" highlight group.
 *LspInlayHintsType*		Used to highlight inlay hints of kind "type".
 				By default, linked to the "Label" highlight
+				group.
+*LspInlineCompletion*		Used to highlight the ghost text of an inline
+				completion (|lsp-inline-completion|).  By
+				default, linked to the "Comment" highlight
 				group.
 *LspPopup*			Used to highlight popup contents.  By default,
 				linked to the "Pmenu" highlight group.
@@ -3931,6 +4014,9 @@ inlayHint			Used to show inlay hints: inferred type
 				annotations and parameter name labels displayed
 				as virtual text in the buffer.  Controlled by
 				|lsp-opt-showInlayHints| and |:LspInlayHints|.
+					*lsp-features-inlineCompletion*
+inlineCompletion		Used to show inline completions as ghost text
+				in insert mode.  See |lsp-inline-completion|.
 						*lsp-features-references*
 references			Used by the |:LspShowReferences| command.
 						*lsp-features-rename*

@@ -24,6 +24,7 @@ import './codelens.vim'
 import './hover.vim'
 import './inlayhints.vim'
 import './documentcolor.vim'
+import './inlinecompletion.vim'
 import './semantichighlight.vim'
 import './ontypeformat.vim'
 import './folding.vim'
@@ -57,6 +58,7 @@ def LspInitOnce()
   diag.InitOnce()
   inlayhints.InitOnce()
   documentcolor.InitOnce()
+  inlinecompletion.InitOnce()
   signature.InitOnce()
   symbol.InitOnce()
   semantichighlight.InitOnce()
@@ -720,6 +722,12 @@ export def BufferInit(lspserverId: number, bnr: number): void
 	inlayhints.BufferInit(lspsrv, bnr)
       endif
 
+      var inlineCompletionServer = buf.BufLspServerGet(bnr, 'inlineCompletion')
+      if !inlineCompletionServer->empty()
+	  && serverId == inlineCompletionServer.id
+	inlinecompletion.BufferInit(lspsrv, bnr)
+      endif
+
       var semanticServer = buf.BufLspServerGet(bnr, 'semanticTokens')
       if !semanticServer->empty() && serverId == semanticServer.id
 	semantichighlight.BufferInit(lspsrv, bnr)
@@ -872,6 +880,7 @@ export def RemoveFile(bnr: number): void
     signature.BufferDeInit(bnr)
     inlayhints.BufferDeInit(bnr)
     documentcolor.BufferDeInit(bnr)
+    inlinecompletion.BufferDeInit(bnr)
     semantichighlight.BufferDeInit(bnr)
     codelens.BufferDeInit(bnr)
     folding.BufferDeInit(bnr)
@@ -1320,6 +1329,33 @@ enddef
 export def LspInlayHintsComplete(arglead: string, cmdline: string, cursorPos: number): list<string>
   var l = ['enable', 'disable', 'toggle']
   return filter(l, (_, val) => val =~ $'^{arglead}')
+enddef
+
+# Ask the language server of the current buffer for the inline completions at
+# the cursor.
+export def InlineCompletionTrigger()
+  inlinecompletion.Trigger()
+enddef
+
+# Return the keys that accept the part "what" ("all", "word" or "line") of the
+# inline completion shown, or an empty string when none is shown.
+export def InlineCompletionAcceptKeys(what: string): string
+  return inlinecompletion.AcceptKeys(what)
+enddef
+
+# Show the next (when "dir" is 1) or the previous (-1) inline completion.
+export def InlineCompletionCycle(dir: number)
+  inlinecompletion.Cycle(dir)
+enddef
+
+# Hide the inline completion shown.
+export def InlineCompletionDismiss()
+  inlinecompletion.Dismiss()
+enddef
+
+# Returns true when an inline completion is shown.
+export def InlineCompletionVisible(): bool
+  return inlinecompletion.Visible()
 enddef
 
 # show symbol references

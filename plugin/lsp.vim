@@ -54,6 +54,11 @@ def g:LspDisable()
   lsp.LspDisable()
 enddef
 
+# Returns true when an inline completion is shown in Insert mode
+def g:LspInlineCompletionVisible(): bool
+  return lsp.InlineCompletionVisible()
+enddef
+
 augroup LspExit
   au!
   autocmd VimLeavePre * silent! lsp.FastShutdownExitAllServers()
@@ -126,6 +131,15 @@ command! -nargs=? -bar LspSymbolSearch lsp.SymbolSearch(<q-args>, <q-mods>)
 command! -nargs=1 -bar -complete=dir LspWorkspaceAddFolder lsp.AddWorkspaceFolder(<q-args>)
 command! -nargs=0 -bar LspWorkspaceListFolders lsp.ListWorkspaceFolders()
 command! -nargs=1 -bar -complete=dir LspWorkspaceRemoveFolder lsp.RemoveWorkspaceFolder(<q-args>)
+
+# Inline completion mappings for Insert mode
+inoremap <silent> <plug>(LspInlineCompletionTrigger) <ScriptCmd>lsp.InlineCompletionTrigger()<CR>
+inoremap <silent> <expr> <plug>(LspInlineCompletionAccept) lsp.InlineCompletionAcceptKeys('all')
+inoremap <silent> <expr> <plug>(LspInlineCompletionAcceptWord) lsp.InlineCompletionAcceptKeys('word')
+inoremap <silent> <expr> <plug>(LspInlineCompletionAcceptLine) lsp.InlineCompletionAcceptKeys('line')
+inoremap <silent> <plug>(LspInlineCompletionNext) <ScriptCmd>lsp.InlineCompletionCycle(1)<CR>
+inoremap <silent> <plug>(LspInlineCompletionPrev) <ScriptCmd>lsp.InlineCompletionCycle(-1)<CR>
+inoremap <silent> <plug>(LspInlineCompletionDismiss) <ScriptCmd>lsp.InlineCompletionDismiss()<CR>
 
 # Add the GUI menu entries
 if has('gui_running')

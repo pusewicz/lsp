@@ -55,6 +55,7 @@ var SupportedCheckFns = {
   implementation: (lspserver: dict<any>) => lspserver.isImplementationProvider,
   inlayHint: (lspserver: dict<any>) => lspserver.isInlayHintProvider ||
 					lspserver.isClangdInlayHintsProvider,
+  inlineCompletion: (lspserver: dict<any>) => lspserver.isInlineCompletionProvider,
   references: (lspserver: dict<any>) => lspserver.isReferencesProvider,
   rename: (lspserver: dict<any>) => lspserver.isRenameProvider,
   selectionRange: (lspserver: dict<any>) => lspserver.isSelectionRangeProvider,
