@@ -354,6 +354,74 @@ def g:Test_Rpc_StaleRequestReplyIsNotAnError()
   endfor
 enddef
 
+# Returns the messages of a language server that replies ContentModified to the
+# asynchronous requests 1 to "count", as Vim numbers them on a new channel.
+def ContentModifiedReplies(count: number): list<dict<any>>
+  return range(1, count)->mapnew((_, id) => ({jsonrpc: '2.0', id: id,
+    error: {code: -32801, message: 'content modified'}}))
+enddef
+
+# Test that a request answering a user command, asynchronous or synchronous,
+# is sent again when the language server replies ContentModified to it, and
+# that the reply to the request sent again is the one passed on.
+def g:Test_Rpc_RetriesOnContentModified()
+  var lspserver = MakeTestLspServer([])
+  var syncId = lspserver.nextSyncRpcId
+  lspserver.job = StartStubServerJob(ContentModifiedReplies(1) + [
+    {jsonrpc: '2.0', id: 2, result: 'async'},
+    {jsonrpc: '2.0', id: syncId,
+     error: {code: -32801, message: 'content modified'}},
+    {jsonrpc: '2.0', id: syncId + 1, result: 'sync'}
+  ])
+  try
+    var replies: list<list<any>> = []
+    assert_equal(1, lspserver.rpc_a('textDocument/definition', {},
+      (_, reply, error) => {
+	replies->add([reply, error])
+      }))
+    assert_equal({jsonrpc: '2.0', id: syncId + 1, result: 'sync'},
+		 lspserver.rpc('textDocument/definition', {}))
+    g:WaitForAssert(() => assert_equal([['async', {}]], replies))
+    assert_equal({}, lspserver.pendingRequests)
+  finally
+    job_stop(lspserver.job)
+  endtry
+enddef
+
+# Test that a request is sent again at most CONTENT_MODIFIED_MAX_RETRIES times
+# after a ContentModified reply, and that its callback then gets no result, or
+# the error when the caller handles the errors, which is not reported.
+def g:Test_AsyncRpc_RetriesOnContentModifiedAtMostMaxTimes()
+  var tries = lserver.CONTENT_MODIFIED_MAX_RETRIES + 1
+  var modified = {code: -32801, message: 'content modified'}
+  for handleError in [true, false]
+    var lspserver = MakeTestLspServer([])
+    # A reply more than the requests that may be sent
+    lspserver.job = StartStubServerJob(ContentModifiedReplies(tries + 1))
+    lspserver.debug = true
+    var sent: list<string> = []
+    lspserver.traceLog = (msg: string) => {
+      if msg =~# '^Sent request '
+	sent->add(msg)
+      endif
+    }
+    try
+      var beforeMessages = execute('messages')
+      var replies: list<list<any>> = []
+      lspserver.rpc_a('textDocument/definition', {}, (_, reply, error) => {
+	replies->add([reply, error])
+      }, {handleError: handleError})
+      g:WaitForAssert(() => assert_equal(1, replies->len()))
+      assert_equal([v:null, handleError ? {} : modified], replies[0])
+      assert_equal(tries, sent->len())
+      assert_equal({}, lspserver.pendingRequests)
+      assert_equal(beforeMessages, execute('messages'))
+    finally
+      job_stop(lspserver.job)
+    endtry
+  endfor
+enddef
+
 # Test that the maps and lists in the server dict that grow with the number of
 # open documents, pending requests and messages keep their type when they are
 # emptied.  Before patch 9.2.1144, Vim goes through all the values of one that
@@ -614,16 +682,16 @@ def g:Test_SemanticHighlightUpdate_ContentModifiedIsNotAnError()
   :%bw!
 enddef
 
-# Test that the reply to a hover request saying that the content was modified
-# is not cached, so that hovering again at the same position asks the server
-# again, while an empty hover result is still cached.
+# Test that the reply to a hover request saying that the content was modified,
+# also after it was sent again, is not cached, so that hovering again at the
+# same position asks the server again, while an empty hover result is still
+# cached.
 def g:Test_ShowHoverInfo_ContentModifiedIsNotCached()
   silent! edit XHoverContentModified.txt
   var lspserver = MakeTestLspServer([])
   lspserver.isHoverProvider = true
-  # Vim numbers the asynchronous requests on a new channel from 1.
-  lspserver.job = StartStubServerJob([{jsonrpc: '2.0', id: 1,
-    error: {code: -32801, message: 'content modified'}}])
+  lspserver.job = StartStubServerJob(
+    ContentModifiedReplies(lserver.CONTENT_MODIFIED_MAX_RETRIES + 1))
   try
     var beforeMessages = execute('messages')
     lspserver.hover('silent')
@@ -791,6 +859,44 @@ def g:Test_GotoDefinition_DropsReplyAfterCursorMoved()
       StopAsyncReplyingLspServer(lspserver, bnr)
     endfor
   finally
+    :%bw!
+  endtry
+enddef
+
+# Test that a goto definition request is sent again when the language server
+# replies ContentModified, as rust-analyzer does when it reloads the project
+# while it works on the request, and that the reply to the request sent again
+# jumps to the definition.  A request superseding the one sent again cancels
+# that one.
+def g:Test_GotoDefinition_RetriesOnContentModified()
+  silent! edit XGotoDefinitionRetry.txt
+  setline(1, ['use def', 'def'])
+  var bnr = bufnr()
+  var pos = {line: 1, character: 1}
+  var location = {uri: util.LspBufnrToUri(bnr), range: {start: pos, end: pos}}
+  var notifications: list<dict<any>> = []
+  var lspserver = MakeAsyncReplyingLspServer([], notifications)
+  lspserver.isDefinitionProvider = true
+  try
+    job_stop(lspserver.job)
+    lspserver.job = StartStubServerJob(ContentModifiedReplies(1)
+      + [{jsonrpc: '2.0', id: 2, result: location}])
+    cursor(1, 5)
+    lspserver.gotoDefinition(false, '', 0)
+    g:WaitForAssert(() => assert_equal({}, lspserver.supersedableRequests))
+    assert_equal([2, 2], [line('.'), col('.')])
+
+    job_stop(lspserver.job)
+    lspserver.job = StartStubServerJob(ContentModifiedReplies(1))
+    cursor(1, 5)
+    lspserver.gotoDefinition(false, '', 0)
+    g:WaitForAssert(() => assert_equal({2: 'textDocument/definition'},
+				       lspserver.pendingRequests))
+    lspserver.gotoDefinition(false, '', 0)
+    assert_equal([{method: '$/cancelRequest', params: {id: 2}}],
+		 notifications->copy()->filter((_, n) => n.method == '$/cancelRequest'))
+  finally
+    StopAsyncReplyingLspServer(lspserver, bnr)
     :%bw!
   endtry
 enddef
@@ -6578,7 +6684,7 @@ def g:Test_LspRename_PrepareRenameRefused()
 	[{result: v:null}, nothing],
 	[{result: {defaultBehavior: false}}, nothing],
 	[{error: {code: -32602, message: 'No symbol'}}, 'Error: No symbol'],
-	[{error: {code: -32801, message: 'Modified'}}, ''],
+	[{error: {code: -32800, message: 'Cancelled'}}, ''],
 	[{result: [1]},
 	 'Error: prepareRename response from the language server is not a Dict']]
       var newNames: list<string> = []
