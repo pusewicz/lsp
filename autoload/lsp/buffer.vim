@@ -43,6 +43,7 @@ var SupportedCheckFns = {
   declaration: (lspserver: dict<any>) => lspserver.isDeclarationProvider,
   diagnostics: (lspserver: dict<any>) => lspserver.isDiagnosticsProvider,
   definition: (lspserver: dict<any>) => lspserver.isDefinitionProvider,
+  documentColor: (lspserver: dict<any>) => lspserver.isColorProvider,
   documentFormatting: (lspserver: dict<any>) => lspserver.isDocumentFormattingProvider,
   documentOnTypeFormatting: (lspserver: dict<any>) => lspserver.isDocumentOnTypeFormattingProvider,
   documentRangeFormatting: (lspserver: dict<any>) => lspserver.isDocumentRangeFormattingProvider,

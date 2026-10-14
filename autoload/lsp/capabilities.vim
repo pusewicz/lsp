@@ -386,17 +386,6 @@ export def ProcessServerCaps(lspserver: dict<any>, caps: dict<any>)
     lspserver.isSemanticTokensProvider = false
   endif
 
-  # monikerProvider
-  if lspserver.caps->has_key('monikerProvider')
-    if lspserver.caps.monikerProvider->type() == v:t_bool
-      lspserver.isMonikerProvider = lspserver.caps.monikerProvider
-    else
-      lspserver.isMonikerProvider = true
-    endif
-  else
-    lspserver.isMonikerProvider = false
-  endif
-
   # typeHierarchyProvider
   if lspserver.caps->has_key('typeHierarchyProvider')
     if lspserver.caps.typeHierarchyProvider->type() == v:t_bool
@@ -406,17 +395,6 @@ export def ProcessServerCaps(lspserver: dict<any>, caps: dict<any>)
     endif
   else
     lspserver.isTypeHierarchyProvider = false
-  endif
-
-  # inlineValueProvider
-  if lspserver.caps->has_key('inlineValueProvider')
-    if lspserver.caps.inlineValueProvider->type() == v:t_bool
-      lspserver.isInlineValueProvider = lspserver.caps.inlineValueProvider
-    else
-      lspserver.isInlineValueProvider = true
-    endif
-  else
-    lspserver.isInlineValueProvider = false
   endif
 
   # inlayHintProvider
@@ -494,6 +472,9 @@ export def GetClientCaps(): dict<any>
         }
       },
       codeLens: {
+	dynamicRegistration: false
+      },
+      colorProvider: {
 	dynamicRegistration: false
       },
       completion: {
