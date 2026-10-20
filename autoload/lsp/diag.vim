@@ -308,30 +308,40 @@ def DiagSevToSignName(severity: number): string
   return typeMap[severity - 1]
 enddef
 
+# The text property types highlighting the diagnostics inline, indexed by the
+# severity minus one.
+const inlinePropTypes: list<string> = [
+  'LspDiagInlineError',
+  'LspDiagInlineWarning',
+  'LspDiagInlineInfo',
+  'LspDiagInlineHint'
+]
+
+# The text property types of the diagnostic virtual text, indexed by the
+# severity minus one.
+const virtualTextPropTypes: list<string> = [
+  'LspDiagVirtualTextError',
+  'LspDiagVirtualTextWarning',
+  'LspDiagVirtualTextInfo',
+  'LspDiagVirtualTextHint'
+]
+
+# Returns the name of the text property type highlighting a diagnostic of
+# "severity" inline.
 def DiagSevToInlineHLName(severity: number): string
-  var typeMap: list<string> = [
-    'LspDiagInlineError',
-    'LspDiagInlineWarning',
-    'LspDiagInlineInfo',
-    'LspDiagInlineHint'
-  ]
   if severity < 1 || severity > 4
-    return 'LspDiagInlineHint'
+    return inlinePropTypes[3]
   endif
-  return typeMap[severity - 1]
+  return inlinePropTypes[severity - 1]
 enddef
 
+# Returns the name of the text property type of the virtual text of a
+# diagnostic of "severity".
 def DiagSevToVirtualTextHLName(severity: number): string
-  var typeMap: list<string> = [
-    'LspDiagVirtualTextError',
-    'LspDiagVirtualTextWarning',
-    'LspDiagVirtualTextInfo',
-    'LspDiagVirtualTextHint'
-  ]
   if severity < 1 || severity > 4
-    return 'LspDiagVirtualTextHint'
+    return virtualTextPropTypes[3]
   endif
-  return typeMap[severity - 1]
+  return virtualTextPropTypes[severity - 1]
 enddef
 
 def DiagSevToSymbolText(severity: number): string
@@ -399,23 +409,17 @@ def RemoveDiagVisualsForBuffer(bnr: number, all: bool = false)
     sign_unplace('LSPDiag', {buffer: bnr})
   endif
 
+  # Each prop_remove() walks every line of the buffer, so remove all the
+  # types in one call.
+  var propTypes: list<string> = []
   if lspOpts.showDiagWithVirtualText || all
-    # Remove all the existing virtual text
-    prop_remove({type: 'LspDiagVirtualTextError', bufnr: bnr, all: true})
-    prop_remove({type: 'LspDiagVirtualTextWarning', bufnr: bnr, all: true})
-    prop_remove({type: 'LspDiagVirtualTextInfo', bufnr: bnr, all: true})
-    prop_remove({type: 'LspDiagVirtualTextHint', bufnr: bnr, all: true})
+    propTypes->extend(virtualTextPropTypes)
   endif
-
   if lspOpts.highlightDiagInline || all
-    # Remove all the existing virtual text
-    prop_remove({type: 'LspDiagInlineError', bufnr: bnr, all: true})
-    prop_remove({type: 'LspDiagInlineWarning', bufnr: bnr, all: true})
-    prop_remove({type: 'LspDiagInlineInfo', bufnr: bnr, all: true})
-    prop_remove({type: 'LspDiagInlineHint', bufnr: bnr, all: true})
-    for propType in tagPropTypes
-      prop_remove({type: propType, bufnr: bnr, all: true})
-    endfor
+    propTypes->extend(inlinePropTypes)->extend(tagPropTypes)
+  endif
+  if !propTypes->empty()
+    prop_remove({types: propTypes, bufnr: bnr, all: true})
   endif
 enddef
 
