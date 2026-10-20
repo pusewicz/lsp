@@ -1941,6 +1941,37 @@ def g:Test_InlayHintsReply_RemovesHintsWhenThereAreNone()
   :%bw!
 enddef
 
+# Test that a reply received in Insert mode leaves the inlay hints shown in
+# the buffer as they are, and makes the next cursor rest request them again.
+def g:Test_InlayHintsReply_KeepsHintsInInsertMode()
+  if prop_type_get('LspInlayHintsType')->empty()
+    inlayhints.InitOnce()
+  endif
+  silent! edit XInlayHintsInsertMode.txt
+  setline(1, ['int x = f(1);'])
+  var bnr = bufnr()
+  var lspserver = MakeTestLspServer([])
+  var hint = {position: {line: 0, character: 10}, label: 'a:', kind: 2}
+  var Hints = () => prop_list(1, {types: ['LspInlayHintsParam']})->len()
+
+  inlayhints.InlayHintsReply(lspserver, [hint], {}, bnr)
+  assert_equal(1, Hints())
+  setbufvar(bnr, 'LspInlayHintsNeedsUpdate', false)
+
+  var modeInReply = ''
+  timer_start(10, (_) => {
+    modeInReply = mode()
+    inlayhints.InlayHintsReply(lspserver, [], {}, bnr)
+    feedkeys("\<Esc>", 't')
+  })
+  feedkeys('i', 'xt!')
+
+  assert_equal('i', modeInReply)
+  assert_equal(1, Hints())
+  assert_true(bnr->getbufvar('LspInlayHintsNeedsUpdate', false))
+  :%bw!
+enddef
+
 def g:Test_DiagNotification_PushAndPull_AreBothRetained()
   g:LspOptionsSet({autoHighlightDiags: false})
   silent! edit XPushPullDiagnosticsRetained.rs
