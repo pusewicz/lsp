@@ -7107,6 +7107,34 @@ def g:Test_ProcessApplyEditReq_DecodesEditsAfterPrecedingChanges()
   endtry
 enddef
 
+# The reply to a completionItem/resolve request is kept with the item that was
+# sent, to apply its additional text edits when it is accepted, and a reply
+# saying that the request failed is not.
+def g:Test_ResolveCompletion_KeepsResolvedItem()
+  silent! edit XResolveCompletion.txt
+  var notifications: list<dict<any>> = []
+  var lspserver = MakeTestLspServer(notifications)
+  lspserver.isCompletionResolveProvider = true
+  var replyCbs: list<func> = []
+  lspserver.rpc_a = (_, _, Cb, _: dict<any> = {}) => {
+    replyCbs->add(Cb)
+    return replyCbs->len()
+  }
+  var item = {label: 'foo', data: 1}
+  var resolved = item->extendnew({additionalTextEdits: [{
+    range: {start: {line: 0, character: 0}, end: {line: 0, character: 0}},
+    newText: "import foo\n"}]})
+
+  lspserver.resolveCompletion(item)
+  replyCbs[0](lspserver, v:null, {code: -32603, message: 'failed'})
+  assert_equal([], lspserver.completionResolved)
+
+  lspserver.resolveCompletion(item)
+  replyCbs[1](lspserver, resolved, {})
+  assert_equal([[item, resolved]], lspserver.completionResolved)
+  :%bw!
+enddef
+
 # A completion request supersedes the pending one, which is cancelled, so a
 # late reply to it must not be taken as the reply to the latest one.
 def g:Test_GetCompletion_CancelsSupersededRequest()

@@ -1317,6 +1317,85 @@ def g:Test_Completion_AdditionalTextEdits_PositionEncoding()
   endtry
 enddef
 
+# Stands in for the "completionItem/resolve" request of "lspserver": records
+# whether each request is synchronous in "requests".  An asynchronous one is
+# replied at once, when "reply" is true, with "item" and an edit adding an
+# import of its label, which a synchronous one doesn't.
+def ResolveCompletionStub(lspserver: dict<any>, requests: list<bool>,
+			  reply: bool, item: dict<any>,
+			  sync: bool = false): dict<any>
+  requests->add(sync)
+  if !sync && reply
+    var edit = {range: FirstLineRange(0, 0), newText: $"import {item.label}\n"}
+    completion.CompletionResolveReply(lspserver,
+      item->extendnew({additionalTextEdits: [edit]}), {}, item)
+  endif
+  return {}
+enddef
+
+# Selects the second item of the completion menu of "lspserver", a
+# MakeTextEditServer() with the items "fob" and "foo", for the word "fo" on the
+# second line, and accepts it.  The resolve requests that the selection sends
+# are replied when "reply" is true, and are recorded in "requests".
+def AcceptSecondCompletionItem(lspserver: dict<any>, requests: list<bool>,
+			       reply: bool)
+  deletebufline(bufnr(), 1, '$')
+  setline(1, ['', 'fo'])
+  lspserver.completionLazyDoc = true
+  lspserver.resolveCompletion =
+    function(ResolveCompletionStub, [lspserver, requests, reply])
+  buf.BufLspServerSet(bufnr(), lspserver)
+  completion.BufferInit(lspserver, bufnr(), &filetype)
+  setlocal completeopt=menuone,noinsert,noselect
+  inoremap <buffer> <F5> <ScriptCmd>completion.LspComplete(true)<CR>
+  inoremap <buffer> <F2> <ScriptCmd>sleep 20m<CR>
+  test_override('char_avail', 1)
+  try
+    cursor(2, 2)
+    feedkeys("a\<F5>\<C-N>\<F2>\<C-N>\<F2>\<C-Y>\<Esc>", 'tx!')
+  finally
+    test_override('char_avail', 0)
+    buf.BufLspServerRemove(bufnr(), lspserver)
+  endtry
+enddef
+
+# The additional text edits that the language server sent when the selected
+# completion item was resolved are applied on accepting it, without a
+# synchronous request that blocks Vim.  An item that was not resolved when it
+# was selected is resolved synchronously, and a new completion list drops the
+# resolved items.
+def g:Test_Completion_ResolvedItemIsUsedOnAccept()
+  var saveAutoComplete = g:LspOptionsGet().autoComplete
+  var saveCompleteopt = &g:completeopt
+  g:LspOptionsSet({autoComplete: true})
+  try
+    silent! edit XCompletionResolvedItem.ts
+    var lspserver = MakeTextEditServer({items: [
+      {label: 'foo', data: 1}, {label: 'fob', data: 2}]})
+    var requests: list<bool> = []
+
+    AcceptSecondCompletionItem(lspserver, requests, true)
+
+    assert_equal(['import foo', '', 'foo'], getline(1, '$'))
+    assert_equal([false, false], requests)
+
+    lspserver.completionResolved = [[{label: 'bar'}, {label: 'bar'}]]
+    lspserver.omniCompletePending = true
+    completion.CompletionReply(lspserver, [{label: 'bar'}], {})
+    assert_equal([], lspserver.completionResolved)
+
+    requests->remove(0, -1)
+    AcceptSecondCompletionItem(lspserver, requests, false)
+
+    assert_equal(['', 'foo'], getline(1, '$'))
+    assert_equal([false, false, true], requests)
+  finally
+    :%bw!
+    g:LspOptionsSet({autoComplete: saveAutoComplete})
+    &g:completeopt = saveCompleteopt
+  endtry
+enddef
+
 # Returns true when auto-completion at the end of "text" shows the completion
 # menu for the single completion item "item".
 def AutoCompleteShowsMenu(text: string, item: dict<any>): bool
