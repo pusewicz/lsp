@@ -133,10 +133,11 @@ def ProcessProgressNotif(lspserver: dict<any>, reply: dict<any>)
     if g:LspProgress->has_key(token)
       g:LspProgress->remove(token)
     endif
-  endif
-
-  if lspserver->get('isDiagnosticsProvider', false)
-    lspserver.queuePullDiagnosticsAllBuffers()
+    # The work, e.g. indexing, may have changed the diagnostics.  Pulling on
+    # every report would keep restarting the pull timer of the edits.
+    if lspserver->get('isDiagnosticsProvider', false)
+      lspserver.queuePullDiagnosticsAllBuffers()
+    endif
   endif
 
   # Trigger statusline refresh
