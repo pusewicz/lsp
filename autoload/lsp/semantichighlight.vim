@@ -2,7 +2,6 @@ vim9script
 
 # LSP semantic highlighting functions
 
-import './util.vim'
 import './offset.vim'
 import './options.vim' as opt
 import './buffer.vim' as buf
@@ -70,22 +69,6 @@ export def InitOnce()
   endfor
 enddef
 
-def ParseSemanticTokenMods(lspserverTokenMods: list<string>, tokenMods: number): string
-  var n = tokenMods
-  var tokenMod: number
-  var str = ''
-
-  while n > 0
-    tokenMod = float2nr(round(log10(and(n, invert(n - 1))) / log10(2)))
-    if tokenMod >= 0 && tokenMod < lspserverTokenMods->len()
-      str = $'{str}{lspserverTokenMods[tokenMod]},'
-    endif
-    n = and(n, n - 1)
-  endwhile
-
-  return str
-enddef
-
 # Apply the edit operations in a semantic tokens delta update message
 # (SemanticTokensDelta) from the language server.
 #
@@ -123,76 +106,82 @@ def ApplySemanticTokenEdits(bnr: number, semTokens: dict<any>)
   semTokens.data = newTokens
 enddef
 
+# Return the byte index in "text" of the character at the offset "col" of the
+# position encoding "posEncoding".  "nChars" is the number of characters in
+# "text" and "encodedLen" its length in the position encoding.  An offset past
+# the end of "text" is at its end.
+def TokenByteIdx(text: string, posEncoding: number, nChars: number,
+		 encodedLen: number, col: number): number
+  if col <= 0
+    return 0
+  endif
+  var charIdx = col
+  if col >= encodedLen
+    charIdx = nChars
+  elseif posEncoding == 16
+    charIdx = text->charidx(col, true, true)
+  elseif posEncoding == 8
+    charIdx = text->charidx(col, true)
+  endif
+  var byteIdx = text->byteidxcomp(charIdx)
+  return byteIdx == -1 ? text->strlen() : byteIdx
+enddef
+
 # Process a list of semantic tokens and return the corresponding text
-# properties for highlighting.
+# properties for highlighting.  The buffer is read once, and the offsets of the
+# tokens on a line are converted to byte indexes with that line only.
 def ProcessSemanticTokens(lspserver: dict<any>, bnr: number, tokens: list<number>): dict<list<list<number>>>
   var props: dict<list<list<number>>> = {}
-  var tokenLine: number = 0
-  var startChar: number = 0
-  var length: number = 0
-  var tokenType: number = 0
-  var tokenMods: number = 0
   var prevTokenLine = 0
   var lnum = 1
   var charIdx = 0
 
   var lspserverTokenTypes: list<string> =
-				lspserver.semanticTokensLegend.tokenTypes
-  var lspserverTokenMods: list<string> =
-				lspserver.semanticTokensLegend.tokenModifiers
+					lspserver.semanticTokensLegend.tokenTypes
   var tokenTypesLen = lspserverTokenTypes->len()
+  var posEncoding: number = lspserver.posEncoding
+
+  :silent! bnr->bufload()
+  var lines: list<string> = bnr->getbufline(1, '$')
+  var linesLen = lines->len()
+
+  var text = ''
+  var nChars = 0
+  var encodedLen = 0
 
   # Each semantic token uses 5 items in the tokens List
   var i = 0
   var tokensLen = tokens->len()
   while i + 4 < tokensLen
-    tokenLine = tokens[i]
     # tokenLine is relative to the previous token line number
-    lnum += tokenLine
+    lnum += tokens[i]
     if prevTokenLine != lnum
       # this token is on a different line from the previous token
       charIdx = 0
       prevTokenLine = lnum
+      if lnum <= linesLen
+	text = lines[lnum - 1]
+	nChars = text->strchars()
+	encodedLen = offset.EncodedLineLen(lspserver, text)
+      endif
     endif
-    startChar = tokens[i + 1]
-    charIdx += startChar
-    length = tokens[i + 2]
-    tokenType = tokens[i + 3]
-    tokenMods = tokens[i + 4]
+    charIdx += tokens[i + 1]
+    var length = tokens[i + 2]
+    var tokenType = tokens[i + 3]
+    i += 5
 
-    if tokenType < 0 || tokenType >= tokenTypesLen
-      i += 5
+    if tokenType < 0 || tokenType >= tokenTypesLen || lnum > linesLen
       continue
     endif
 
     var typeStr = lspserverTokenTypes[tokenType]
-    if tokenMods > 0
-      var modStr = ParseSemanticTokenMods(lspserverTokenMods, tokenMods)
-    endif
-
-    # Decode the semantic token line number, column number and length to
-    # UTF-32 encoding.
-    var r = {
-      start: {
-	line: lnum - 1,
-	character: charIdx
-      },
-      end: {
-	line: lnum - 1,
-	character: charIdx + length
-      }
-    }
-    offset.DecodeRange(lspserver, bnr, r)
-
     if !props->has_key(typeStr)
       props[typeStr] = []
     endif
 
-    var startByteIdx = util.GetLineByteFromPos(bnr, r.start)
-    var endByteIdx   = util.GetLineByteFromPos(bnr, r.end)
+    var startByteIdx = TokenByteIdx(text, posEncoding, nChars, encodedLen, charIdx)
+    var endByteIdx = TokenByteIdx(text, posEncoding, nChars, encodedLen, charIdx + length)
     props[typeStr]->add([lnum, startByteIdx + 1, lnum, endByteIdx + 1])
-
-    i += 5
   endwhile
 
   return props
