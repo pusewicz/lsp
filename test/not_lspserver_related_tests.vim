@@ -7,6 +7,7 @@ import '../autoload/lsp/capabilities.vim' as capabilities
 import '../autoload/lsp/documentlink.vim' as documentlink
 import '../autoload/lsp/offset.vim' as offset
 import '../autoload/lsp/selection.vim' as selection
+import '../autoload/lsp/semantichighlight.vim' as semantichighlight
 import '../autoload/lsp/util.vim' as util
 import '../autoload/lsp/options.vim' as opt
 import '../autoload/lsp/snippet.vim' as snippet
@@ -956,6 +957,73 @@ def g:Test_Completion_SortOrder()
   assert_equal(expected, words)
   assert_true(words->index('w2') < words->index('w4'))
   assert_true(words->index('w1') < words->index('w10'))
+  :%bw!
+enddef
+
+# Returns the data of a semantic tokens reply for the tokens "tokens", each
+# [line, start, length, type] with a zero-based line and the position encoding
+# of the offsets of the language server.  Tokens are sorted by position.
+def SemanticTokensData(tokens: list<list<number>>): list<number>
+  var data: list<number> = []
+  var prevLine = 0
+  var prevStart = 0
+  for [line, start, length, type] in tokens
+    var deltaStart = line == prevLine ? start - prevStart : start
+    data->extend([line - prevLine, deltaStart, length, type, 0])
+    prevLine = line
+    prevStart = start
+  endfor
+  return data
+enddef
+
+# The semantic tokens are highlighted at the same bytes of the line, whether the
+# language server counts the offsets in UTF-8 bytes, UTF-16 code units or
+# characters.  A token that ends past the end of its line is clamped to the end
+# of the line, and one on a line past the end of the buffer is ignored.
+def g:Test_SemanticTokens_PositionEncodings()
+  silent! edit XSemanticTokensEncodings.txt
+  setline(1, ['héllo wörld 😀 x', 'plain'])
+  if prop_type_get('LspSemanticFunction')->empty()
+    semantichighlight.InitOnce()
+  endif
+  var tokenTypes = ['function', 'variable']
+  # héllo, wörld, 😀 and x as [start, length] in UTF-8, UTF-16 and UTF-32
+  var offsets: dict<list<list<number>>> = {
+    8: [[0, 6], [7, 6], [14, 4], [19, 1]],
+    16: [[0, 5], [6, 5], [12, 2], [15, 1]],
+    32: [[0, 5], [6, 5], [12, 1], [14, 1]],
+  }
+  for [enc, o] in offsets->items()
+    var lspserver = {
+      posEncoding: str2nr(enc),
+      semanticTokensLegend: {tokenTypes: tokenTypes, tokenModifiers: []},
+    }
+    var tokens: list<list<number>> = [
+      [0, o[0][0], o[0][1], 0],
+      [0, o[1][0], o[1][1], 0],
+      [0, o[2][0], o[2][1], 1],
+      [0, o[3][0], o[3][1], 1],
+      [1, 0, 5, 0],
+      [1, 2, 40, 1],
+      [4, 0, 3, 0],
+      [4, 1, 3, 2],
+    ]
+    var reply = {resultId: '1', data: SemanticTokensData(tokens)}
+
+    semantichighlight.UpdateTokens(lspserver, reply, {}, bufnr(), b:changedtick)
+
+    var props = prop_list(1, {end_lnum: line('$')})
+      ->mapnew((_, p) => [p.lnum, p.col, p.length, p.type])
+      ->sort((a, b) => a[0] != b[0] ? a[0] - b[0] : a[1] - b[1])
+    assert_equal([
+      [1, 1, 6, 'LspSemanticFunction'],
+      [1, 8, 6, 'LspSemanticFunction'],
+      [1, 15, 4, 'LspSemanticVariable'],
+      [1, 20, 1, 'LspSemanticVariable'],
+      [2, 1, 5, 'LspSemanticFunction'],
+      [2, 3, 3, 'LspSemanticVariable'],
+    ], props, $'position encoding {enc}')
+  endfor
   :%bw!
 enddef
 
