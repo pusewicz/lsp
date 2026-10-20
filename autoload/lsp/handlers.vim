@@ -69,9 +69,17 @@ def ProcessLogTraceNotif(lspserver: dict<any>, reply: dict<any>)
   lspserver.addMessage('trace', reply.params.message)
 enddef
 
+# Log "prefix: value" to the LSP server debug file.  "value" is serialised only
+# when debugging, as it can be a large message.
+def TraceLogValue(lspserver: dict<any>, prefix: string, value: any)
+  if lspserver.debug
+    lspserver.traceLog($'{prefix}: {value->string()}')
+  endif
+enddef
+
 # process unsupported notification messages
 def ProcessUnsupportedNotif(lspserver: dict<any>, reply: dict<any>)
-  lspserver.traceLog($'Error: Unsupported notification message received: {reply->string()}')
+  TraceLogValue(lspserver, 'Error: Unsupported notification message received', reply)
 enddef
 
 # Dict to process telemetry notification messages only once per filetype
@@ -612,7 +620,7 @@ export def ProcessRequest(lspserver: dict<any>, request: dict<any>)
   else
     SendMethodNotFoundError(lspserver, request)
     if !lsp_ignored_request_handlers->has_key(request.method)
-      lspserver.traceLog($'Error: Unsupported request message received: {request->string()}')
+      TraceLogValue(lspserver, 'Error: Unsupported request message received', request)
     endif
   endif
 enddef
@@ -646,7 +654,7 @@ enddef
 def ValidateAndClassifyMessage(lspserver: dict<any>, msg: dict<any>): string
   var rpcversion = msg->get('jsonrpc', '')
   if rpcversion->type() != v:t_string || rpcversion == ''
-    lspserver.traceLog($'Dropping message missing jsonrpc field: {msg->string()}')
+    TraceLogValue(lspserver, 'Dropping message missing jsonrpc field', msg)
     return 'invalid'
   endif
 
@@ -667,7 +675,7 @@ def ValidateAndClassifyMessage(lspserver: dict<any>, msg: dict<any>): string
   # Response: must have id and exactly one of result/error.
   if isResponse
     if hasMethod || !hasId || (hasResult && hasError)
-      lspserver.traceLog($'Dropping malformed response message: {msg->string()}')
+      TraceLogValue(lspserver, 'Dropping malformed response message', msg)
       return 'invalid'
     endif
 
@@ -675,7 +683,7 @@ def ValidateAndClassifyMessage(lspserver: dict<any>, msg: dict<any>): string
     if msg.id != null
       var responseIdType = msg.id->type()
       if responseIdType != v:t_string && responseIdType != v:t_number
-        lspserver.traceLog($'Dropping malformed response with invalid id type: {msg->string()}')
+        TraceLogValue(lspserver, 'Dropping malformed response with invalid id type', msg)
         return 'invalid'
       endif
     endif
@@ -688,7 +696,7 @@ def ValidateAndClassifyMessage(lspserver: dict<any>, msg: dict<any>): string
       SendInvalidRequestMessage(lspserver, msg,
         'Request object must contain a string method field')
     endif
-    lspserver.traceLog($'Dropping malformed message missing method: {msg->string()}')
+    TraceLogValue(lspserver, 'Dropping malformed message missing method', msg)
     return 'invalid'
   endif
 
@@ -697,7 +705,7 @@ def ValidateAndClassifyMessage(lspserver: dict<any>, msg: dict<any>): string
       SendInvalidRequestMessage(lspserver, msg,
         'Request method must be a non-empty string')
     endif
-    lspserver.traceLog($'Dropping malformed message with non-string method: {msg->string()}')
+    TraceLogValue(lspserver, 'Dropping malformed message with non-string method', msg)
     return 'invalid'
   endif
 
@@ -708,7 +716,7 @@ def ValidateAndClassifyMessage(lspserver: dict<any>, msg: dict<any>): string
 
   # Guardrail: methods without request/notification shape are malformed.
   if !isRequest
-    lspserver.traceLog($'Dropping malformed message shape: {msg->string()}')
+    TraceLogValue(lspserver, 'Dropping malformed message shape', msg)
     return 'invalid'
   endif
 
@@ -717,7 +725,7 @@ def ValidateAndClassifyMessage(lspserver: dict<any>, msg: dict<any>): string
   if idType != v:t_string && idType != v:t_number
     SendInvalidRequestMessage(lspserver, msg,
       'Request id must be a string or number')
-    lspserver.traceLog($'Dropping malformed request with invalid id type: {msg->string()}')
+    TraceLogValue(lspserver, 'Dropping malformed request with invalid id type', msg)
     return 'invalid'
   endif
 
@@ -731,7 +739,7 @@ export def ProcessMessage(lspserver: dict<any>): void
   var data: any = lspserver.data
   lspserver.data = ''
   if data->type() != v:t_dict
-    lspserver.traceLog($'Dropping malformed non-object message: {data->string()}')
+    TraceLogValue(lspserver, 'Dropping malformed non-object message', data)
     return
   endif
 
@@ -751,7 +759,7 @@ export def ProcessMessage(lspserver: dict<any>): void
     endif
     # A response with an unknown id can happen for canceled or timed-out
     # requests. Ignore it and only trace for debugging.
-    lspserver.traceLog($'Ignored response with unknown id from LSP server: {msg->string()}')
+    TraceLogValue(lspserver, 'Ignored response with unknown id from LSP server', msg)
   elseif msgKind == 'request'
     # request message from the server
     lspserver.processRequest(msg)
