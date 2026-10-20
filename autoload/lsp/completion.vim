@@ -818,20 +818,19 @@ enddef
 # Return the completion menu items "completeItems" sorted by their score,
 # ignoring case, with the items of the same score kept in order.
 def SortCompletionItems(completeItems: list<dict<any>>): list<dict<any>>
-  # The compare function gets the indexes of the items, as Vim checks the
-  # type of every value of a dict passed to a function, which for a menu item
-  # includes the completion item in "user_data".  Tuples, as indexing a List
-  # walks it from the index looked up last.
-  var scoreList: list<any> = []
+  # Sort strings natively, as a compare function costs far more per comparison
+  # than the rest of the reply costs per item.  A key is the score, a "\x01"
+  # that sorts before any other character, and the zero-padded index of the
+  # item, which orders the items of the same score and gives the item back.
+  var keys: list<string> = []
+  var i = 0
   for d in completeItems
-    scoreList->add(d.score)
+    keys->add(printf("%s\x01%08d", d.score, i))
+    i += 1
   endfor
-  var scores = scoreList->list2tuple()
   var items = completeItems->list2tuple()
-  return range(completeItems->len())
-    ->sort((i: number, j: number): number =>
-      scores[i] == scores[j] ? 0 : scores[i] >? scores[j] ? 1 : -1)
-    ->mapnew((_, i: number): dict<any> => items[i])
+  return keys->sort('i')
+    ->mapnew((_, k: string): dict<any> => items[str2nr(k[-8 : ])])
 enddef
 
 # Return the completion menu items "completeItems" sorted, unless "matcher"
@@ -842,6 +841,12 @@ def FinalizeCompletionItems(completeItems: list<dict<any>>,
     ? completeItems : SortCompletionItems(completeItems)
   PromotePreselectedCompletionItem(finalItems)
   return finalItems
+enddef
+
+# Return true in Insert or Replace mode, where a completion menu can be shown.
+def InInsertOrReplaceMode(): bool
+  var m = mode()
+  return m == 'i' || m == 'R' || m == 'Rv'
 enddef
 
 # Send completion items either directly to popup (autoComplete) or to omnifunc
@@ -855,8 +860,7 @@ def DispatchCompletionItems(lspserver: dict<any>,
       return
     endif
 
-    var m = mode()
-    if m != 'i' && m != 'R' && m != 'Rv'
+    if !InInsertOrReplaceMode()
       # If not in insert or replace mode, then don't start the completion
       return
     endif
@@ -900,6 +904,12 @@ export def CompletionReply(lspserver: dict<any>, cItems: any,
   var items = GetCompletionSourceItems(lspserver, cItems)
 
   var lspOpts = opt.lspOptions
+  if lspOpts.autoComplete && !lspserver.omniCompletePending
+      && !InInsertOrReplaceMode()
+    # The user left Insert mode while the server was computing the items, so
+    # don't build a menu that DispatchCompletionItems() would drop.
+    return
+  endif
 
   # Get the keyword prefix before the current cursor column.
   var chcol = charcol('.')
