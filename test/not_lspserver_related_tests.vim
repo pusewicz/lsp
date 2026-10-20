@@ -922,10 +922,8 @@ def g:Test_Completion_Preselect_NoopWithoutPreselect()
 enddef
 
 # The completion menu items are sorted by their score, the sortText or else the
-# label, in the order that sorting the items with the compare function
-# "a.score == b.score ? 0 : a.score >? b.score ? 1 : -1" gives: the order of
-# the reply for the same score, and an arbitrary but fixed order for scores
-# that differ only in case.
+# label, ignoring case, and the items with the same score or with scores that
+# differ only in case stay in the order of the reply.
 def g:Test_Completion_SortOrder()
   silent! edit XCompletionSortOrder.vim
   var lspserver = MakeCompletionReplyServer(false)
@@ -941,21 +939,42 @@ def g:Test_Completion_SortOrder()
     {label: 'w9', sortText: 'ä'},
     {label: 'w10', sortText: 'b'},
     {label: 'w11', sortText: 'A'},
+    {label: 'w12', sortText: 'a b'},
+    {label: 'w13', sortText: 'a'},
   ]
-  var expected = cItems
-    ->mapnew((_, v) => ({
-      word: v.label,
-      score: v->get('sortText', '')->empty() ? v.label : v.sortText,
-    }))
-    ->sort((a, b) => a.score == b.score ? 0 : a.score >? b.score ? 1 : -1)
-    ->mapnew((_, v) => v.word)
 
   completion.CompletionReply(lspserver, cItems, {})
 
   var words = lspserver.completeItems->mapnew((_, v) => v.word)
-  assert_equal(expected, words)
-  assert_true(words->index('w2') < words->index('w4'))
-  assert_true(words->index('w1') < words->index('w10'))
+  assert_equal(['w2', 'w4', 'w11', 'w13', 'w12', 'alpha', 'w1', 'w3', 'w10',
+    'w6', 'Zeta', 'w8', 'w9'], words)
+  :%bw!
+enddef
+
+# A reply that arrives after the user has left Insert mode is dropped before
+# its items are built, which the words that the buffer completion would add to
+# the items show.
+def g:Test_Completion_AutoCompleteReplyOutsideInsertMode()
+  silent! edit XCompletionReplyNormalMode.vim
+  setline(1, 'some buffer words')
+  var lspserver = MakeCompletionReplyServer(false)
+  lspserver.omniCompletePending = false
+  g:LspOptionsSet({autoComplete: true, useBufferCompletion: true})
+  var cItems = [{label: 'alpha'}]
+
+  assert_equal('n', mode())
+  completion.CompletionReply(lspserver, cItems, {})
+
+  assert_equal([{label: 'alpha'}], cItems)
+  assert_equal([], lspserver.completeItems)
+
+  lspserver.omniCompletePending = true
+  completion.CompletionReply(lspserver, cItems, {})
+
+  assert_true(cItems->len() > 1)
+  assert_equal('alpha', lspserver.completeItems[0].word)
+
+  g:LspOptionsSet({useBufferCompletion: false})
   :%bw!
 enddef
 
