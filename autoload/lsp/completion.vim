@@ -800,6 +800,7 @@ enddef
 # the List or the reply is passed to a function.
 def GetCompletionSourceItems(lspserver: dict<any>, cItems: any): list<dict<any>>
   lspserver.completeItemsIsIncomplete = false
+  lspserver.completionResolved = []
 
   var items: list<dict<any>> = []
   if cItems->type() == v:t_list
@@ -1120,14 +1121,32 @@ enddef
 # process the 'completionItem/resolve' reply from the LSP server
 # Result: CompletionItem
 export def CompletionResolveReply(lspserver: dict<any>, cItem: any,
-                                  resolveError: dict<any> = {})
+                                  resolveError: dict<any> = {},
+                                  requested: dict<any> = {})
   # Handle completion resolve error
   if !resolveError->empty()
     lspserver.traceLog($'Completion resolve failed: {resolveError.message}')
     return
   endif
 
+  if cItem->type() == v:t_dict && !cItem->empty() && !requested->empty()
+    lspserver.completionResolved->add([requested, cItem])
+  endif
+
   ShowCompletionDocumentation(cItem)
+enddef
+
+# Return the completion item that the language server resolved "item" to, when
+# "item" was selected in the completion menu, or an empty Dict.  The resolved
+# items are dropped when a new completion list arrives.
+def ResolvedCompletionItem(lspserver: dict<any>,
+			   item: dict<any>): dict<any>
+  for [requested, resolved] in lspserver->get('completionResolved', [])
+    if requested ==# item
+      return resolved
+    endif
+  endfor
+  return {}
 enddef
 
 # Return trigger kind and trigger char. If completion trigger is not a keyword
@@ -1418,9 +1437,12 @@ def LspCompleteDone(bnr: number)
 
   if !completionData->has_key('additionalTextEdits')
     # Some language servers (e.g. typescript) delay the computation of the
-    # additional text edits.  So try to resolve the completion item now to get
-    # the text edits.
-    var resolvedData = lspserver.resolveCompletion(completionData, true)
+    # additional text edits.  So use the item resolved when it was selected in
+    # the menu or else try to resolve it now to get the text edits.
+    var resolvedData = ResolvedCompletionItem(lspserver, completionData)
+    if resolvedData->empty()
+      resolvedData = lspserver.resolveCompletion(completionData, true)
+    endif
     if resolvedData->type() == v:t_dict && !resolvedData->empty()
       completionData = resolvedData
     endif

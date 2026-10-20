@@ -107,6 +107,7 @@ def StartServer(lspserver: dict<any>, bnr: number): number
   lspserver.data = ''
   lspserver.caps = {}
   lspserver.omniCompletePending = false
+  lspserver.completionResolved = []
   lspserver.completionLazyDoc = false
   lspserver.completionTriggerChars = []
   lspserver.signaturePopup = -1
@@ -1540,7 +1541,9 @@ def ResolveCompletion(lspserver: dict<any>, item: dict<any>, sync: bool = false)
   else
     AsyncRpcSupersede(lspserver, 'completionItem/resolve',
 		      'completionItem/resolve', item,
-		      completion.CompletionResolveReply)
+		      (srv: dict<any>, reply: any, error: dict<any>) => {
+			completion.CompletionResolveReply(srv, reply, error, item)
+		      })
   endif
   return {}
 enddef
@@ -3496,6 +3499,7 @@ export def NewLspServer(serverParams: dict<any>): dict<any>
     needOffsetEncoding: false,
     omniCompletePending: false,
     completeItemsIsIncomplete: false,
+    completionResolved: [],
     nextSyncRpcId: SYNC_RPC_FIRST_ID,
     syncRpcReplies: syncRpcReplies,
     pendingRequests: pendingRequests,
