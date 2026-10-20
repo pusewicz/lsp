@@ -44,12 +44,14 @@ export def InlayHintsReply(lspserver: dict<any>, inlayHints: any,
     return
   endif
 
-  InlayHintsClear(bnr)
-
   if mode() != 'n'
-    # Update inlay hints only in normal mode
+    # Update inlay hints only in normal mode.  Keep the hints shown, and ask
+    # for them again when the cursor rests.
+    setbufvar(bnr, 'LspInlayHintsNeedsUpdate', true)
     return
   endif
+
+  InlayHintsClear(bnr)
 
   for hint in inlayHints
     var label = ''
