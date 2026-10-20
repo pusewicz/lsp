@@ -202,6 +202,7 @@ enddef
 def AssertIgnoredUnknownResponse(lspserver: dict<any>, payload: dict<any>, id: string)
   var traceMsgs: list<string> = []
   lspserver.traceLog = (msg) => traceMsgs->add(msg)
+  lspserver.debug = true
   lspserver.processRequest = (_, _) => assert_report('unexpected request dispatch')
   lspserver.processNotif = (_, _) => assert_report('unexpected notification dispatch')
 
@@ -226,6 +227,22 @@ def g:Test_ProcessMessages_IgnoreUnknownResponseId_Result()
       id: unknownId,
       result: {}
     }, unknownId)
+enddef
+
+# Test that a dropped message is not serialised for the debug log when the
+# server isn't debugged.
+def g:Test_ProcessMessages_DroppedMessageNotTracedWithoutDebug()
+  var lspserver = MakeTestLspServer([])
+  var traceMsgs: list<string> = []
+  lspserver.traceLog = (msg) => traceMsgs->add(msg)
+  lspserver.debug = false
+
+  lspserver.data = {jsonrpc: '2.0', id: 'X-unknown-response-id', result: {}}
+  lspserver.processMessage()
+  lspserver.data = {id: 1, method: 'test/method'}
+  lspserver.processMessage()
+
+  assert_equal([], traceMsgs)
 enddef
 
 # Test that a reply to a waiting synchronous request is passed back to it
@@ -1483,6 +1500,7 @@ def g:Test_ProcessMessages_RejectsMessageMissingJsonRpc()
   var lspserver = MakeTestLspServer([])
   var traceMsgs: list<string> = []
   lspserver.traceLog = (msg) => traceMsgs->add(msg)
+  lspserver.debug = true
   lspserver.processRequest = (_, _) => assert_report('unexpected request dispatch')
   lspserver.processNotif = (_, _) => assert_report('unexpected notification dispatch')
 
@@ -3830,6 +3848,7 @@ def g:Test_ProcessMessages_InvalidRequest_NonStringMethod_WithId()
   var traceMsgs: list<string> = []
   lspserver.sendMessage = (msg) => CaptureMessage(outMessages, msg)
   lspserver.traceLog = (msg) => traceMsgs->add(msg)
+  lspserver.debug = true
   lspserver.processRequest = (_, _) => assert_report('unexpected request dispatch')
   lspserver.processNotif = (_, _) => assert_report('unexpected notification dispatch')
 
@@ -3854,6 +3873,7 @@ def g:Test_ProcessMessages_InvalidRequest_InvalidIdType_RespondsWithNullId()
   var traceMsgs: list<string> = []
   lspserver.sendMessage = (msg) => CaptureMessage(outMessages, msg)
   lspserver.traceLog = (msg) => traceMsgs->add(msg)
+  lspserver.debug = true
   lspserver.processRequest = (_, _) => assert_report('unexpected request dispatch')
   lspserver.processNotif = (_, _) => assert_report('unexpected notification dispatch')
 
@@ -3876,6 +3896,7 @@ def g:Test_ProcessMessages_InvalidRequest_MissingMethod_WithId()
   var traceMsgs: list<string> = []
   lspserver.sendMessage = (msg) => CaptureMessage(outMessages, msg)
   lspserver.traceLog = (msg) => traceMsgs->add(msg)
+  lspserver.debug = true
   lspserver.processRequest = (_, _) => assert_report('unexpected request dispatch')
   lspserver.processNotif = (_, _) => assert_report('unexpected notification dispatch')
 
@@ -3897,6 +3918,7 @@ def g:Test_ProcessMessages_MalformedNotification_NoResponseSent()
   var traceMsgs: list<string> = []
   lspserver.sendMessage = (msg) => CaptureMessage(outMessages, msg)
   lspserver.traceLog = (msg) => traceMsgs->add(msg)
+  lspserver.debug = true
   lspserver.processRequest = (_, _) => assert_report('unexpected request dispatch')
   lspserver.processNotif = (_, _) => assert_report('unexpected notification dispatch')
 
@@ -3914,6 +3936,7 @@ def g:Test_ProcessMessages_MalformedResponse_BothResultAndError_Dropped()
   var lspserver = MakeTestLspServer([])
   var traceMsgs: list<string> = []
   lspserver.traceLog = (msg) => traceMsgs->add(msg)
+  lspserver.debug = true
   lspserver.processRequest = (_, _) => assert_report('unexpected request dispatch')
   lspserver.processNotif = (_, _) => assert_report('unexpected notification dispatch')
 
