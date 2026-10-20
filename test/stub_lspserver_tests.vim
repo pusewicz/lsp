@@ -1384,6 +1384,36 @@ def g:Test_ProcessNotif_CancelRequestIsIgnored()
   assert_equal([], traceMsgs)
 enddef
 
+# Test that the diagnostics of all the buffers are pulled when the progress of
+# some work ends, and not on each notification before that.
+def g:Test_ProcessNotif_Progress_PullsDiagnosticsOnEnd()
+  var lspserver = MakeTestLspServer([])
+  lspserver.isDiagnosticsProvider = true
+  var queued = 0
+  lspserver.queuePullDiagnosticsAllBuffers = () => {
+    queued += 1
+  }
+
+  def Progress(value: dict<any>)
+    handlers.ProcessNotif(lspserver, {jsonrpc: '2.0', method: '$/progress',
+      params: {token: 'X-progress', value: value}})
+  enddef
+
+  try
+    Progress({kind: 'begin', title: 'Indexing'})
+    Progress({kind: 'report', message: '1/2', percentage: 50})
+    Progress({kind: 'report', message: '2/2', percentage: 100})
+    assert_equal(0, queued)
+
+    Progress({kind: 'end'})
+    assert_equal(1, queued)
+  finally
+    if g:LspProgress->has_key('X-progress')
+      g:LspProgress->remove('X-progress')
+    endif
+  endtry
+enddef
+
 # Test that a document highlight request supersedes only the pending request
 # for the same buffer.
 def g:Test_DocHighlight_CancelsSupersededRequestForSameBuffer()
