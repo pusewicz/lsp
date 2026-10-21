@@ -697,9 +697,8 @@ enddef
 
 # Build the completion menu item for the completion item "item".  Returns {}
 # when the item should be skipped.  "starttext", "kwStart" and "StartByteIdx"
-# are as for GetCompletionWordAndFilterText().  An item that is not a snippet
-# is skipped when its filter text doesn't match "filterPrefix" with
-# "matcher".  "lazyDoc" is true when the documentation is resolved when the
+# are as for GetCompletionWordAndFilterText().  An item is skipped when its
+# filter text doesn't match "filterPrefix" with "matcher".  "lazyDoc" is true when the documentation is resolved when the
 # item is selected, and "condensed" is the "condensedCompletionMenu" option.
 def BuildCompletionMenuItem(item: dict<any>, starttext: string,
 			    kwStart: number,
@@ -723,7 +722,14 @@ def BuildCompletionMenuItem(item: dict<any>, starttext: string,
   if insertTextFormat == protocol.InsertTextFormatSnippet
     # A snippet: Vim inserts its leading word, accepting the item expands it.
     d.word = MakeValidWord(d.word)
-  elseif !CompletionItemPrefixMatched(filterText, filterPrefix, matcher)
+    # Without a filter text, filter on the word Vim inserts, not on the raw
+    # snippet text with its placeholders.
+    if item->get('filterText', v:none)->type() != v:t_string
+      filterText = MakeValidWord(filterText)
+    endif
+  endif
+
+  if !CompletionItemPrefixMatched(filterText, filterPrefix, matcher)
     return {}
   endif
 
