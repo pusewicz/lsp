@@ -1350,6 +1350,46 @@ export def LspComplete(force: bool = false)
   lspserver.getCompletion(triggerKind, triggerChar)
 enddef
 
+# How long the selection in the completion menu has to stay on an item before
+# the item is resolved, in milliseconds.  Moving through the menu then sends no
+# request for the items passed over.
+const COMPLETION_RESOLVE_DELAY = 50
+
+# The completion item selected last that waits for COMPLETION_RESOLVE_DELAY
+# to pass before it is resolved: {timer, server, item}.  Empty when none
+# waits.
+var delayedResolve: dict<any> = {}
+
+# Forget the completion item that waits to be resolved, if any.
+def CancelDelayedResolve()
+  if !delayedResolve->empty()
+    delayedResolve.timer->timer_stop()
+    delayedResolve = {}
+  endif
+enddef
+
+# Resolve "item" of "lspserver", selected in the completion menu, once
+# COMPLETION_RESOLVE_DELAY passed and it is still selected.
+def ResolveCompletionLater(lspserver: dict<any>, item: dict<any>)
+  CancelDelayedResolve()
+  delayedResolve = {server: lspserver, item: item}
+  delayedResolve.timer = timer_start(COMPLETION_RESOLVE_DELAY, (_) => {
+    var d = delayedResolve
+    delayedResolve = {}
+    if !d->empty() && CheckCompletionItemSel(d.item->get('label', ''))
+      d.server.resolveCompletion(d.item)
+    endif
+  })
+enddef
+
+# Return the completion item that waits to be resolved, as
+# {timer, server, item}, and forget it.  Returns an empty Dict when none waits.
+def TakeDelayedResolve(): dict<any>
+  var d = delayedResolve
+  CancelDelayedResolve()
+  return d
+enddef
+
 # Lazy complete documentation handler
 def LspResolve()
   var lspserver: dict<any> = buf.CurbufGetServerChecked('completion')
@@ -1357,10 +1397,18 @@ def LspResolve()
     return
   endif
 
+  # The selection moved on from the item that waits to be resolved
+  CancelDelayedResolve()
+
   var item = v:event.completed_item
   if item->has_key('user_data') && !item.user_data->empty()
       if item.user_data->type() == v:t_dict && !item.user_data->has_key('documentation')
-	lspserver.resolveCompletion(item.user_data)
+	var resolved = ResolvedCompletionItem(lspserver, item.user_data)
+	if resolved->empty()
+	  ResolveCompletionLater(lspserver, item.user_data)
+	else
+	  ShowCompletionDocumentation(resolved)
+	endif
       else
 	ShowCompletionDocumentation(item.user_data)
       endif
@@ -1423,6 +1471,9 @@ enddef
 
 # complete done handler (LSP server-initiated actions after completion)
 def LspCompleteDone(bnr: number)
+  # The menu is closed, so the item selected last is not resolved later
+  var delayed = TakeDelayedResolve()
+
   var lspserver: dict<any> = buf.BufLspServerGet(bnr, 'completion')
   if lspserver->empty()
     if opt.lspOptions.completionInPreview && opt.lspOptions.closePreviewOnComplete
@@ -1460,8 +1511,18 @@ def LspCompleteDone(bnr: number)
   if !completionData->has_key('additionalTextEdits')
     # Some language servers (e.g. typescript) delay the computation of the
     # additional text edits.  So use the item resolved when it was selected in
-    # the menu or else try to resolve it now to get the text edits.
+    # the menu, or else wait for that or try to resolve it now to get the text
+    # edits.
     var resolvedData = ResolvedCompletionItem(lspserver, completionData)
+    if resolvedData->empty()
+      # The item may still wait to be resolved after it was selected.  Then
+      # the synchronous resolve waits for the reply to that request.
+      if !delayed->empty() && delayed.server is lspserver
+	  && delayed.item ==# completionData
+	lspserver.resolveCompletion(completionData)
+	resolvedData = ResolvedCompletionItem(lspserver, completionData)
+      endif
+    endif
     if resolvedData->empty()
       resolvedData = lspserver.resolveCompletion(completionData, true)
     endif
