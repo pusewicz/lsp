@@ -102,6 +102,46 @@ def DocPos(bnr: number, pos: dict<number>, lastLine: number): list<number>
   return [pos.line, util.GetCharIdxWithoutCompChar(bnr, pos)]
 enddef
 
+# Returns position "pos" ([line, character index], both from 0) in a
+# document after text edits "edits" (sorted by Edit_sort_func()), so that it
+# stays on the same text: it moves with the text after an edit and stays
+# before text inserted at it.  A position inside the replaced text keeps its
+# line and column, up to the last line of the new text, so that the cursor
+# stays where it was when a formatter replaces the whole document.
+def EditedPos(pos: list<number>, edits: list<dict<any>>): list<number>
+  var [lnum, col] = pos
+  for e in edits
+    if lnum < e.A[0] || (lnum == e.A[0] && col <= e.A[1])
+      continue
+    endif
+    var n: number = e.lines->len()
+    var endLnum: number = e.A[0] + n - 1
+    var endCol: number = e.lines[-1]->strcharlen() + (n == 1 ? e.A[1] : 0)
+    if lnum > e.B[0]
+      lnum += endLnum - e.B[0]
+    elseif lnum == e.B[0] && col >= e.B[1]
+      [lnum, col] = [endLnum, endCol + col - e.B[1]]
+    else
+      lnum = [lnum, endLnum]->min()
+    endif
+  endfor
+  return [lnum, col]
+enddef
+
+# Returns the character index of byte index "idx" in "text", counting the
+# bytes past its end as characters.
+def CharIdx(text: string, idx: number): number
+  return idx > text->len() ? text->strcharlen() + idx - text->len()
+			   : text->charidx(idx)
+enddef
+
+# Returns the byte index of character index "idx" in "text", counting the
+# characters past its end as bytes.
+def ByteIdx(text: string, idx: number): number
+  var nchars: number = text->strcharlen()
+  return idx > nchars ? text->len() + idx - nchars : text->byteidx(idx)
+enddef
+
 # Apply set of text edits to the specified buffer
 # The text edit logic is ported from the Neovim lua implementation
 #
@@ -155,6 +195,16 @@ export def ApplyTextEdits(bnr: number, text_edits: list<dict<any>>): void
   # that they can be applied without interfering with each other.
   updated_edits->sort('Edit_sort_func')
 
+  # The cursor of each window on the buffer, as [window ID, cursor position
+  # from getcurpos(), position in the document as [line, character index]]
+  var cursors: list<list<any>> = []
+  for winid in bnr->win_findbuf()
+    var curpos: list<number> = winid->getcurpos()
+    var text: string = bnr->getbufoneline(curpos[1])
+    cursors->add([winid, curpos,
+		  [curpos[1] - 1, CharIdx(text, curpos[2] - 1)]])
+  endfor
+
   # The lines of the document after the lines of the buffer are empty.
   var lines: list<string> = bnr->getbufline(start_line + 1, finish_line + 1)
   lines->extend(repeat([''], finish_line + 1 - [start_line, linecount]->max()))
@@ -207,6 +257,18 @@ export def ApplyTextEdits(bnr: number, text_edits: list<dict<any>>): void
   prop_clear(start_line + 1 + lines->len(), last_line, {'bufnr': bnr})
 
   deletebufline(bnr, start_line + 1 + lines->len(), last_line)
+
+  # Vim keeps the line number of a cursor inside the rewritten lines, which
+  # can then be on other text, so put each cursor back on its text.
+  var newLinecount: number = bnr->getbufinfo()[0].linecount
+  for [winid, curpos, pos] in cursors
+    var [lnum, col] = EditedPos(pos, updated_edits)
+    lnum = [lnum + 1, newLinecount]->min()
+    var bytecol: number = ByteIdx(bnr->getbufoneline(lnum), col) + 1
+    if [lnum, bytecol] != curpos[1 : 2]
+      win_execute(winid, $'cursor({lnum}, {bytecol}, {curpos[3]})')
+    endif
+  endfor
 enddef
 
 # The text that SubstituteInLine() puts in, for its ":substitute" command.

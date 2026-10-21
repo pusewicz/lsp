@@ -1381,6 +1381,38 @@ def g:Test_Completion_AdditionalTextEdits_PositionEncoding()
   endtry
 enddef
 
+# Test that the cursor stays after the completed word when the additional
+# text edits of the item add lines before it on the cursor line (#171).
+def g:Test_Completion_AdditionalTextEdits_AddLinesOnCursorLine()
+  var saveAutoComplete = g:LspOptionsGet().autoComplete
+  var saveCompleteopt = &g:completeopt
+  g:LspOptionsSet({autoComplete: true})
+  try
+    silent! edit XCompletionAdditionalEditsLines.c
+    setline(1, 'int n = pri')
+    var lspserver = MakeTextEditServer({items: [{
+      label: 'printf',
+      additionalTextEdits: [{range: FirstLineRange(0, 0),
+			     newText: "#include <stdio.h>\n"}],
+    }]})
+    buf.BufLspServerSet(bufnr(), lspserver)
+    try
+      completion.BufferInit(lspserver, bufnr(), &filetype)
+      setlocal completeopt=menuone,noinsert,noselect
+      inoremap <buffer> <F5> <ScriptCmd>completion.LspComplete(true)<CR>
+      feedkeys("A\<F5>\<C-N>\<C-Y>;\<Esc>", 'xt')
+      assert_equal(['#include <stdio.h>', 'int n = printf;'], getline(1, '$'))
+      assert_equal([2, 15], [line('.'), col('.')])
+    finally
+      buf.BufLspServerRemove(bufnr(), lspserver)
+      :%bw!
+    endtry
+  finally
+    g:LspOptionsSet({autoComplete: saveAutoComplete})
+    &g:completeopt = saveCompleteopt
+  endtry
+enddef
+
 # Stands in for the "completionItem/resolve" request of "lspserver": records
 # whether each request is synchronous in "requests".  An asynchronous one is
 # replied at once, when "reply" is true, with "item" and an edit adding an

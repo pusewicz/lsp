@@ -6127,6 +6127,59 @@ def g:Test_ApplyTextEdits_InsertAfterLastLine()
   :%bw!
 enddef
 
+# Text edits keep the cursor of each window on the buffer on the same text:
+# it moves with the text after an edit, also when the edit adds or removes
+# lines on the cursor line (#171), stays before text inserted at it, and keeps
+# its line and column inside the replaced text.
+def g:Test_ApplyTextEdits_KeepsCursorOnText()
+  silent! edit XApplyTextEditsCursor.txt
+  var bnr = bufnr()
+  # [lines, cursor, edits, expected lines, expected cursor]
+  var cases: list<list<any>> = [
+    [['int n = pri'], [1, 9], [MakeTextEdit(0, 0, 0, 0, "#include <x>\n")],
+     ['#include <x>', 'int n = pri'], [2, 9]],
+    [['a', 'b c'], [2, 3], [MakeTextEdit(1, 0, 1, 1, "x\ny\nz")],
+     ['a', 'x', 'y', 'z c'], [4, 3]],
+    [['a', 'x', 'y', 'z c'], [4, 3], [MakeTextEdit(1, 0, 3, 1, 'b')],
+     ['a', 'b c'], [2, 3]],
+    [['abc def'], [1, 5], [MakeTextEdit(0, 3, 0, 4, "\n")],
+     ['abc', 'def'], [2, 1]],
+    [['abc', 'def'], [2, 2], [MakeTextEdit(0, 3, 1, 0, ' ')],
+     ['abc def'], [1, 6]],
+    [['é x'], [1, 4], [MakeTextEdit(0, 0, 0, 1, "ü\nö")],
+     ['ü', 'ö x'], [2, 4]],
+    [['abc'], [1, 2], [MakeTextEdit(0, 1, 0, 1, "x\n")],
+     ['ax', 'bc'], [1, 2]],
+    [['abc', 'def'], [2, 2], [MakeTextEdit(0, 0, 2, 0, "x\ny\nz\nw\n")],
+     ['x', 'y', 'z', 'w'], [2, 1]],
+    [['abc', 'def', 'ghi'], [3, 2], [MakeTextEdit(2, 0, 2, 0, "new\n"),
+				     MakeTextEdit(0, 0, 0, 0, "top\n")],
+     ['top', 'abc', 'def', 'new', 'ghi'], [5, 2]],
+  ]
+  for [text, cursor, textEdits, expected, expectedCursor] in cases
+    :%d
+    setline(1, text)
+    cursor(cursor[0], cursor[1])
+    textedit.ApplyTextEdits(bnr, textEdits)
+    var msg = $'{text}, {cursor}, {textEdits}'
+    assert_equal(expected, getline(1, '$'), msg)
+    assert_equal(expectedCursor, [line('.'), col('.')], msg)
+  endfor
+
+  # The cursor of another window on the buffer moves too.
+  :%d
+  setline(1, ['abc', 'def'])
+  cursor(2, 2)
+  var winid = win_getid()
+  :new
+  textedit.ApplyTextEdits(bnr, [MakeTextEdit(1, 0, 1, 0, "x\ny\n")])
+  assert_equal([1, 1], [line('.'), col('.')])
+  assert_equal(['abc', 'x', 'y', 'def'], getbufline(bnr, 1, '$'))
+  assert_equal([4, 2], getcurpos(winid)[1 : 2])
+
+  :%bw!
+enddef
+
 # A workspace edit inserts text in an empty file that it creates first, or
 # that exists but is not loaded.  The buffer is then loaded from the file,
 # without a window.
