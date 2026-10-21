@@ -1466,6 +1466,8 @@ def GetCompletion(lspserver: dict<any>, triggerKind_arg: number, triggerChar: st
     params.context.triggerCharacter = triggerChar
   endif
 
+  # CompletionReply() drops a reply that arrives after the cursor moved.
+  lspserver.completionRequestPos = completion.CompletionRequestPos()
   # CompletionReply() itself, not a lambda calling it: Vim checks the type of
   # every value of the reply each time it is passed to a function.
   AsyncRpcSupersede(lspserver, 'textDocument/completion',
@@ -3500,6 +3502,7 @@ export def NewLspServer(serverParams: dict<any>): dict<any>
     omniCompletePending: false,
     completeItemsIsIncomplete: false,
     completionResolved: [],
+    completionRequestPos: [],
     nextSyncRpcId: SYNC_RPC_FIRST_ID,
     syncRpcReplies: syncRpcReplies,
     pendingRequests: pendingRequests,

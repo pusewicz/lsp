@@ -1775,6 +1775,9 @@ aleSupport		|Boolean| option. If true, diagnostics will be sent to
 autoComplete		|Boolean| option. In insert mode, automatically
 			complete the current symbol. Otherwise use
 			omni-completion. By default this is set to true.
+			The completion menu isn't shown when you left Insert
+			mode or moved the cursor before the language server
+			replied, e.g. by typing a space.
 
 						*lsp-opt-autoHighlight*
 autoHighlight		|Boolean| option. In normal mode, automatically
