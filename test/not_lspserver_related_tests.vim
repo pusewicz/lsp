@@ -2622,14 +2622,74 @@ enddef
 # Test that a snippet expanded in a tabstop of another snippet is done first,
 # and the cursor then goes on to the next tabstop of the other snippet.
 def g:Test_Snippet_Completion_Nested()
-  # The menu has both items, as snippets are not filtered: "outer" first.
-  var items = [SnippetItem('outer', 'outer(${1:a}, ${2:b})')
-		 ->extend({sortText: '1'}),
-	       SnippetItem('inner', 'inner(${1:x})')->extend({sortText: '2'})]
+  # Each menu has only the item that matches the typed text.
+  var items = [SnippetItem('outer', 'outer(${1:a}, ${2:b})'),
+	       SnippetItem('inner', 'inner(${1:x})')]
   assert_equal(['outer(inner(y), z)'], CompleteSnippet(['out'], items,
-    acceptFirst .. "inn\<F5>\<C-N>" .. acceptFirst .. "\<F2>y" .. snippetNext
+    acceptFirst .. "inn\<F5>" .. acceptFirst .. "\<F2>y" .. snippetNext
     .. snippetNext .. 'z' .. snippetNext .. "\<F2>\<Esc>"))
   assert_equal([[true, false, 14], [false, false, 0]], snippetStates)
+enddef
+
+# The words of the completion menu stored by <F6> in SnippetMenuWords()
+var snippetMenuWords: list<list<string>> = []
+
+# Returns the words of the completion menu for "items" after completing the
+# text "line".
+def SnippetMenuWords(line: string, items: list<dict<any>>): list<string>
+  snippetMenuWords = []
+  inoremap <F6> <ScriptCmd>snippetMenuWords->add(complete_info(['items'])
+	\.items->mapnew((_, v) => v.word))<CR>
+  try
+    CompleteSnippet([line], items, "\<F6>\<Esc>")
+  finally
+    iunmap <F6>
+  endtry
+  return snippetMenuWords->get(0, [])
+enddef
+
+# Test that snippet completion items are filtered on the keyword before the
+# cursor like the other items: on their filter text, or else on the word that
+# is inserted for the snippet, not on its raw text (#133).
+def g:Test_Snippet_Completion_PrefixFilter()
+  var items = [SnippetItem('outer', 'outer(${1:a}, ${2:b})'),
+	       SnippetItem('inner', 'inner(${1:x})'),
+	       {label: 'inline', insertText: 'inline'}]
+  assert_equal(['inline', 'inner'], SnippetMenuWords('in', items))
+  assert_equal(['inner'], SnippetMenuWords('inn', items))
+  assert_equal([], SnippetMenuWords('x', items))
+
+  # The snippet text starts with a placeholder: filtered on what Vim inserts.
+  items = [SnippetItem('assign', '${1:lhs} = ${2:rhs}'),
+	   SnippetItem('inner', 'inner(${1:x})')]
+  assert_equal(['inner'], SnippetMenuWords('in', items))
+
+  # A filter text is used as it is.
+  items = [SnippetItem('log', 'log(${1:msg})')->extend({filterText: 'zlog'}),
+	   SnippetItem('loop', 'loop {$0}')]
+  assert_equal(['log'], SnippetMenuWords('zl', items))
+  assert_equal(['loop'], SnippetMenuWords('lo', items))
+
+  # A snippet in a text edit, which also replaces text before the keyword.
+  items = [{label: 'printf', insertTextFormat: 2,
+	    textEdit: {range: FirstLineRange(4, 6), newText: 'printf(${1:x})'}},
+	   {label: 'scanf', insertTextFormat: 2,
+	    textEdit: {range: FirstLineRange(4, 6), newText: 'scanf(${1:x})'}},
+	   {label: 'bar?', insertTextFormat: 2,
+	    textEdit: {range: FirstLineRange(3, 6), newText: '?.bar($1)'}}]
+  assert_equal(['printf'], SnippetMenuWords('foo.pr', items))
+  assert_equal(['bar'], SnippetMenuWords('foo.ba', items[2 : 2]))
+
+  # With the fuzzy matcher
+  var saveMatcher = g:LspOptionsGet().completionMatcher
+  g:LspOptionsSet({completionMatcher: 'fuzzy'})
+  try
+    items = [SnippetItem('outer', 'outer(${1:a})'),
+	     SnippetItem('inner', 'inner(${1:x})')]
+    assert_equal(['inner'], SnippetMenuWords('inr', items))
+  finally
+    g:LspOptionsSet({completionMatcher: saveMatcher})
+  endtry
 enddef
 
 # Test expanding snippets with text edits: one that replaces the keyword, one
