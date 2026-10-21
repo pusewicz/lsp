@@ -2755,9 +2755,13 @@ def g:Test_AleSupport_InsertModeFollowsAleLintOnTextChanged()
   var clangd = MakeDiagServer('clangd')
   buf.BufLspServerSet(bnr, clangd)
   var uri = util.LspBufnrToUri(bnr)
+  # The same diagnostics sent again are not sent to ALE again, so each
+  # publish sends another message.
+  var msgCount = 0
   g:LspTestPublishDiags = () => {
-    diag.DiagNotification(clangd, uri, [MakeLineDiag(0, 'clangd diag')],
-			  'push')
+    msgCount += 1
+    diag.DiagNotification(clangd, uri,
+			  [MakeLineDiag(0, $'clangd diag {msgCount}')], 'push')
   }
 
   var cases: list<list<any>> = [
@@ -2780,7 +2784,7 @@ def g:Test_AleSupport_InsertModeFollowsAleLintOnTextChanged()
 
   # Outside insert mode the diagnostics are always sent.
   g:LspTestPublishDiags()
-  assert_equal({clangd: ['clangd diag']}, AleResultsByLinter())
+  assert_equal({clangd: [$'clangd diag {msgCount}']}, AleResultsByLinter())
 
   unlet g:LspTestPublishDiags
   diag.DiagRemoveFile(bnr)
@@ -2864,6 +2868,76 @@ def g:Test_AleSupport_DiagTypes()
   buf.BufLspServerRemove(bnr, clangd)
   RemoveAleStub(aleStub)
   :%bw!
+enddef
+
+# The same diagnostics sent again for the same text are neither drawn again
+# nor reported with LspDiagsUpdated, and a buffer displayed again keeps the
+# diagnostics drawn in it (#145).  After a text change, or with other
+# diagnostics or options, they are drawn again.
+def g:Test_DiagNotification_SkipsUnchangedDiags()
+  DiagInitOnce()
+  silent! edit XDiagsUnchanged.c
+  setline(1, ['int a;', 'int b;', 'int c;'])
+  var bnr = bufnr()
+  var uri = util.LspBufnrToUri(bnr)
+  var lspserver = MakeDiagServer('srv')
+  g:DiagsUpdatedCount = 0
+  augroup TestDiagsUnchanged
+    autocmd!
+    autocmd User LspDiagsUpdated g:DiagsUpdatedCount += 1
+  augroup END
+  var SignLnums = () => sign_getplaced(bnr, {group: 'LSPDiag'})[0].signs
+    ->mapnew((_, sign) => sign.lnum)
+
+  try
+    var diags = [MakeLineDiag(0, 'a'), MakeLineDiag(1, 'b')]
+    diag.DiagNotification(lspserver, uri, diags->deepcopy(), 'push')
+    assert_equal([1, 2], SignLnums())
+    assert_equal(1, g:DiagsUpdatedCount)
+
+    # Remove a sign behind the plugin's back to see whether it draws again.
+    sign_unplace('LSPDiag', {buffer: bnr, id: sign_getplaced(bnr,
+      {group: 'LSPDiag', lnum: 1})[0].signs[0].id})
+    diag.DiagNotification(lspserver, uri, diags->deepcopy(), 'push')
+    assert_equal([2], SignLnums())
+    assert_equal(1, g:DiagsUpdatedCount)
+    # As when the buffer is displayed in a window again
+    diag.DiagsRefresh(bnr)
+    assert_equal([2], SignLnums())
+
+    # The text changed
+    setline(3, 'int d;')
+    diag.DiagNotification(lspserver, uri, diags->deepcopy(), 'push')
+    assert_equal([1, 2], SignLnums())
+    assert_equal(2, g:DiagsUpdatedCount)
+
+    # Other diagnostics
+    diag.DiagNotification(lspserver, uri, [MakeLineDiag(2, 'c')], 'push')
+    assert_equal([3], SignLnums())
+    assert_equal(3, g:DiagsUpdatedCount)
+
+    # Other options draw them again.
+    sign_unplace('LSPDiag', {buffer: bnr})
+    diag.DiagsRefresh(bnr)
+    assert_equal([], SignLnums())
+    g:LspOptionsSet({showDiagWithVirtualText: true})
+    g:LspOptionsSet({showDiagWithVirtualText: false})
+    assert_equal([3], SignLnums())
+
+    # No diagnostics anymore
+    diag.DiagNotification(lspserver, uri, [], 'push')
+    assert_equal([], SignLnums())
+    assert_equal(4, g:DiagsUpdatedCount)
+    diag.DiagNotification(lspserver, uri, [], 'push')
+    assert_equal(4, g:DiagsUpdatedCount)
+  finally
+    augroup TestDiagsUnchanged
+      autocmd!
+    augroup END
+    augroup! TestDiagsUnchanged
+    diag.DiagRemoveFile(bnr)
+    :%bw!
+  endtry
 enddef
 
 # Define the diagnostic signs and text property types, which are otherwise
