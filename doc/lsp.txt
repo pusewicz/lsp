@@ -2303,7 +2303,13 @@ showInlayHints		|Boolean| option.  Show inlay hints from the language
 			buffer.  Hints are shown only in normal mode.  Updates
 			are requested when the cursor has not moved for
 			|'updatetime'| milliseconds (|CursorHold|), followed
-			by a short debounce delay.  When the language server
+			by a short debounce delay.  Only the hints of the
+			lines shown in a window, and of one window height
+			above and below them, are requested.  When a window
+			is scrolled past those lines in normal mode
+			(|WinScrolled|), the hints of the lines shown then
+			are requested after the same delay, and in the other
+			modes after a |CursorHold|.  When the language server
 			asks for the hints to be refreshed, because they
 			changed without an edit (e.g. after it finished
 			indexing), they are requested again right away in the

@@ -2340,9 +2340,11 @@ def GetOutgoingCalls(lspserver: dict<any>, item_arg: dict<any>,
 enddef
 
 # Request: "textDocument/inlayHint"
-# Inlay hints.
-def InlayHintsShow(lspserver: dict<any>, bnr: number)
-  # Check whether LSP server supports type hierarchy
+# Inlay hints of the lines "firstLine" to "lastLine" of buffer "bnr", and of
+# the whole buffer when they are not given.
+def InlayHintsShow(lspserver: dict<any>, bnr: number, firstLine: number = 1,
+		   lastLine: number = 0)
+  # Check whether LSP server supports inlay hints
   if !lspserver.isInlayHintProvider && !lspserver.isClangdInlayHintsProvider
     util.ErrMsg('LSP server does not support inlay hint')
     return
@@ -2353,15 +2355,23 @@ def InlayHintsShow(lspserver: dict<any>, bnr: number)
     return
   endif
   var lastlnum = binfo[0].linecount
+  # The range ends at the start of the line after "lastLine", so that it
+  # includes the hints at the end of that line, or else at the end of the
+  # buffer.
+  var rangeEnd: dict<number>
+  if lastLine > 0 && lastLine < lastlnum
+    rangeEnd = {line: lastLine, character: 0}
+  else
+    rangeEnd = {
+      line: lastlnum - 1,
+      character: bnr->getbufline(lastlnum)->get(0, '')->strchars()
+    }
+  endif
   var param = {
       textDocument: {uri: util.LspBufnrToUri(bnr)},
-      range:
-      {
-	start: {line: 0, character: 0},
-	end: {
-	  line: lastlnum - 1,
-	  character: bnr->getbufline(lastlnum)->get(0, '')->strchars()
-	}
+      range: {
+	start: {line: [firstLine, 1]->max() - 1, character: 0},
+	end: rangeEnd
       }
   }
 
