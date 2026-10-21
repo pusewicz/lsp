@@ -511,6 +511,9 @@ def MakeTruncatingServer(limit: number, delays: list<number> = []): dict<any>
     completeItemsIsIncomplete: false,
     features: {completion: true},
     featureEnabled: (_) => true,
+    # No request to wait for on a channel: the replies come from timers.
+    supersedableRequests: {},
+    awaitedReplies: {},
     requests: [],
     replies: 0,
     timers: [],

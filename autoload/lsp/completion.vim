@@ -1244,26 +1244,32 @@ def OmniCompleteAbandon(lspserver: dict<any>)
   lspserver.completeItems = []
 enddef
 
+# How long omni completion waits for the reply to its request, in milliseconds
+const OMNI_COMPLETE_TIMEOUT = 2000
+
 # Second invocation of the omni complete handlers: wait for the reply to the
 # request sent by OmniCompleteStart() and return the list of matches.  Returns
 # v:none when interrupted by a typed key or when the server doesn't reply in
-# time; the request is then cancelled.
+# time; the request is then cancelled.  The reply is read from the channel as
+# soon as it arrives, and typed keys are checked for every 10 ms meanwhile.
 def OmniCompleteMatches(lspserver: dict<any>): any
-  # Wait for the list of matches from the LSP server
-  var count: number = 0
-  while lspserver.omniCompletePending && count < 1000
+  var start = reltime()
+  while lspserver.omniCompletePending
     if complete_check()
+	|| start->reltime()->reltimefloat() * 1000 >= OMNI_COMPLETE_TIMEOUT
       OmniCompleteAbandon(lspserver)
       return v:none
     endif
-    sleep 2m
-    count += 1
+    var id: number = lspserver.supersedableRequests
+      ->get('textDocument/completion', {})->get('id', -1)
+    if lspserver.awaitedReplies->has_key(id)
+      lspserver.waitForReply(id, 10)
+    else
+      # Nothing to wait for on the channel, e.g. while the request is sent
+      # again or after the server exited
+      :sleep 1m
+    endif
   endwhile
-
-  if lspserver.omniCompletePending
-    OmniCompleteAbandon(lspserver)
-    return v:none
-  endif
 
   var res: list<dict<any>> = lspserver.completeItems
   var prefix = lspserver.omniCompleteKeyword

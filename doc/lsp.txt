@@ -2694,7 +2694,8 @@ The process works as follows:
 3. Second Invocation: The external completion engine adapter calls
    |g:LspOmniFunc| again to retrieve the matches returned by the LSP server.
 4. If the LSP server is not ready to reply immediately, |g:LspOmniFunc| waits
-   for up to 2 seconds, or until a key is typed.  When it stops waiting
+   for up to 2 seconds, or until a key is typed, and returns the matches as
+   soon as the reply arrives.  When it stops waiting
    without a reply, it returns |v:none| and asks the server to cancel the
    request.
 5. However, this wait could block the caller from performing other tasks,
