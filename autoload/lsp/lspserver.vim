@@ -74,6 +74,7 @@ def Exit_cb(lspserver: dict<any>, job: job, status: number): void
   endif
   ClearMap(lspserver.pendingPullBufnrs)
   ClearMap(lspserver.pendingRequests)
+  ClearMap(lspserver.awaitedReplies)
   lspserver.running = false
   lspserver.ready = false
   watchedfiles.RemoveServer(lspserver)
@@ -118,6 +119,7 @@ def StartServer(lspserver: dict<any>, bnr: number): number
   ClearMap(lspserver.pendingPullBufnrs)
   lspserver.diagnosticPullTimer = -1
   ClearMap(lspserver.pendingRequests)
+  ClearMap(lspserver.awaitedReplies)
   ClearMap(lspserver.supersedableRequests)
   # A new server process has no open documents
   ClearMap(lspserver.docBufnrs)
@@ -330,6 +332,7 @@ def StopServer(lspserver: dict<any>): number
   endif
   ClearMap(lspserver.pendingPullBufnrs)
   ClearMap(lspserver.pendingRequests)
+  ClearMap(lspserver.awaitedReplies)
   lspserver.running = false
   lspserver.ready = false
   watchedfiles.RemoveServer(lspserver)
@@ -854,18 +857,31 @@ def AsyncRpc(lspserver: dict<any>, method: string, params: any, Cbfunc: func,
   var Fn = function('AsyncRpcCb', [lspserver, method, params, Cbfunc, opts,
 				   retries])
 
-  var reply = job->ch_sendexpr(req, {callback: Fn})
-  if reply->empty()
-    return -1
+  var id: number
+  if opts->get('awaitable', false)
+    # Without a channel callback, so that WaitForReply() can read the reply
+    # with ch_read(), and otherwise handlers.ProcessMessage() passes it to
+    # the callback.
+    id = lspserver.nextSyncRpcId
+    lspserver.nextSyncRpcId += 1
+    req.id = id
+    lspserver.awaitedReplies[id] = Fn
+    job->ch_sendexpr(req)
+  else
+    var reply = job->ch_sendexpr(req, {callback: Fn})
+    if reply->empty()
+      return -1
+    endif
+    id = reply.id
   endif
   # Until its reply is processed, so that one can wait for that
-  lspserver.pendingRequests[reply.id] = method
+  lspserver.pendingRequests[id] = method
   if opts->has_key('request')
-    opts.request.id = reply.id
+    opts.request.id = id
   endif
 
   if lspserver.debug
-    var logreq = {id: reply.id}->extend(req)
+    var logreq = {id: id}->extend(req)
     lspserver.traceLog($'Sent request {logreq->json_encode()}')
   endif
 
@@ -876,12 +892,12 @@ def AsyncRpc(lspserver: dict<any>, method: string, params: any, Cbfunc: func,
     # WaitBeforePendingKeys() already waits for it.
     if keysWait.callbackDepth > 0 && (keysWait.inAutocmd || state('x') == '')
 	&& KeysPending()
-      KeysWaitAdd(lspserver, reply.id)
+      KeysWaitAdd(lspserver, id)
     endif
   elseif opts->get('beforePendingKeys', false) && KeysPending()
     keysWait = {requests: [], callbackDepth: 0, inAutocmd: state('x') != '',
 		timeout: 0, lastProgress: reltime()}
-    KeysWaitAdd(lspserver, reply.id)
+    KeysWaitAdd(lspserver, id)
     try
       WaitBeforePendingKeys()
     finally
@@ -889,7 +905,28 @@ def AsyncRpc(lspserver: dict<any>, method: string, params: any, Cbfunc: func,
     endtry
   endif
 
-  return reply.id
+  return id
+enddef
+
+# Wait up to "timeout" milliseconds for the reply to the request "id" that
+# AsyncRpc() sent with the "awaitable" option, and pass it to the reply
+# callback as soon as it arrives.  The callbacks of the other messages that
+# arrive meanwhile run as when Vim sleeps.  Returns true when the reply was
+# processed, now or before.
+def WaitForReply(lspserver: dict<any>, id: number, timeout: number): bool
+  if !lspserver.awaitedReplies->has_key(id)
+    return true
+  endif
+  var job = lspserver.job
+  if job->job_status() != 'run'
+    return false
+  endif
+  var msg: any = job->ch_read({id: id, timeout: timeout})
+  if msg->type() == v:t_dict && lspserver.awaitedReplies->has_key(id)
+    var Cb: func = lspserver.awaitedReplies->remove(id)
+    Cb(job->job_getchannel(), msg)
+  endif
+  return !lspserver.awaitedReplies->has_key(id)
 enddef
 
 # Cancel the pending request sent with AsyncRpcSupersede() with "key", if any,
@@ -1470,10 +1507,12 @@ def GetCompletion(lspserver: dict<any>, triggerKind_arg: number, triggerChar: st
   # CompletionReply() drops a reply that arrives after the cursor moved.
   lspserver.completionRequestPos = completion.CompletionRequestPos()
   # CompletionReply() itself, not a lambda calling it: Vim checks the type of
-  # every value of the reply each time it is passed to a function.
+  # every value of the reply each time it is passed to a function.  Omni
+  # completion waits for the reply with WaitForReply().
   AsyncRpcSupersede(lspserver, 'textDocument/completion',
 		    'textDocument/completion', params,
-		    completion.CompletionReply)
+		    completion.CompletionReply,
+		    {awaitable: lspserver.omniCompletePending})
 enddef
 
 # Cancel the pending completion request, if any, and ignore its reply.
@@ -3525,6 +3564,9 @@ export def NewLspServer(serverParams: dict<any>): dict<any>
   var syncRpcReplies: dict<dict<any>> = {}
   # The method of each asynchronous request waiting for its reply, by id
   var pendingRequests: dict<string> = {}
+  # The reply callback of each request sent with the "awaitable" option of
+  # AsyncRpc() that is waiting for its reply, by id
+  var awaitedReplies: dict<func> = {}
   var supersedableRequests: dict<dict<number>> = {}
   var diagnosticResultIds: dict<string> = {}
   var pendingPullBufnrs: dict<bool> = {}
@@ -3565,6 +3607,7 @@ export def NewLspServer(serverParams: dict<any>): dict<any>
     nextSyncRpcId: SYNC_RPC_FIRST_ID,
     syncRpcReplies: syncRpcReplies,
     pendingRequests: pendingRequests,
+    awaitedReplies: awaitedReplies,
     supersedableRequests: supersedableRequests,
     peekSymbolFilePopup: -1,
     peekSymbolPopup: -1,
@@ -3635,6 +3678,7 @@ export def NewLspServer(serverParams: dict<any>): dict<any>
     sendInitializedNotif: function(SendInitializedNotif, [lspserver]),
     sendWorkspaceConfig: function(SendWorkspaceConfig, [lspserver]),
     getCompletion: function(GetCompletion, [lspserver]),
+    waitForReply: function(WaitForReply, [lspserver]),
     resolveCompletion: function(ResolveCompletion, [lspserver]),
     cancelCompletion: function(CancelCompletion, [lspserver]),
     getInlineCompletion: function(GetInlineCompletion, [lspserver]),

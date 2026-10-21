@@ -7444,6 +7444,58 @@ def g:Test_OmniFunc_CancelsAbandonedRequest()
   endtry
 enddef
 
+# Omni completion reads the reply to its request from the channel while it
+# waits for it, and a reply that arrives before it waits, e.g. while a
+# completion plugin polls g:LspOmniCompletePending(), goes to the request's
+# callback through the channel callback.
+def g:Test_OmniFunc_ReadsReplyFromChannel()
+  silent! edit XOmniFuncReply.vim
+  var lspserver = MakeTestLspServer([])
+  lspserver.running = true
+  lspserver.ready = true
+  lspserver.isCompletionProvider = true
+  lspserver.completionLazyDoc = false
+  lspserver.completionTriggerChars = []
+  buf.BufLspServerSet(bufnr(), lspserver)
+  var ProcessMessage = (_, msg) => {
+    lspserver.data = msg
+    lspserver.processMessage()
+  }
+
+  try
+    setline(1, 'fo ')
+    cursor(1, 3)
+    var id = lspserver.nextSyncRpcId
+    lspserver.job = StartStubServerJob(
+      [{jsonrpc: '2.0', id: id, result: [{label: 'foo'}, {label: 'bar'}]}],
+      {out_cb: ProcessMessage})
+    assert_equal(0, g:LspOmniFunc(1, ''))
+    assert_equal({[id]: 'textDocument/completion'}, lspserver.pendingRequests)
+    var start = reltime()
+    assert_equal(['foo'],
+		 g:LspOmniFunc(0, 'fo')->mapnew((_, v) => v.word))
+    assert_true(start->reltime()->reltimefloat() < 1.0)
+    assert_equal({}, lspserver.awaitedReplies)
+    assert_equal({}, lspserver.pendingRequests)
+    job_stop(lspserver.job)
+
+    id = lspserver.nextSyncRpcId
+    lspserver.job = StartStubServerJob(
+      [{jsonrpc: '2.0', id: id, result: [{label: 'foobar'}]}],
+      {out_cb: ProcessMessage})
+    assert_equal(0, g:LspOmniFunc(1, ''))
+    g:WaitForAssert(() => assert_false(g:LspOmniCompletePending()))
+    assert_equal({}, lspserver.awaitedReplies)
+    assert_equal({}, lspserver.pendingRequests)
+    assert_equal(['foobar'],
+		 g:LspOmniFunc(0, 'fo')->mapnew((_, v) => v.word))
+  finally
+    job_stop(lspserver.job)
+    buf.BufLspServerRemove(bufnr(), lspserver)
+    :%bw!
+  endtry
+enddef
+
 # Test that ":LspCodeLens" resolves the code lens items without a command,
 # leaves out of the menu those that cannot be resolved, and runs the command
 # of the selected item.
@@ -11192,12 +11244,17 @@ def g:Test_Completion_ExpandsSnippet()
   silent! edit XCompletionSnippet.c
   setline(1, ['int n = pri'])
   var bnr = bufnr()
-  var lspserver = MakeAsyncReplyingLspServer([{isIncomplete: false, items: [{
-    label: 'printf', kind: 3, insertTextFormat: 2,
-    textEdit: {range: {start: {line: 0, character: 8},
-		       end: {line: 0, character: 11}},
-	       newText: 'printf(${1:fmt}, ${2:args})$0'},
-  }]}])
+  var lspserver = MakeAsyncReplyingLspServer([])
+  # Omni completion numbers its request like a synchronous one.
+  job_stop(lspserver.job)
+  lspserver.job = StartStubServerJob([{jsonrpc: '2.0',
+    id: lspserver.nextSyncRpcId,
+    result: {isIncomplete: false, items: [{
+      label: 'printf', kind: 3, insertTextFormat: 2,
+      textEdit: {range: {start: {line: 0, character: 8},
+			 end: {line: 0, character: 11}},
+		 newText: 'printf(${1:fmt}, ${2:args})$0'},
+    }]}}])
   lspserver->extend({
     isCompletionProvider: true,
     isCompletionResolveProvider: false,
@@ -11242,13 +11299,14 @@ def g:Test_Completion_AcceptWaitsForResolve()
     completionTriggerChars: [],
     featureEnabled: (_) => true,
   })
-  # Vim numbers the requests on a new channel from 1: the completion reply is
-  # sent at once and the resolve reply a second later.
-  lspserver.job = StartSteppedStubServerJob([
-    [{jsonrpc: '2.0', id: 1, result: {isIncomplete: false, items: [item]}}],
-    [{jsonrpc: '2.0', id: 2, result: resolved}]])
-  buf.BufLspServerSet(bnr, lspserver)
+  # Omni completion numbers its request like a synchronous one, and Vim
+  # numbers the other requests on a new channel from 1: the completion reply
+  # is sent at once and the resolve reply a second later.
   var syncId = lspserver.nextSyncRpcId
+  lspserver.job = StartSteppedStubServerJob([
+    [{jsonrpc: '2.0', id: syncId, result: {isIncomplete: false, items: [item]}}],
+    [{jsonrpc: '2.0', id: 1, result: resolved}]])
+  buf.BufLspServerSet(bnr, lspserver)
   try
     completion.OmniComplSet('c', true)
     completion.BufferInit(lspserver, bnr, 'c')
@@ -11257,7 +11315,8 @@ def g:Test_Completion_AcceptWaitsForResolve()
     g:FeedOmniCompleteKeys("A\<C-X>\<C-O>\<C-N>\<C-Y>;\<Esc>")
     assert_equal(['#include <stdio.h>', '/* main */', 'int n = printf;'],
 		 getline(1, '$'))
-    assert_equal(syncId, lspserver.nextSyncRpcId)
+    # No synchronous resolve request was sent.
+    assert_equal(syncId + 1, lspserver.nextSyncRpcId)
   finally
     completion.OmniComplSet('c', false)
     StopAsyncReplyingLspServer(lspserver, bnr)
