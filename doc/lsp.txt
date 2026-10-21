@@ -2623,8 +2623,10 @@ the language server and obtains a list of potential completion matches based
 on the current cursor position. To achieve this, the plugin retrieves the
 keyword immediately preceding the cursor (refer to 'iskeyword' setting) and
 then filters the list of completion items received from the language server
-based on this keyword.  The resulting filtered list is displayed as the
-completion menu.
+based on this keyword.  An item is matched on its filter text, or else on the
+text it inserts; for a snippet item without a filter text, that is the word
+inserted for the snippet, without its placeholders.  The resulting filtered
+list is displayed as the completion menu.
 
 It's worth noting that different language servers handle completion filtering
 in distinct ways. Some servers perform the filtering directly on the
