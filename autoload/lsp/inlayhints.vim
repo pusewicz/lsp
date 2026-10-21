@@ -20,7 +20,13 @@ export def InitOnce()
   autocmd_add([{group: 'LspCmds',
 	        event: 'User',
 		pattern: 'LspOptionsChanged',
-		cmd: 'LspInlayHintsOptionsChanged()'}])
+		cmd: 'LspInlayHintsOptionsChanged()'},
+	       # The pattern of WinScrolled is a window ID, so this cannot be a
+	       # buffer-local autocmd.
+	       {group: 'LspCmds',
+		event: 'WinScrolled',
+		pattern: '*',
+		cmd: 'LspInlayHintsWinScrolled()'}])
 enddef
 
 # Clear all the inlay hints text properties in the current buffer
@@ -90,15 +96,75 @@ export def InlayHintsReply(lspserver: dict<any>, inlayHints: any,
   endfor
 enddef
 
-# Timer callback to display the inlay hints.
+# The first and the last line of buffer "bnr" shown in the windows of the
+# current tab page, and with "margin" true, the lines up to one window height
+# above and below them: [first, last].  An empty List when no window shows the
+# buffer.  When windows show parts of the buffer far apart, the lines between
+# them are included as well.
+def VisibleLines(bnr: number, margin: bool): list<number>
+  var first = 0
+  var last = 0
+  var lastlnum = 0
+  var tabnr = tabpagenr()
+  for winid in bnr->win_findbuf()
+    if winid->win_id2tabwin()[0] != tabnr
+      continue
+    endif
+    var extra = margin ? winid->winheight() : 0
+    var top = line('w0', winid) - extra
+    var bot = line('w$', winid) + extra
+    if first == 0 || top < first
+      first = top
+    endif
+    if bot > last
+      last = bot
+    endif
+    lastlnum = line('$', winid)
+  endfor
+  if first == 0
+    return []
+  endif
+  return [[first, 1]->max(), [last, lastlnum]->min()]
+enddef
+
+# Returns true when the lines of buffer "bnr" shown in a window are within the
+# lines whose inlay hints were requested last.
+def VisibleLinesRequested(bnr: number): bool
+  var requested: list<number> = bnr->getbufvar('LspInlayHintsLines', [])
+  if requested->empty()
+    return false
+  endif
+  var visible = VisibleLines(bnr, false)
+  return visible->empty()
+    || (visible[0] >= requested[0] && visible[1] <= requested[1])
+enddef
+
+# Timer callback to display the inlay hints.  Only the hints of the lines
+# shown in a window, with a margin, are requested: the cost of a reply grows
+# with the number of hints.  More are requested when the window is scrolled
+# past them.
 def InlayHintsTimerCb(lspserver: dict<any>, bnr: number, timerid: number)
-  lspserver.inlayHintsShow(bnr)
+  setbufvar(bnr, 'LspInlayHintsTimer', -1)
+  if mode() != 'n'
+    # A reply in Insert mode would be dropped: request the hints at the next
+    # CursorHold.
+    setbufvar(bnr, 'LspInlayHintsNeedsUpdate', true)
+    return
+  endif
+  var lines = VisibleLines(bnr, true)
+  if lines->empty()
+    # Not shown in a window: request the hints when it is
+    return
+  endif
   setbufvar(bnr, 'LspInlayHintsNeedsUpdate', false)
+  setbufvar(bnr, 'LspInlayHintsLines', lines)
+  lspserver.inlayHintsShow(bnr, lines[0], lines[1])
 enddef
 
 # Update all the inlay hints.  A timer is used to throttle the updates.
 def LspInlayHintsUpdate(bnr: number)
   if !bnr->getbufvar('LspInlayHintsNeedsUpdate', true)
+      && VisibleLinesRequested(bnr)
     return
   endif
 
@@ -120,6 +186,34 @@ def LspInlayHintsUpdate(bnr: number)
     timerid = timer_start(300, function('InlayHintsTimerCb', [lspserver, bnr]))
     setbufvar(bnr, 'LspInlayHintsTimer', timerid)
   endif
+enddef
+
+# A window was scrolled or resized.  In Normal mode, request the inlay hints
+# of the lines it now shows, when they were not requested yet.  In the other
+# modes, the next CursorHold does.
+def LspInlayHintsWinScrolled()
+  if !opt.lspOptions.showInlayHints || mode() != 'n'
+    return
+  endif
+
+  # v:event is empty when the autocmd was triggered with :doautocmd
+  var winids: list<number> = v:event->keys()
+    ->filter((_, k) => k != 'all')->mapnew((_, k) => k->str2nr())
+  if winids->empty()
+    winids = gettabinfo(tabpagenr())[0].windows
+  endif
+
+  var bufnrs: list<number> = []
+  for winid in winids
+    var bnr = winid->winbufnr()
+    if bnr > 0 && bufnrs->index(bnr) == -1
+	&& exists($'#LspInlayHints#CursorHold#<buffer={bnr}>')
+      bufnrs->add(bnr)
+    endif
+  endfor
+  for bnr in bufnrs
+    LspInlayHintsUpdate(bnr)
+  endfor
 enddef
 
 # Text is modified. Need to update the inlay hints.
@@ -194,6 +288,13 @@ export def BufferInit(lspserver: dict<any>, bnr: number)
 		group: 'LspInlayHints',
 		replace: true,
 		cmd: $'LspInlayHintsChanged({bnr})'})
+  # The hints of a buffer that no window showed were not requested: request
+  # them when a window shows it.
+  acmds->add({bufnr: bnr,
+		event: ['BufWinEnter'],
+		group: 'LspInlayHints',
+		replace: true,
+		cmd: $'LspInlayHintsUpdate({bnr})'})
   # Editing a file should trigger an inlay hint update.
   acmds->add({bufnr: bnr,
 		event: ['BufReadPost'],

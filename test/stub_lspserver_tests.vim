@@ -1512,6 +1512,34 @@ def g:Test_InlayHintsShow_RangeEndsAtEndOfBuffer()
   :%bw!
 enddef
 
+# Test that the inlay hints request for some lines of a buffer starts at the
+# first one and ends at the start of the line after the last one, or at the
+# end of the buffer.
+def g:Test_InlayHintsShow_LineRange()
+  silent! edit XInlayHintsLineRange.txt
+  setline(1, ['a', 'b', 'c', 'd', 'end'])
+  var lspserver = MakeTestLspServer([])
+  lspserver.isInlayHintProvider = true
+  lspserver.isClangdInlayHintsProvider = false
+  var ranges: list<dict<any>> = []
+  lspserver.rpc_a = (_, params, _, _: dict<any> = {}) => {
+    ranges->add(params.range->deepcopy())
+    return 0
+  }
+
+  lspserver.inlayHintsShow(bufnr(), 2, 3)
+  lspserver.inlayHintsShow(bufnr(), 4, 5)
+  lspserver.inlayHintsShow(bufnr(), 1, 9)
+
+  var bufEnd: dict<number> = {line: 4, character: 3}
+  assert_equal([
+    {start: {line: 1, character: 0}, end: {line: 3, character: 0}},
+    {start: {line: 3, character: 0}, end: bufEnd},
+    {start: {line: 0, character: 0}, end: bufEnd}
+  ], ranges)
+  :%bw!
+enddef
+
 def g:Test_ProcessMessages_IgnoreUnknownResponseId_Error()
   var lspserver = MakeTestLspServer([])
   var unknownId = 'X-unknown-response-id-error'
@@ -1705,7 +1733,7 @@ def MakeRefreshTestLspServer(responses: list<dict<any>>,
   lspserver.isSemanticTokensProvider = true
   lspserver.isCodeLensProvider = true
   lspserver.sendResponse = function(CaptureResponse, [responses])
-  lspserver.inlayHintsShow = (bnr: number) => {
+  lspserver.inlayHintsShow = (bnr: number, ..._) => {
     requested->add(bnr)
   }
   lspserver.semanticHighlightUpdate = (bnr: number) => {
@@ -1970,6 +1998,83 @@ def g:Test_InlayHintsReply_KeepsHintsInInsertMode()
   assert_equal(1, Hints())
   assert_true(bnr->getbufvar('LspInlayHintsNeedsUpdate', false))
   :%bw!
+enddef
+
+# Test that the inlay hints are requested only for the lines shown in a window
+# and one window height above and below them, and requested again when the
+# window is scrolled past those lines: right away in Normal mode, and after a
+# CursorHold in Insert mode, where no update requests them.  Not for a buffer
+# that no window shows.
+def g:Test_InlayHints_RequestVisibleLines()
+  if prop_type_get('LspInlayHintsType')->empty()
+    inlayhints.InitOnce()
+  endif
+  silent! edit XInlayHintsVisible.txt
+  :only
+  setline(1, range(1, 1000)->mapnew((_, n) => $'line {n}'))
+  var bnr = bufnr()
+  var hidden = bufadd('XInlayHintsHidden.txt')
+  hidden->bufload()
+  var lspserver = MakeTestLspServer([])
+  lspserver.running = true
+  lspserver.ready = true
+  lspserver.isInlayHintProvider = true
+  var requested: list<list<number>> = []
+  lspserver.inlayHintsShow = (b: number, first: number = 1, last: number = 0) => {
+    requested->add([b, first, last])
+  }
+  opt.lspOptions.showInlayHints = true
+  try
+    for b in [bnr, hidden]
+      buf.BufLspServerSet(b, lspserver)
+      inlayhints.BufferInit(lspserver, b)
+    endfor
+    var h = winheight(0)
+    assert_true(h > 3)
+
+    inlayhints.LspInlayHintsUpdateNow(bnr)
+    assert_equal([[bnr, 1, line('w$') + h]], requested)
+    assert_false(bnr->getbufvar('LspInlayHintsNeedsUpdate', true))
+
+    # Scrolling within the requested lines requests nothing
+    execute "normal! 3\<C-E>"
+    assert_equal(4, line('w0'))
+    :doautocmd <nomodeline> WinScrolled
+    assert_equal(1, requested->len())
+
+    # Scrolling past them requests the lines shown now
+    cursor(500, 1)
+    normal! zt
+    :doautocmd <nomodeline> WinScrolled
+    assert_equal([[bnr, 500 - h, line('w$') + h]], requested[1 : ])
+
+    # Not in Insert mode, but at the next CursorHold
+    g:InlayHintsUpdateNowTest = () => inlayhints.LspInlayHintsUpdateNow(bnr)
+    feedkeys("i\<Cmd>call cursor(900, 1)\<CR>\<Cmd>normal! zt\<CR>"
+	     .. "\<Cmd>doautocmd <nomodeline> WinScrolled\<CR>"
+	     .. "\<Cmd>call g:InlayHintsUpdateNowTest()\<CR>\<Esc>", 'xt')
+    assert_equal(900, line('w0'))
+    assert_equal(2, requested->len())
+    assert_true(bnr->getbufvar('LspInlayHintsNeedsUpdate', false))
+    :doautocmd <nomodeline> CursorHold
+    assert_equal([[bnr, 900 - h, line('w$') + h]], requested[2 : ])
+
+    # A buffer that no window shows is updated once it is shown
+    inlayhints.LspInlayHintsUpdateNow(hidden)
+    assert_equal(3, requested->len())
+    assert_true(hidden->getbufvar('LspInlayHintsNeedsUpdate', false))
+    execute $'sbuffer {hidden}'
+    assert_equal([hidden, 1, 1], requested[-1])
+    assert_equal(4, requested->len())
+  finally
+    unlet! g:InlayHintsUpdateNowTest
+    opt.lspOptions.showInlayHints = false
+    for b in [bnr, hidden]
+      autocmd_delete([{group: 'LspInlayHints', bufnr: b}])
+      buf.BufLspServerRemove(b, lspserver)
+    endfor
+    :%bw!
+  endtry
 enddef
 
 def g:Test_DiagNotification_PushAndPull_AreBothRetained()
@@ -9103,7 +9208,8 @@ def g:Test_InlayHints_BufferInitTwice()
     inlayhints.BufferInit(srv, bnr)
     inlayhints.BufferInit(srv, bnr)
     # autocmd_get() names the BufReadPost event BufRead
-    assert_equal(['BufLeave', 'BufRead', 'CursorHold', 'TextChanged'],
+    assert_equal(['BufLeave', 'BufRead', 'BufWinEnter', 'CursorHold',
+		  'TextChanged'],
 		 autocmd_get({group: 'LspInlayHints', bufnr: bnr})
 		   ->mapnew((_, a) => a.event)->sort())
     assert_equal(1, autocmd_get({group: 'LspAttached', bufnr: bnr})->len())

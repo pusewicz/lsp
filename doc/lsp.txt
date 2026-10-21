@@ -2306,12 +2306,20 @@ showInlayHints		|Boolean| option.  Show inlay hints from the language
 			buffer.  Hints are shown only in normal mode.  Updates
 			are requested when the cursor has not moved for
 			|'updatetime'| milliseconds (|CursorHold|), followed
-			by a short debounce delay.  When the language server
+			by a short debounce delay.  Only the hints of the
+			lines shown in a window, and of one window height
+			above and below them, are requested.  When a window
+			is scrolled past those lines in normal mode
+			(|WinScrolled|), the hints of the lines shown then
+			are requested after the same delay, and in the other
+			modes after a |CursorHold|.  The hints of a buffer
+			that no window shows are requested when a window
+			shows it (|BufWinEnter|).  When the language server
 			asks for the hints to be refreshed, because they
 			changed without an edit (e.g. after it finished
 			indexing), they are requested again right away in the
-			buffers shown in a window, and after a |CursorHold| in
-			the other buffers.
+			buffers shown in a window, and in the other buffers
+			when a window shows them.
 			Use |:LspInlayHints| to enable, disable, or toggle
 			hints for the current session without permanently
 			changing this option.
