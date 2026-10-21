@@ -26,13 +26,27 @@ import './util.vim'
 #     lspServer1Id: [diags covering more than one line]->sort(),
 #     lspServer2Id: [diags covering more than one line]->sort(),
 #   },
-#   sortedDiagnostics: [lspServer1.diags, ...lspServer2.diags]->sort()
+#   sortedDiagnostics: [lspServer1.diags, ...lspServer2.diags]->sort(),
+#   changedtick: b:changedtick of the buffer when they were stored,
+#   generation: a number that is different each time they are stored
 # }
 #
 # The diagnostics are stored as the language servers sent them.  The lines of
 # a buffer can be deleted before a server sends the diagnostics again, so the
 # stored diagnostics are used through DiagInBuf().
 var diagsMap: dict<dict<any>> = {}
+
+# The last "generation" of "diagsMap"
+var diagsGeneration: number = 0
+
+# What DiagsRefresh() last drew in each buffer: [bnr] = {
+#   generation: the "generation" of the diagnostics in "diagsMap" it drew, or
+#		0 when the buffer had none,
+#   changedtick: b:changedtick of the buffer then,
+#   drawn: whether it drew anything
+# }
+# Drawing the same diagnostics again in the same text changes nothing.
+var drawnDiags: dict<dict<any>> = {}
 
 # The ALE linter names that diagnostics were sent to ALE under, for each
 # buffer: [bnr] = [linterName, ...]
@@ -485,16 +499,29 @@ export def DiagsRefresh(bnr: number)
 
   :silent! bnr->bufload()
 
-  RemoveDiagVisualsForBuffer(bnr)
-
-  if !diagsMap->has_key(bnr)
+  # Reading the text of a buffer, which drops the text properties and the
+  # signs, also changes b:changedtick.
+  var bufDiags: dict<any> = diagsMap->get(bnr, {})
+  var generation: number = bufDiags->get('generation', 0)
+  var changedtick: number = bnr->getbufvar('changedtick')
+  var drawn: dict<any> = drawnDiags->get(bnr, {})
+  if !drawn->empty() && drawn.generation == generation
+      && drawn.changedtick == changedtick
     return
   endif
-  var diags: list<dict<any>> = diagsMap[bnr].sortedDiagnostics
+  drawnDiags[bnr] = {generation: generation, changedtick: changedtick,
+		     drawn: false}
+
+  if drawn->get('drawn', true)
+    RemoveDiagVisualsForBuffer(bnr)
+  endif
+
+  var diags: list<dict<any>> = bufDiags->get('sortedDiagnostics', [])
     ->mapnew((_, d) => DiagInBuf(bnr, d))
   if diags->empty()
     return
   endif
+  drawnDiags[bnr].drawn = true
 
   # Initialize default/fallback properties for diagnostic virtual text:
   var diag_align: string = 'above'
@@ -881,6 +908,15 @@ export def DiagNotification(lspserver: dict<any>, uri: string, diags_arg: list<d
     newDiags = lspserver.processDiagHandler(newDiags)
   endif
 
+  # Nothing changes when the server sends the same diagnostics again for the
+  # same text, e.g. after the buffer is written or for a pull and a push:
+  # skip the update and the LspDiagsUpdated autocommand.
+  var changedtick: number = bnr->getbufvar('changedtick')
+  if diagsMap->has_key(bnr) && diagsMap[bnr].changedtick == changedtick
+      && kindDiags->has_key(sync_kind) && kindDiags[sync_kind] == newDiags
+    return
+  endif
+
   kindDiags[sync_kind] = newDiags
   serverDiags[serverId] = kindDiags
 
@@ -927,11 +963,14 @@ export def DiagNotification(lspserver: dict<any>, uri: string, diags_arg: list<d
 
   var sortedDiags = SortDiags(joinedServerDiags)
 
+  diagsGeneration += 1
   diagsMap[bnr] = {
     sortedDiagnostics: sortedDiags,
     serverDiagnosticsByLnum: serverDiagsByLnum,
     serverMultiLineDiagnostics: serverMultiLineDiags,
-    serverDiagnostics: serverDiags
+    serverDiagnostics: serverDiags,
+    changedtick: changedtick,
+    generation: diagsGeneration
   }
 
   ProcessNewDiags(bnr)
@@ -1436,6 +1475,9 @@ def DiagsRedrawAll()
       continue
     endif
     RemoveDiagVisualsForBuffer(binfo.bufnr, true)
+    if drawnDiags->has_key(binfo.bufnr)
+      drawnDiags->remove(binfo.bufnr)
+    endif
     if binfo.loaded
       DiagsRefresh(binfo.bufnr)
     endif
