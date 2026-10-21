@@ -3359,6 +3359,10 @@ LspDiagsUpdated			A |User| autocommand invoked when new
 				lsp#diag#GetDiagsForBuf() can be used to get
 				all the diagnostics for a buffer.
 
+				It is not invoked when a language server sends
+				the same diagnostics again for the same text
+				of the buffer.
+
 				If diagnostics arrive while in Insert/Replace
 				mode, diagnostic signs/inline
 				highlights/virtual text are refreshed after
