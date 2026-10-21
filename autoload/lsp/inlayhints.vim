@@ -288,6 +288,13 @@ export def BufferInit(lspserver: dict<any>, bnr: number)
 		group: 'LspInlayHints',
 		replace: true,
 		cmd: $'LspInlayHintsChanged({bnr})'})
+  # The hints of a buffer that no window showed were not requested: request
+  # them when a window shows it.
+  acmds->add({bufnr: bnr,
+		event: ['BufWinEnter'],
+		group: 'LspInlayHints',
+		replace: true,
+		cmd: $'LspInlayHintsUpdate({bnr})'})
   # Editing a file should trigger an inlay hint update.
   acmds->add({bufnr: bnr,
 		event: ['BufReadPost'],

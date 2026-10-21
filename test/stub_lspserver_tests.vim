@@ -2063,6 +2063,9 @@ def g:Test_InlayHints_RequestVisibleLines()
     inlayhints.LspInlayHintsUpdateNow(hidden)
     assert_equal(3, requested->len())
     assert_true(hidden->getbufvar('LspInlayHintsNeedsUpdate', false))
+    execute $'sbuffer {hidden}'
+    assert_equal([hidden, 1, 1], requested[-1])
+    assert_equal(4, requested->len())
   finally
     unlet! g:InlayHintsUpdateNowTest
     opt.lspOptions.showInlayHints = false
@@ -9205,7 +9208,8 @@ def g:Test_InlayHints_BufferInitTwice()
     inlayhints.BufferInit(srv, bnr)
     inlayhints.BufferInit(srv, bnr)
     # autocmd_get() names the BufReadPost event BufRead
-    assert_equal(['BufLeave', 'BufRead', 'CursorHold', 'TextChanged'],
+    assert_equal(['BufLeave', 'BufRead', 'BufWinEnter', 'CursorHold',
+		  'TextChanged'],
 		 autocmd_get({group: 'LspInlayHints', bufnr: bnr})
 		   ->mapnew((_, a) => a.event)->sort())
     assert_equal(1, autocmd_get({group: 'LspAttached', bufnr: bnr})->len())
