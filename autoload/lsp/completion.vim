@@ -850,6 +850,21 @@ def InInsertOrReplaceMode(): bool
   return m == 'i' || m == 'R' || m == 'Rv'
 enddef
 
+# Return the position of the cursor that a completion request is about: the
+# window, the buffer, the line and the character column.
+export def CompletionRequestPos(): list<number>
+  return [win_getid(), bufnr(), line('.'), charcol('.')]
+enddef
+
+# Return true when the cursor is where it was when the pending completion
+# request of "lspserver" was sent, or when that isn't known.  The text may have
+# changed, e.g. a linked editing range or an on-type formatting edit elsewhere,
+# as long as the cursor stayed: a key typed in Insert mode moves the cursor.
+def CursorAtCompletionRequest(lspserver: dict<any>): bool
+  var pos: list<number> = lspserver->get('completionRequestPos', [])
+  return pos->empty() || pos == CompletionRequestPos()
+enddef
+
 # Send completion items either directly to popup (autoComplete) or to omnifunc
 # state cache.
 def DispatchCompletionItems(lspserver: dict<any>,
@@ -902,15 +917,16 @@ export def CompletionReply(lspserver: dict<any>, cItems: any,
     return
   endif
 
-  var items = GetCompletionSourceItems(lspserver, cItems)
-
   var lspOpts = opt.lspOptions
   if lspOpts.autoComplete && !lspserver.omniCompletePending
-      && !InInsertOrReplaceMode()
-    # The user left Insert mode while the server was computing the items, so
-    # don't build a menu that DispatchCompletionItems() would drop.
+      && (!InInsertOrReplaceMode() || !CursorAtCompletionRequest(lspserver))
+    # The user left Insert mode or moved the cursor while the server was
+    # computing the items, so the menu would be dropped or shown in the wrong
+    # place: don't build it.
     return
   endif
+
+  var items = GetCompletionSourceItems(lspserver, cItems)
 
   # Get the keyword prefix before the current cursor column.
   var chcol = charcol('.')

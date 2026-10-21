@@ -979,6 +979,70 @@ def g:Test_Completion_AutoCompleteReplyOutsideInsertMode()
   :%bw!
 enddef
 
+# Returns the words in the auto-completion menu shown when the reply to the
+# completion request sent by <F5> arrives after the keys "between" are typed
+# in Insert mode, at the end of the line "foo ba" with "bar ba" below it.
+# <F6> delivers the reply.
+def AutoCompleteMenuAfterKeys(between: string): list<string>
+  silent! edit XCompletionReplyAfterCursorMove.vim
+  setline(1, ['foo ba', 'bar ba'])
+  var lspserver: dict<any> = {
+    id: 9005,
+    name: 'test',
+    running: true,
+    ready: true,
+    isCompletionProvider: true,
+    completionLazyDoc: false,
+    completionTriggerChars: [],
+    omniCompletePending: false,
+    completeItems: [],
+    completeItemsIsIncomplete: false,
+    features: {completion: true},
+    featureEnabled: (_) => true,
+  }
+  lspserver.getCompletion = (_, _) => {
+    lspserver.completionRequestPos = completion.CompletionRequestPos()
+  }
+  g:LspCompletionReplyServer = lspserver
+  buf.BufLspServerSet(bufnr(), lspserver)
+  var words: list<string> = []
+  try
+    setlocal completeopt=menuone,noinsert,noselect
+    inoremap <buffer> <F5> <ScriptCmd>completion.LspComplete(true)<CR>
+    inoremap <buffer> <F6> <ScriptCmd>completion.CompletionReply(g:LspCompletionReplyServer, [{label: 'bar'}, {label: 'baz'}], {})<CR>
+    inoremap <buffer> <F2> <ScriptCmd>b:matches = complete_info(['items']).items->mapnew((_, v) => v.word)<CR>
+    b:matches = ['not set']
+    cursor(1, 1)
+    feedkeys("A\<F5>" .. between .. "\<F6>\<F2>\<Esc>", 'xt')
+    words = b:matches
+  finally
+    buf.BufLspServerRemove(bufnr(), lspserver)
+    unlet g:LspCompletionReplyServer
+    :%bw!
+  endtry
+  return words
+enddef
+
+# An auto-completion reply that arrives after the cursor moved, e.g. after a
+# typed key that doesn't send a new request, is dropped instead of showing a
+# menu for the keyword at the new cursor position.  A text change that leaves
+# the cursor in place, like a linked editing range or an on-type formatting
+# edit on another line, doesn't drop it.
+def g:Test_Completion_AutoCompleteReplyAfterCursorMove()
+  var saveAutoComplete = g:LspOptionsGet().autoComplete
+  g:LspOptionsSet({autoComplete: true})
+  try
+    assert_equal(['bar', 'baz'], AutoCompleteMenuAfterKeys(''))
+    assert_equal([], AutoCompleteMenuAfterKeys("\<Left>"))
+    assert_equal([], AutoCompleteMenuAfterKeys(' '))
+    assert_equal([], AutoCompleteMenuAfterKeys("\<Down>"))
+    assert_equal(['bar', 'baz'], AutoCompleteMenuAfterKeys(
+      "\<ScriptCmd>setline(2, 'changed')\<CR>"))
+  finally
+    g:LspOptionsSet({autoComplete: saveAutoComplete})
+  endtry
+enddef
+
 # Returns the data of a semantic tokens reply for the tokens "tokens", each
 # [line, start, length, type] with a zero-based line and the position encoding
 # of the offsets of the language server.  Tokens are sorted by position.
