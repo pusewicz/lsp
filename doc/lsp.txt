@@ -2650,6 +2650,16 @@ behavior by modifying the "completionMatcher" option. This option allows you
 to switch between case-insensitive or fuzzy comparison methods as per your
 preference and requirements for completion matching.
 
+When the language server computes the details of a completion item only on
+request ("completionItem/resolve"), the plugin requests them once the
+selection in the completion menu has stayed on the item for 50 milliseconds,
+so moving through the menu sends no requests for the items passed over.  The
+documentation is shown when the reply arrives.  An item is resolved only once
+until the next list of completion items arrives.  The text edits that the
+reply adds, such as an import, are applied when the item is accepted.  When
+the reply has not arrived yet, Vim waits for it, as long as for the reply to
+any other request, counted from when the request was sent.
+
 						       *g:LspCompleteSource()*
 Vim's own auto-completion ('autocomplete', |ins-autocompletion|) and
 |i_CTRL-N| collect matches from the sources in the 'complete' option.  To

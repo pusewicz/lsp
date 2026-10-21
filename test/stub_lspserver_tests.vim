@@ -7240,6 +7240,70 @@ def g:Test_ResolveCompletion_KeepsResolvedItem()
   :%bw!
 enddef
 
+# Resolving a completion item synchronously while the asynchronous resolve of
+# the same item is pending, as when the item is accepted right after it was
+# selected, waits for the reply to that request instead of sending another.
+def g:Test_ResolveCompletion_WaitsForPendingResolve()
+  var notifications: list<dict<any>> = []
+  var lspserver = MakeTestLspServer(notifications)
+  lspserver.isCompletionResolveProvider = true
+  var item = {label: 'foo', data: 1}
+  var resolved = item->extendnew({additionalTextEdits: [{
+    range: {start: {line: 0, character: 0}, end: {line: 0, character: 0}},
+    newText: "import foo\n"}]})
+  # The reply to the asynchronous request, which Vim numbers 1 on a new
+  # channel, arrives a second after the request is sent.
+  lspserver.job = StartSteppedStubServerJob([[],
+    [{jsonrpc: '2.0', id: 1, result: resolved}]])
+  try
+    var syncId = lspserver.nextSyncRpcId
+
+    lspserver.resolveCompletion(item)
+    assert_equal(resolved, lspserver.resolveCompletion(item, true))
+
+    assert_equal(syncId, lspserver.nextSyncRpcId)
+    assert_equal([[item, resolved]], lspserver.completionResolved)
+    assert_equal({}, lspserver.pendingRequests)
+    assert_equal({}, lspserver.completionResolvePending)
+    assert_equal([], notifications)
+  finally
+    job_stop(lspserver.job)
+  endtry
+enddef
+
+# The pending asynchronous resolve of a completion item is waited for as long
+# as a synchronous request would wait, and then cancelled.  An item whose
+# resolve is not pending is resolved with a synchronous request.
+def g:Test_ResolveCompletion_PendingResolveTimesOut()
+  var notifications: list<dict<any>> = []
+  var lspserver = MakeTestLspServer(notifications)
+  lspserver.isCompletionResolveProvider = true
+  var item = {label: 'foo', data: 1}
+  # A language server that never replies
+  lspserver.job = StartStubServerJob([], {timeout: 100})
+  try
+    var syncId = lspserver.nextSyncRpcId
+
+    lspserver.resolveCompletion(item)
+    assert_equal({}, lspserver.resolveCompletion(item, true))
+
+    assert_equal(syncId, lspserver.nextSyncRpcId)
+    assert_equal([{method: '$/cancelRequest', params: {id: 1}}],
+		 notifications)
+    assert_equal({}, lspserver.supersedableRequests)
+
+    notifications->remove(0, -1)
+    lspserver.resolveCompletion(item)
+    assert_equal({}, lspserver.resolveCompletion({label: 'bar', data: 2}, true))
+
+    assert_equal(syncId + 1, lspserver.nextSyncRpcId)
+    assert_equal([{method: '$/cancelRequest', params: {id: syncId}}],
+		 notifications)
+  finally
+    job_stop(lspserver.job)
+  endtry
+enddef
+
 # A completion request supersedes the pending one, which is cancelled, so a
 # late reply to it must not be taken as the reply to the latest one.
 def g:Test_GetCompletion_CancelsSupersededRequest()
@@ -11097,6 +11161,50 @@ def g:Test_Completion_ExpandsSnippet()
 			   .. next .. ";\<Esc>")
     assert_equal(['int n = printf("%d", x);'], getline(1, '$'))
     assert_false(g:LspSnippetJumpable(1))
+  finally
+    completion.OmniComplSet('c', false)
+    StopAsyncReplyingLspServer(lspserver, bnr)
+    :%bw!
+  endtry
+enddef
+
+# Test that accepting a completion item right after selecting it, before its
+# resolve was sent, resolves it and waits for the reply to apply its
+# additional text edits, without sending a synchronous request.
+def g:Test_Completion_AcceptWaitsForResolve()
+  silent! edit XCompletionAcceptResolve.c
+  setline(1, ['/* main */', 'int n = pri'])
+  var bnr = bufnr()
+  var item = {label: 'printf', kind: 3, data: 1}
+  var resolved = item->extendnew({additionalTextEdits: [{
+    range: {start: {line: 0, character: 0}, end: {line: 0, character: 0}},
+    newText: "#include <stdio.h>\n"}]})
+  var lspserver = MakeTestLspServer([])
+  lspserver->extend({
+    running: true,
+    ready: true,
+    isCompletionProvider: true,
+    isCompletionResolveProvider: true,
+    completionLazyDoc: true,
+    completionTriggerChars: [],
+    featureEnabled: (_) => true,
+  })
+  # Vim numbers the requests on a new channel from 1: the completion reply is
+  # sent at once and the resolve reply a second later.
+  lspserver.job = StartSteppedStubServerJob([
+    [{jsonrpc: '2.0', id: 1, result: {isIncomplete: false, items: [item]}}],
+    [{jsonrpc: '2.0', id: 2, result: resolved}]])
+  buf.BufLspServerSet(bnr, lspserver)
+  var syncId = lspserver.nextSyncRpcId
+  try
+    completion.OmniComplSet('c', true)
+    completion.BufferInit(lspserver, bnr, 'c')
+    setlocal completeopt=menuone,noinsert,noselect
+    cursor(2, 1)
+    g:FeedOmniCompleteKeys("A\<C-X>\<C-O>\<C-N>\<C-Y>;\<Esc>")
+    assert_equal(['#include <stdio.h>', '/* main */', 'int n = printf;'],
+		 getline(1, '$'))
+    assert_equal(syncId, lspserver.nextSyncRpcId)
   finally
     completion.OmniComplSet('c', false)
     StopAsyncReplyingLspServer(lspserver, bnr)

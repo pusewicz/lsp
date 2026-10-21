@@ -1397,12 +1397,13 @@ def ResolveCompletionStub(lspserver: dict<any>, requests: list<bool>,
   return {}
 enddef
 
-# Selects the second item of the completion menu of "lspserver", a
-# MakeTextEditServer() with the items "fob" and "foo", for the word "fo" on the
-# second line, and accepts it.  The resolve requests that the selection sends
-# are replied when "reply" is true, and are recorded in "requests".
-def AcceptSecondCompletionItem(lspserver: dict<any>, requests: list<bool>,
-			       reply: bool)
+# Selects items in the completion menu of "lspserver", a MakeTextEditServer()
+# with the items "fob" and "foo", for the word "fo" on the second line, with
+# the keys "selectKeys", and accepts the selected item.  <F2> in "selectKeys"
+# waits longer than the selection waits before resolving an item.  The resolve
+# requests are replied when "reply" is true, and are recorded in "requests".
+def AcceptCompletionItem(lspserver: dict<any>, requests: list<bool>,
+			 reply: bool, selectKeys: string)
   deletebufline(bufnr(), 1, '$')
   setline(1, ['', 'fo'])
   lspserver.completionLazyDoc = true
@@ -1412,11 +1413,11 @@ def AcceptSecondCompletionItem(lspserver: dict<any>, requests: list<bool>,
   completion.BufferInit(lspserver, bufnr(), &filetype)
   setlocal completeopt=menuone,noinsert,noselect
   inoremap <buffer> <F5> <ScriptCmd>completion.LspComplete(true)<CR>
-  inoremap <buffer> <F2> <ScriptCmd>sleep 20m<CR>
+  inoremap <buffer> <F2> <ScriptCmd>sleep 150m<CR>
   test_override('char_avail', 1)
   try
     cursor(2, 2)
-    feedkeys("a\<F5>\<C-N>\<F2>\<C-N>\<F2>\<C-Y>\<Esc>", 'tx!')
+    feedkeys($"a\<F5>{selectKeys}\<C-Y>\<Esc>", 'tx!')
   finally
     test_override('char_avail', 0)
     buf.BufLspServerRemove(bufnr(), lspserver)
@@ -1425,9 +1426,10 @@ enddef
 
 # The additional text edits that the language server sent when the selected
 # completion item was resolved are applied on accepting it, without a
-# synchronous request that blocks Vim.  An item that was not resolved when it
-# was selected is resolved synchronously, and a new completion list drops the
-# resolved items.
+# synchronous request that blocks Vim.  An item is resolved only once the
+# selection stayed on it for a while, and once only.  An item accepted before
+# that is resolved on accepting it.  An item that was not resolved is resolved
+# synchronously, and a new completion list drops the resolved items.
 def g:Test_Completion_ResolvedItemIsUsedOnAccept()
   var saveAutoComplete = g:LspOptionsGet().autoComplete
   var saveCompleteopt = &g:completeopt
@@ -1438,7 +1440,9 @@ def g:Test_Completion_ResolvedItemIsUsedOnAccept()
       {label: 'foo', data: 1}, {label: 'fob', data: 2}]})
     var requests: list<bool> = []
 
-    AcceptSecondCompletionItem(lspserver, requests, true)
+    # Each item that the selection stays on is resolved, once
+    AcceptCompletionItem(lspserver, requests, true,
+      "\<C-N>\<F2>\<C-N>\<F2>\<C-P>\<F2>\<C-N>\<F2>")
 
     assert_equal(['import foo', '', 'foo'], getline(1, '$'))
     assert_equal([false, false], requests)
@@ -1448,8 +1452,17 @@ def g:Test_Completion_ResolvedItemIsUsedOnAccept()
     completion.CompletionReply(lspserver, [{label: 'bar'}], {})
     assert_equal([], lspserver.completionResolved)
 
+    # Passing over an item doesn't resolve it, and accepting an item at once
+    # resolves it asynchronously
     requests->remove(0, -1)
-    AcceptSecondCompletionItem(lspserver, requests, false)
+    AcceptCompletionItem(lspserver, requests, true, "\<C-N>\<C-N>")
+
+    assert_equal(['import foo', '', 'foo'], getline(1, '$'))
+    assert_equal([false], requests)
+
+    lspserver.completionResolved = []
+    requests->remove(0, -1)
+    AcceptCompletionItem(lspserver, requests, false, "\<C-N>\<F2>\<C-N>")
 
     assert_equal(['', 'foo'], getline(1, '$'))
     assert_equal([false, false, true], requests)
