@@ -108,6 +108,7 @@ def StartServer(lspserver: dict<any>, bnr: number): number
   lspserver.caps = {}
   lspserver.omniCompletePending = false
   lspserver.completionResolved = []
+  lspserver.completionResolvePending = {}
   lspserver.completionLazyDoc = false
   lspserver.completionTriggerChars = []
   lspserver.signaturePopup = -1
@@ -1525,9 +1526,41 @@ def CancelInlineCompletion(lspserver: dict<any>, bnr: number)
   CancelSupersedableRequest(lspserver, $'textDocument/inlineCompletion {bnr}')
 enddef
 
+# Wait for the reply to the asynchronous "completionItem/resolve" request
+# "pending" (see ResolveCompletion()), as long as Rpc() would wait for a reply
+# since the request was sent.  Returns the resolved item, or an empty Dict
+# when the request failed or the reply did not arrive in time; then the
+# request is cancelled.  The reply callback runs while waiting.
+def WaitForCompletionResolve(lspserver: dict<any>,
+			     pending: dict<any>): dict<any>
+  var key = 'completionItem/resolve'
+  var job = lspserver.job
+  var timeout: number = job->job_getchannel()->ch_info().out_timeout
+  while !pending.done && job->job_status() == 'run'
+      && lspserver.supersedableRequests->get(key, {}) is pending.request
+      && lspserver.pendingRequests->has_key(pending.request.id)
+    if pending.sent->reltime()->reltimefloat() * 1000 >= timeout
+      if lspserver.debug
+	lspserver.traceLog($'Stopped waiting for the reply to completion resolve request {pending.request.id}')
+      endif
+      CancelSupersedableRequest(lspserver, key)
+      break
+    endif
+    :sleep 1m
+  endwhile
+  return pending.result
+enddef
+
 # Get lazy properties for a completion item.
 # Request: "completionItem/resolve"
 # Param: CompletionItem
+#
+# The asynchronous request supersedes the previous one, and its reply is
+# passed to completion.CompletionResolveReply().  The synchronous request
+# returns the resolved item, or an empty Dict.  When the asynchronous request
+# for the same item is pending, as when an item is accepted right after it
+# was selected in the completion menu, its reply is waited for instead of
+# sending another request.
 def ResolveCompletion(lspserver: dict<any>, item: dict<any>, sync: bool = false): dict<any>
   # Check whether LSP server supports completion item resolve
   if !lspserver.isCompletionResolveProvider
@@ -1536,16 +1569,31 @@ def ResolveCompletion(lspserver: dict<any>, item: dict<any>, sync: bool = false)
 
   # interface CompletionItem
   if sync
+    var pending: dict<any> = lspserver.completionResolvePending
+    lspserver.completionResolvePending = {}
+    if !pending->empty() && pending.item ==# item
+      return WaitForCompletionResolve(lspserver, pending)
+    endif
     var reply = lspserver.rpc('completionItem/resolve', item)
     if !reply->empty() && !reply.result->empty()
       return reply.result
     endif
   else
-    AsyncRpcSupersede(lspserver, 'completionItem/resolve',
+    var pending: dict<any> = {item: item, sent: reltime(), done: false,
+			      result: {}, request: {}}
+    var id = AsyncRpcSupersede(lspserver, 'completionItem/resolve',
 		      'completionItem/resolve', item,
 		      (srv: dict<any>, reply: any, error: dict<any>) => {
+			pending.done = true
+			if error->empty() && reply->type() == v:t_dict
+			  pending.result = reply
+			endif
 			completion.CompletionResolveReply(srv, reply, error, item)
 		      })
+    pending.request =
+      lspserver.supersedableRequests->get('completionItem/resolve', {})
+    lspserver.completionResolvePending =
+      id > 0 && !pending.done && !pending.request->empty() ? pending : {}
   endif
   return {}
 enddef
@@ -3513,6 +3561,7 @@ export def NewLspServer(serverParams: dict<any>): dict<any>
     completeItemsIsIncomplete: false,
     completionResolved: [],
     completionRequestPos: [],
+    completionResolvePending: {},
     nextSyncRpcId: SYNC_RPC_FIRST_ID,
     syncRpcReplies: syncRpcReplies,
     pendingRequests: pendingRequests,
