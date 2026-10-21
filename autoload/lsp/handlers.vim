@@ -751,6 +751,13 @@ export def ProcessMessage(lspserver: dict<any>): void
   endif
 
   if msgKind == 'response'
+    if msg.id->type() == v:t_number && lspserver.awaitedReplies->has_key(msg.id)
+      # The reply to a request sent with the "awaitable" option of AsyncRpc(),
+      # which arrived before anything waited for it
+      var Cb: func = lspserver.awaitedReplies->remove(msg.id)
+      Cb(lspserver.job->job_getchannel(), msg)
+      return
+    endif
     if msg.id->type() == v:t_number && lspserver.syncRpcReplies->has_key(msg.id)
       # Vim passes the reply to a synchronous request to the channel callback
       # if it arrives while the callback handles other messages.  Pass it
