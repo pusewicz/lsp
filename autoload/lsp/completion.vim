@@ -712,7 +712,10 @@ def BuildCompletionMenuItem(item: dict<any>, starttext: string,
   d.word = word
 
   var insertTextFormat = item->get('insertTextFormat', protocol.InsertTextFormatPlainText)
-  var insertTextMode = item->get('insertTextMode', protocol.InsertTextModeAsIs)
+  # Without insertTextMode, the item gets the client's default, which is
+  # adjustIndentation as for snippets (see "insertTextMode" in GetClientCaps()).
+  var insertTextMode = item->get('insertTextMode',
+				 protocol.InsertTextModeAdjustIndentation)
 
   if insertTextMode == protocol.InsertTextModeAdjustIndentation
 	&& insertTextFormat != protocol.InsertTextFormatSnippet

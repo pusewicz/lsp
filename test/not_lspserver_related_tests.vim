@@ -128,6 +128,36 @@ def g:Test_Completion_InsertTextMode_AsIs()
   :%bw!
 enddef
 
+# Test that a plain-text item without insertTextMode gets the client's
+# default mode, adjustIndentation, which the client capabilities advertise.
+def g:Test_Completion_InsertTextMode_Default()
+  silent! edit XCompletionInsertTextModeDefault.vim
+  setline(1, ['    f'])
+  cursor(1, 6)
+
+  var lspserver = {
+    name: 'test',
+    omniCompletePending: true,
+    completionLazyDoc: false,
+    completeItems: [],
+    completeItemsIsIncomplete: false,
+  }
+
+  var cItems = [{
+    label: 'foo',
+    insertText: "foo\n  bar\n    baz",
+  }]
+
+  completion.CompletionReply(lspserver, cItems, {})
+
+  assert_equal(1, lspserver.completeItems->len())
+  assert_equal("foo\n    bar\n      baz", lspserver.completeItems[0].word)
+  assert_equal(2,
+    capabilities.GetClientCaps().textDocument.completion.insertTextMode)
+
+  :%bw!
+enddef
+
 # Regression test for CompletionItem.labelDetails rendering.
 def g:Test_Completion_LabelDetails_Rendering()
   g:LspOptionsSet({condensedCompletionMenu: false})

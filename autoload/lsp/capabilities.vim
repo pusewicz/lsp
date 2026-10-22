@@ -543,6 +543,9 @@ export def GetClientCaps(): dict<any>
 	    valueSet: [1, 2]
 	  }
 	},
+	# Items without an insertTextMode get the indent of the line they are
+	# inserted in, like snippets (as in VS Code).
+	insertTextMode: 2,
 	completionItemKind: {
 	  valueSet: range(1, 25)
 	},
