@@ -1118,7 +1118,10 @@ the symbol under the cursor.
 			the cursor with the
 			active parameter highlighted to help you see which
 			parameter you are currently typing, and stays in place
-			while you type on that line.  While a signature
+			while you type on that line.  While the completion
+			menu is open above the cursor, as near the bottom of
+			the window, the popup moves below the cursor line, so
+			that the two don't overlap.  While a signature
 			session is active, the plugin can retrigger signature
 			help on supported retrigger characters and on
 			insert-mode cursor/text changes so the displayed call
