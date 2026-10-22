@@ -226,7 +226,9 @@ enddef
 # Parse the semantic highlight reply from the language server and update the
 # text properties.  Without a result ("semTokens" is null), as when the
 # request was cancelled or the content was modified, the semantic highlighting
-# is left as it is.
+# is left as it is.  A reply about an older version of the buffer is only
+# cached, as the base of the next delta request, and the current text
+# properties are kept until the reply to that request.
 # Result: SemanticTokens | SemanticTokensDelta | null
 export def UpdateTokens(lspserver: dict<any>, semTokens: any,
                         updateError: dict<any>, bnr: number,
@@ -234,14 +236,6 @@ export def UpdateTokens(lspserver: dict<any>, semTokens: any,
   # Handle semantic tokens error
   if !updateError->empty()
     lspserver.traceLog($'Semantic tokens update failed: {updateError.message}')
-    return
-  endif
-
-  # Validate buffer hasn't changed since request
-  if getbufvar(bnr, 'changedtick') != requestTick
-    # Clear the data as our local copy will be out of sync
-    SemanticHighlightCleanup(bnr)
-    ClearSemanticHighlightProps(bnr)
     return
   endif
 
@@ -262,6 +256,13 @@ export def UpdateTokens(lspserver: dict<any>, semTokens: any,
     return
   endif
   setbufvar(bnr, 'LspSemanticTokensData', semTokens.data)
+
+  # The buffer changed after the request: the tokens are about text that is
+  # gone.  The text properties moved with the text, so they are still closer
+  # to it than these tokens.
+  if getbufvar(bnr, 'changedtick') != requestTick
+    return
+  endif
 
   var props: dict<list<list<number>>>
   props = ProcessSemanticTokens(lspserver, bnr, semTokens.data)
