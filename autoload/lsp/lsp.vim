@@ -507,6 +507,12 @@ enddef
 # A buffer is saved. Send the "textDocument/didSave" LSP notification
 def LspSavedFile(bnr: number)
   for lspserver in SavedDocServers(bnr)
+    if lspserver.usesIncrementalSync()
+      # The document of the server is the one that the changes from the
+      # listener made.  Compare it with the text that is saved, to correct it
+      # if they differ.
+      lspserver.textdocDidChange(bnr)
+    endif
     lspserver.didSaveFile(bnr)
   endfor
 enddef
@@ -616,20 +622,23 @@ def RemoveBufLocalAutocmds(bnr: number): void
   endtry
 enddef
 
-def AddBufListener(lspserver: dict<any>, bnr: number): void
+export def AddBufListener(lspserver: dict<any>, bnr: number): void
   # Add a per-buffer listener so incremental text changes are pushed to the
-  # server and pull diagnostics are debounced from edits.
-  var listenerId = listener_add((_bnr: number, start: number, end: number, added: number, changes: list<dict<number>>) => {
-    lspserver.textdocDidChange(bnr)
+  # server and pull diagnostics are debounced from edits.  A server that gets
+  # the changed lines is passed the text of each change, so that the buffer
+  # needn't be compared with the document of the server.
+  var listenerOpts: any = lspserver.usesIncrementalSync() ? {text: true} : false
+  var listenerId = listener_add((_bnr: number, start: number, end: number, added: number, changes: list<dict<any>>) => {
+    lspserver.textdocDidChange(bnr, changes)
     if lspserver.isDiagnosticsProvider
       lspserver.queuePullDiagnostics(bnr)
     endif
-  }, bnr)
+  }, bnr, listenerOpts)
   var listenerIds = bnr->getbufvar('LspListenerIds', [])
   setbufvar(bnr, 'LspListenerIds', listenerIds + [listenerId])
 enddef
 
-def RemoveBufListener(bnr: number): void
+export def RemoveBufListener(bnr: number): void
   for listenerId in bnr->getbufvar('LspListenerIds', [])
     listener_remove(listenerId)
   endfor

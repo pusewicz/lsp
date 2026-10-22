@@ -1087,20 +1087,165 @@ def BufferText(bnr: number): string
   return LinesText(BufferLines(bnr), util.BufWritesEol(bnr))
 enddef
 
-def HunkText(newBufLines: list<string>, hunk: dict<number>, hasEol: bool): string
-  if hunk.to_count == 0
+# Returns the text that replaces lines of a document: "lines" end with a
+# newline when "hasMoreLines" tells that lines of the document follow them,
+# and when the document ends with one ("hasEol").
+def ReplacementText(lines: list<string>, hasMoreLines: bool, hasEol: bool): string
+  if lines->empty()
     return ''
   endif
 
-  var lastIdx = hunk.to_idx + hunk.to_count - 1
-  var text = newBufLines[hunk.to_idx : lastIdx]->join("\n")
-  # Append a newline when there is more buffer content after this hunk (so
+  var text = lines->join("\n")
+  # Append a newline when there is more buffer content after these lines (so
   # the replaced range boundary falls between lines), or when the document
-  # ends with a newline and this hunk reaches the last line.
-  if lastIdx < newBufLines->len() - 1 || hasEol
+  # ends with a newline and these lines reach the last line.
+  if hasMoreLines || hasEol
     text ..= "\n"
   endif
   return text
+enddef
+
+# Returns the TextDocumentContentChangeEvent that replaces the "oldCount"
+# lines of the document "oldLines" from index "idx" with "newLines".
+# "hasMoreLines" tells whether lines of the new document follow "newLines".
+def ReplaceLinesEvent(lspserver: dict<any>, oldLines: list<string>,
+		      idx: number, oldCount: number, newLines: list<string>,
+		      hasMoreLines: bool, hasEol: bool): dict<any>
+  var startLine = idx
+  var startChar = 0
+  var endLine = idx + oldCount
+  var endChar = 0
+  var oldLineCount = oldLines->len()
+  var text = ReplacementText(newLines, hasMoreLines, hasEol)
+  if !hasEol && endLine == oldLineCount
+    # The old document has no trailing newline, so
+    # {line: oldLineCount, character: 0} isn't a valid position in it; anchor
+    # to the end of the last line instead.  When the lines don't start at the
+    # first line, pull the start back over the newline that precedes them
+    # too, so that line's break is removed.
+    endLine = oldLineCount - 1
+    endChar = offset.EncodedLineLen(lspserver, oldLines[endLine])
+    if startLine > 0
+      startLine -= 1
+      startChar = offset.EncodedLineLen(lspserver, oldLines[startLine])
+      if !newLines->empty()
+	text = "\n" .. text
+      endif
+    endif
+  endif
+  return {
+    range: {
+      start: {line: startLine, character: startChar},
+      end:   {line: endLine, character: endChar}
+    },
+    text: text
+  }
+enddef
+
+# Returns the changes that turn the document "oldLines" into "newLines", found
+# by comparing them.
+def DiffChanges(lspserver: dict<any>, oldLines: list<string>,
+		newLines: list<string>, hasEol: bool): list<dict<any>>
+  var contentChanges: list<dict<any>>
+  if exists_compiled('*diff')
+    # Compute line-level diffs and convert each hunk into an LSP
+    # TextDocumentContentChangeEvent.  Hunks are emitted bottom-up: the LSP
+    # spec applies contentChanges entries sequentially, so a top-down hunk's
+    # range would be interpreted against a document already shifted by an
+    # earlier hunk in the same notification.
+    var diffs = diff(oldLines, newLines, {output: 'indices'})
+    for hunk in diffs->reverse()
+      var lastIdx = hunk.to_idx + hunk.to_count - 1
+      contentChanges->add(ReplaceLinesEvent(
+	lspserver, oldLines, hunk.from_idx, hunk.from_count,
+	hunk.to_count > 0 ? newLines[hunk.to_idx : lastIdx] : [],
+	lastIdx < newLines->len() - 1, hasEol))
+    endfor
+  endif
+  return contentChanges
+enddef
+
+# Replace the "count" lines of "lines" from index "idx" with "newLines", in
+# place: the document of a server can be large.
+def ReplaceLines(lines: list<string>, idx: number, count: number,
+		 newLines: list<string>)
+  var common = [count, newLines->len()]->min()
+  for i in range(common)
+    lines[idx + i] = newLines[i]
+  endfor
+  if count > common
+    lines->remove(idx + common, idx + count - 1)
+  elseif newLines->len() > common
+    lines->extend(newLines[common :], idx + common)
+  endif
+enddef
+
+# Returns the number of lines of the document of buffer "bnr".
+def BufferLineCount(bnr: number): number
+  return util.BufIsEmpty(bnr) ? 0 : bnr->getbufinfo()[0].linecount
+enddef
+
+# Make the "changes" that the listener of a buffer got to "lines", the
+# document as the server has it, and return the content changes that make
+# them to the server, in the order they were made: each is relative to the
+# document after the ones before it.  Returns null when they don't fit the
+# document or leave it unlike the buffer "bnr".  "lines" is then in an
+# unknown state.
+def ListenerChanges(lspserver: dict<any>, bnr: number, lines: list<string>,
+		    changes: list<dict<any>>, hasEol: bool): any
+  var contentChanges: list<dict<any>>
+  for change in changes
+    if !change->has_key('text')
+      return null
+    endif
+    # The change replaces the lines "lnum" up to but not including "end" with
+    # "text".
+    var idx = change.lnum - 1
+    var oldCount = change.end - change.lnum
+    var newLines: list<string> = change.text
+    var oldLineCount = lines->len()
+    var newLineCount = oldLineCount - oldCount + newLines->len()
+    # A document with no text is not the same as one with an empty line, which
+    # makes the position of the lines after it uncertain: send the whole text.
+    if idx < 0 || oldCount < 0 || idx + oldCount > oldLineCount
+	|| (oldLineCount == 0) != (newLineCount == 0)
+      return null
+    endif
+    contentChanges->add(ReplaceLinesEvent(
+      lspserver, lines, idx, oldCount, newLines,
+      idx + newLines->len() < newLineCount, hasEol))
+    ReplaceLines(lines, idx, oldCount, newLines)
+  endfor
+  if lines->len() != BufferLineCount(bnr)
+    return null
+  endif
+  return contentChanges
+enddef
+
+# Returns true when the changes to the documents of a server are sent as the
+# lines that changed: the server wants them so, and the 'incrementalSync'
+# option is set.  The listeners of the buffers then pass the changed lines
+# along (see AddBufListener() in lsp.vim).
+def UsesIncrementalSync(lspserver: dict<any>): bool
+  return lspserver.textDocumentSync == protocol.TextDocumentSyncKindIncremental
+    && opt.lspOptions.incrementalSync
+enddef
+
+# Send the "contentChanges" of the document of buffer "bnr" to the server.
+def SendDocumentChanges(lspserver: dict<any>, bnr: number,
+			contentChanges: list<dict<any>>): void
+  if contentChanges->empty()
+    return
+  endif
+
+  var params = {
+    textDocument: {
+      uri: util.LspBufnrToUri(bnr),
+      version: NextDocVersion(lspserver, bnr)
+    },
+    contentChanges: contentChanges
+  }
+  lspserver.sendNotification('textDocument/didChange', params)
 enddef
 
 # Send a file/document opened notification to the language server.
@@ -1319,7 +1464,8 @@ enddef
 
 # Send a file/document change notification to the language server.
 # Params: DidChangeTextDocumentParams
-def TextdocDidChange(lspserver: dict<any>, bnr: number): void
+def TextdocDidChange(lspserver: dict<any>, bnr: number,
+		     changes: list<dict<any>> = []): void
   # Notification: 'textDocument/didChange'
   # Params: DidChangeTextDocumentParams
 
@@ -1329,90 +1475,55 @@ def TextdocDidChange(lspserver: dict<any>, bnr: number): void
     return
   endif
 
+  var incremental = UsesIncrementalSync(lspserver)
+  if incremental && changes->empty()
+    # The changes that the listener has yet to get are made to the document
+    # of the server first, or they would be made to it again after it was
+    # compared with the buffer.
+    bnr->listener_flush()
+  endif
+
   var contentChanges: list<dict<any>>
   var hasEol = util.BufWritesEol(bnr)
-  var newBufLines = BufferLines(bnr)
   var cachedBufferContent = lspserver.cachedBufferContent
   var cachedBufferEol = lspserver.cachedBufferEol
+  var isCached = cachedBufferContent->has_key(bnr)
+    && cachedBufferEol->get(bnr, !hasEol) == hasEol
 
-  if textDocumentSync == protocol.TextDocumentSyncKindFull
-	|| !opt.lspOptions.incrementalSync
-    # TextDocumentSyncKind: Full — send the entire buffer on every change.
-    # A change that leaves the text as it was, which Vim also passes to the
-    # listeners, is not sent: the version of the document then stays that
-    # of its text.
-    if !cachedBufferContent->has_key(bnr)
-	|| cachedBufferContent[bnr] != newBufLines
-	|| cachedBufferEol->get(bnr, !hasEol) != hasEol
-      contentChanges = [{text: LinesText(newBufLines, hasEol)}]
+  if incremental && isCached && !changes->empty()
+    var listenerChanges = ListenerChanges(lspserver, bnr,
+					  cachedBufferContent[bnr], changes,
+					  hasEol)
+    if listenerChanges != null
+      SendDocumentChanges(lspserver, bnr, listenerChanges)
+      return
     endif
-  elseif exists_compiled('*diff')
+    # The changes made the cached document differ from the buffer, so send
+    # the whole text.
+    isCached = false
+  endif
+
+  var newBufLines = BufferLines(bnr)
+  if incremental
+      && isCached
+      && cachedBufferContent[bnr]->empty() == newBufLines->empty()
     # TextDocumentSyncKind: Incremental — send only the changed lines.
-    if cachedBufferContent->has_key(bnr)
-	&& cachedBufferEol[bnr] == hasEol
-	&& cachedBufferContent[bnr]->empty() == newBufLines->empty()
-      # Compute line-level diffs against the last snapshot and convert each
-      # hunk into an LSP TextDocumentContentChangeEvent.  Hunks are emitted
-      # bottom-up: the LSP spec applies contentChanges entries sequentially,
-      # so a top-down hunk's range would be interpreted against a document
-      # already shifted by an earlier hunk in the same notification.
-      contentChanges = []
-      var oldBufLines = cachedBufferContent[bnr]
-      var oldLineCount = oldBufLines->len()
-      var diffs = diff(oldBufLines, newBufLines, {output: 'indices'})
-      for hunk in diffs->copy()->reverse()
-	var startLine = hunk.from_idx
-	var startChar = 0
-	var endLine = hunk.from_idx + hunk.from_count
-	var endChar = 0
-	var text = HunkText(newBufLines, hunk, hasEol)
-	if !hasEol && endLine == oldLineCount
-	  # The old document has no trailing newline, so
-	  # {line: oldLineCount, character: 0} isn't a valid position in it;
-	  # anchor to the end of the last line instead.  When the hunk
-	  # doesn't start at the first line, pull the start back over the
-	  # newline that precedes it too, so that line's break is removed.
-	  endLine = oldLineCount - 1
-	  endChar = offset.EncodedLineLen(lspserver, oldBufLines[endLine])
-	  if startLine > 0
-	    startLine -= 1
-	    startChar = offset.EncodedLineLen(lspserver, oldBufLines[startLine])
-	    if hunk.to_count > 0
-	      text = "\n" .. text
-	    endif
-	  endif
-	endif
-	contentChanges->add({
-	  range: {
-	    start: {line: startLine, character: startChar},
-	    end:   {line: endLine, character: endChar}
-	  },
-	  text: text
-	})
-      endfor
-    else
-      # No cached snapshot available, or its line-ending state doesn't
-      # match the current buffer, or only one of them has no text (the
-      # old-document end-of-file math above would be wrong); fall back to a
-      # full-text change.
-      contentChanges = [{text: LinesText(newBufLines, hasEol)}]
-    endif
+    contentChanges = DiffChanges(lspserver, cachedBufferContent[bnr],
+				 newBufLines, hasEol)
+  elseif !isCached || cachedBufferContent[bnr] != newBufLines
+    # TextDocumentSyncKind: Full — send the entire buffer on every change.
+    # This is also the way to send the changes of an incremental sync when
+    # there is no cached document, or its line-ending state doesn't match the
+    # current buffer, or only one of them has no text (the end-of-file math
+    # for the old document would be wrong).  A change that leaves the text as
+    # it was, which Vim also passes to the listeners, is not sent: the version
+    # of the document then stays that of its text.
+    contentChanges = [{text: LinesText(newBufLines, hasEol)}]
   endif
   cachedBufferContent[bnr] = newBufLines
   cachedBufferEol[bnr] = hasEol
 
-  if contentChanges->empty()
-    return
-  endif
-
-  var params = {
-    textDocument: {
-      uri: util.LspBufnrToUri(bnr),
-      version: NextDocVersion(lspserver, bnr)
-    },
-    contentChanges: contentChanges
-  }
-  lspserver.sendNotification('textDocument/didChange', params)
+  SendDocumentChanges(lspserver, bnr, contentChanges)
 enddef
 
 # Returns the version of the next change to the document of buffer "bnr" and
@@ -3684,6 +3795,7 @@ export def NewLspServer(serverParams: dict<any>): dict<any>
     textdocDidOpen: function(TextdocDidOpen, [lspserver]),
     textdocDidClose: function(TextdocDidClose, [lspserver]),
     textdocDidChange: function(TextdocDidChange, [lspserver]),
+    usesIncrementalSync: function(UsesIncrementalSync, [lspserver]),
     textdocEolChanged: function(TextdocEolChanged, [lspserver]),
     sendInitializedNotif: function(SendInitializedNotif, [lspserver]),
     sendWorkspaceConfig: function(SendWorkspaceConfig, [lspserver]),

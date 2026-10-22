@@ -2459,9 +2459,15 @@ incrementalSync		|Boolean| option.  Specifies the method used to
 			- If |true|, only the modified portions of the buffer
 			  are sent (incremental sync). This is more efficient
 			  for large files and reduces network/CPU overhead.
-			  Note: This needs a working |diff()|
-			  function.  A Vim built without its internal
-			  diff library uses full sync.
+			  The lines that changed are the ones that Vim passes
+			  to a |listener_add()| callback, so the time to send
+			  a change doesn't depend on the size of the buffer.
+			  The text of the buffer is compared with the one the
+			  server has when the buffer is saved, and the
+			  difference is sent.
+			  Note: Needs Vim version 9.2.1102 or later, and a
+			  working |diff()| function.  A Vim built without its
+			  internal diff library uses full sync.
 			- If |false|, the entire buffer content is sent on
 			  every change (full sync). This is more robust but
 			  can cause lag in very large documents.
