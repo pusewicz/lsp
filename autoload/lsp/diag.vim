@@ -489,11 +489,21 @@ def LineTextWidth(bnr: number, lnum: number, charIdx: number): number
   return width + parts[-1]->strdisplaywidth()
 enddef
 
+# Returns true if only the tag highlights of the diagnostics are drawn: ALE
+# draws the rest, and it has no notion of the diagnostic tags.  The hints
+# shown only by their tags (DiagIsTagOnly()) aren't sent to ALE.
+def DrawsOnlyTags(): bool
+  var lspOpts = opt.lspOptions
+  return lspOpts.aleSupport && !lspOpts.autoHighlightDiags
+    && lspOpts.highlightDiagInline
+enddef
+
 # Refresh the placed diagnostics in buffer "bnr"
 # This inline signs, inline props, and virtual text diagnostics
 export def DiagsRefresh(bnr: number)
   var lspOpts = opt.lspOptions
-  if !lspOpts.autoHighlightDiags
+  const tagsOnly: bool = DrawsOnlyTags()
+  if !lspOpts.autoHighlightDiags && !tagsOnly
     return
   endif
 
@@ -543,7 +553,9 @@ export def DiagsRefresh(bnr: number)
     diag_wrap = lspOpts.diagVirtualTextWrap
   endif
 
-  var mostSevereOnly: bool = lspOpts.showDiagWithVirtualText
+  var showSigns: bool = lspOpts.showDiagWithSign && !tagsOnly
+  var showVirtualText: bool = lspOpts.showDiagWithVirtualText && !tagsOnly
+  var mostSevereOnly: bool = showVirtualText
 	&& lspOpts.diagVirtualTextMostSevere
   var virtualTextDiags: dict<dict<any>> = mostSevereOnly
 	? MostSevereDiagByLine(ListedDiags(diags))
@@ -553,13 +565,16 @@ export def DiagsRefresh(bnr: number)
   var inlineHLprops: list<list<list<number>>> = [[], [], [], [], []]
   var tagHLprops: dict<list<list<number>>> = {}
   for diag in diags
+    if tagsOnly && DiagTagPropTypes(diag)->empty()
+      continue
+    endif
     var d_range = diag.range
     var d_start = d_range.start
     var d_end = d_range.end
     var lnum = d_start.line + 1
     const d_severity = diag->get('severity', 1)
-    const tagOnly: bool = DiagIsTagOnly(diag)
-    if lspOpts.showDiagWithSign && !tagOnly
+    const tagOnly: bool = tagsOnly || DiagIsTagOnly(diag)
+    if showSigns && !tagOnly
       signs->add({id: 0, buffer: bnr, group: 'LSPDiag',
 		  lnum: lnum, name: DiagSevToSignName(d_severity),
 		  priority: 10 - d_severity})
@@ -582,7 +597,7 @@ export def DiagsRefresh(bnr: number)
 	endfor
       endif
 
-      if lspOpts.showDiagWithVirtualText && !tagOnly
+      if showVirtualText && !tagOnly
 	  && (!mostSevereOnly || virtualTextDiags[lnum] is diag)
         var padding: number
         var symbol: string = diag_symbol
@@ -626,7 +641,7 @@ export def DiagsRefresh(bnr: number)
     endfor
   endif
 
-  if lspOpts.showDiagWithSign
+  if showSigns
     signs->sign_placelist()
   endif
 enddef
@@ -1522,7 +1537,7 @@ const displayOptionAppliers: list<dict<any>> = [
   {
     Apply: DiagsRedrawAll,
     options: [
-      'autoHighlightDiags', 'diagVirtualTextAlign',
+      'aleSupport', 'autoHighlightDiags', 'diagVirtualTextAlign',
       'diagVirtualTextMostSevere', 'diagVirtualTextWrap',
       'highlightDiagInline', 'showDiagWithSign', 'showDiagWithVirtualText'
     ] + signTextOptions
