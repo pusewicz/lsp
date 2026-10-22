@@ -3390,6 +3390,10 @@ LspProgressUpdate		A |User| autocommand invoked when a progress
 				the language server.  This can be used to
 				update a statusline component.  The current
 				progress state is stored in |g:LspProgress|.
+				The autocommand runs from a timer, at most
+				once every 100 ms, so a burst of
+				notifications fires it once, after the last
+				one of the burst.
 
 							*g:LspProgress*
 g:LspProgress			A |Dictionary| containing the current progress
