@@ -1114,6 +1114,14 @@ def g:Test_SemanticTokens_PositionEncodings()
   :%bw!
 enddef
 
+# Returns the [lnum, col, length, type] of the text properties in the current
+# buffer, sorted by position.
+def SemanticProps(): list<list<any>>
+  return prop_list(1, {end_lnum: line('$')})
+    ->mapnew((_, p) => [p.lnum, p.col, p.length, p.type])
+    ->sort((a, b) => a[0] != b[0] ? a[0] - b[0] : a[1] - b[1])
+enddef
+
 # A semantic tokens reply that arrives after the buffer changed keeps the
 # current highlighting, and is cached as the base of the next delta reply.
 def g:Test_SemanticTokens_StaleReplyIsCachedNotShown()
@@ -1127,16 +1135,10 @@ def g:Test_SemanticTokens_StaleReplyIsCachedNotShown()
     semanticTokensLegend: {tokenTypes: ['function', 'variable'],
                            tokenModifiers: []},
   }
-  def Props(): list<list<any>>
-    return prop_list(1, {end_lnum: line('$')})
-      ->mapnew((_, p) => [p.lnum, p.col, p.length, p.type])
-      ->sort((a, b) => a[0] != b[0] ? a[0] - b[0] : a[1] - b[1])
-  enddef
-
   var data1 = SemanticTokensData([[0, 0, 3, 0]])
   semantichighlight.UpdateTokens(lspserver, {resultId: '1', data: data1}, {},
                                  bufnr(), b:changedtick)
-  assert_equal([[1, 1, 3, 'LspSemanticFunction']], Props())
+  assert_equal([[1, 1, 3, 'LspSemanticFunction']], SemanticProps())
 
   # A full reply about the text before a change.
   var tick = b:changedtick
@@ -1144,7 +1146,7 @@ def g:Test_SemanticTokens_StaleReplyIsCachedNotShown()
   var data2 = SemanticTokensData([[0, 0, 3, 0], [1, 0, 3, 1]])
   semantichighlight.UpdateTokens(lspserver, {resultId: '2', data: data2}, {},
                                  bufnr(), tick)
-  assert_equal([[1, 1, 3, 'LspSemanticFunction']], Props())
+  assert_equal([[1, 1, 3, 'LspSemanticFunction']], SemanticProps())
   assert_equal('2', b:LspSemanticResultId)
   assert_equal(data2, b:LspSemanticTokensData)
 
@@ -1152,21 +1154,24 @@ def g:Test_SemanticTokens_StaleReplyIsCachedNotShown()
   tick = b:changedtick
   setline(2, 'quux')
   var data3 = SemanticTokensData([[0, 0, 3, 0], [0, 4, 3, 1]])
-  semantichighlight.UpdateTokens(lspserver, {resultId: '3', edits: [
-    {start: 5, deleteCount: 5, data: data3[5 : ]}]}, {}, bufnr(), tick)
-  assert_equal([[1, 1, 3, 'LspSemanticFunction']], Props())
+  # MacVim 9.2.321 sets v:errmsg when a List argument of an imported function
+  # spans lines, so the replies are built first.
+  var delta3 = {resultId: '3',
+		edits: [{start: 5, deleteCount: 5, data: data3[5 : ]}]}
+  semantichighlight.UpdateTokens(lspserver, delta3, {}, bufnr(), tick)
+  assert_equal([[1, 1, 3, 'LspSemanticFunction']], SemanticProps())
   assert_equal('3', b:LspSemanticResultId)
   assert_equal(data3, b:LspSemanticTokensData)
 
   # The next delta reply, about the current text, is relative to that cache.
-  semantichighlight.UpdateTokens(lspserver, {resultId: '4', edits: [
-    {start: 10, deleteCount: 0, data: [1, 0, 4, 0, 0]}]}, {}, bufnr(),
-    b:changedtick)
+  var delta4 = {resultId: '4',
+		edits: [{start: 10, deleteCount: 0, data: [1, 0, 4, 0, 0]}]}
+  semantichighlight.UpdateTokens(lspserver, delta4, {}, bufnr(), b:changedtick)
   assert_equal([
     [1, 1, 3, 'LspSemanticFunction'],
     [1, 5, 3, 'LspSemanticVariable'],
     [2, 1, 4, 'LspSemanticFunction'],
-  ], Props())
+  ], SemanticProps())
   assert_equal('4', b:LspSemanticResultId)
   :%bw!
 enddef
@@ -1490,11 +1495,24 @@ def ResolveCompletionStub(lspserver: dict<any>, requests: list<bool>,
   return {}
 enddef
 
+# Waits until the selected completion item was resolved: for the timer of
+# completion.ResolveCompletionLater() (50 ms), up to 2 seconds.  A fixed sleep
+# was sometimes too short on the CI runners.
+def WaitForCompletionResolveTimer()
+  sleep 60m
+  for _ in range(200)
+    if timer_info()->indexof((_, t) => t.time == 50 && !t.paused) == -1
+      return
+    endif
+    sleep 10m
+  endfor
+enddef
+
 # Selects items in the completion menu of "lspserver", a MakeTextEditServer()
 # with the items "fob" and "foo", for the word "fo" on the second line, with
 # the keys "selectKeys", and accepts the selected item.  <F2> in "selectKeys"
-# waits longer than the selection waits before resolving an item.  The resolve
-# requests are replied when "reply" is true, and are recorded in "requests".
+# waits until the selected item was resolved.  The resolve requests are
+# replied when "reply" is true, and are recorded in "requests".
 def AcceptCompletionItem(lspserver: dict<any>, requests: list<bool>,
 			 reply: bool, selectKeys: string)
   deletebufline(bufnr(), 1, '$')
@@ -1506,7 +1524,7 @@ def AcceptCompletionItem(lspserver: dict<any>, requests: list<bool>,
   completion.BufferInit(lspserver, bufnr(), &filetype)
   setlocal completeopt=menuone,noinsert,noselect
   inoremap <buffer> <F5> <ScriptCmd>completion.LspComplete(true)<CR>
-  inoremap <buffer> <F2> <ScriptCmd>sleep 150m<CR>
+  inoremap <buffer> <F2> <ScriptCmd>WaitForCompletionResolveTimer()<CR>
   test_override('char_avail', 1)
   try
     cursor(2, 2)
