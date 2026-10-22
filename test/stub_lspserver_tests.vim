@@ -9328,6 +9328,78 @@ def g:Test_SignatureHelp_EchoOffsetLabels()
   endtry
 enddef
 
+# Test that the signature popup moves below the cursor line while the
+# completion menu is open above it, and back above it when the menu closes or
+# opens below it, so that the two don't overlap.
+def g:Test_SignatureHelp_PopupAvoidsCompletionMenu()
+  signature.InitOnce()
+  g:LspOptionsSet({echoSignature: false, showSignatureDocs: false})
+  silent! edit XSignaturePopupPum.txt
+  var bnr = bufnr()
+  var srv = MakeTestLspServer([])
+  srv.caps = {signatureHelpProvider: {triggerCharacters: ['(']}}
+  srv.isSignatureHelpProvider = true
+  srv.running = true
+  srv.ready = true
+  srv.showSignature = (kind: number, char: string) => {
+  }
+  buf.BufLspServerSet(bnr, srv)
+  signature.BufferInit(srv, bnr)
+  var positions: list<list<any>> = []
+  var refPos: dict<any> = {}
+  g:SigPumTestShow = () => {
+    signature.SignatureHelp(srv, MakeSigHelp('f(int a)', ['int a'], 0), {})
+    # Where the popup was before it moved with the menu
+    var ref = popup_create('f(int a)', {line: 'cursor-1', col: 'cursor',
+      pos: 'botleft', posinvert: true, padding: [0, 1, 0, 1]})
+    refPos = popup_getpos(ref)
+    popup_close(ref)
+  }
+  g:SigPumTestRecord = () => {
+    var pos = popup_getpos(srv.signaturePopup)
+    positions->add([pumvisible(), pum_getpos()->get('row', -1),
+		    pos->get('line', -1), pos->get('col', -1)])
+  }
+  inoremap <buffer> <F3> <Cmd>call g:SigPumTestShow()<CR>
+  inoremap <buffer> <F4> <Cmd>call g:SigPumTestRecord()<CR>
+  inoremap <buffer> <F5> <Cmd>call complete(col('.'), range(20)->map((_, v) => $'w{v}'))<CR>
+  try
+    setlocal number
+    setline(1, range(1, 100)->map((_, v) => $"\tf({v}"))
+    # [command that moves the cursor, whether the menu opens above the cursor
+    #  line, the line of the popup without and with the menu, from the cursor
+    #  line]
+    var cases: list<list<any>> = [
+      ['normal! G4k', true, -1, 1],
+      ['normal! gg5G', false, -1, -1],
+      # No line above the cursor line for the popup
+      ['normal! gg', false, 1, 1]
+    ]
+    for [cmd, pumAbove, offset, pumOffset] in cases
+      exe cmd
+      var row = win_screenpos(0)[0] + winline() - 1
+      positions = []
+      feedkeys("A\<F3>\<F4>\<F5>\<F4>\<C-E>\<F4>\<Esc>", 'xt')
+      assert_equal(3, positions->len(), cmd)
+      # Where a popup at the cursor would be, after the Tab and the number
+      assert_equal(row + offset, refPos.line, cmd)
+      assert_true(refPos.col > 9, cmd)
+      assert_equal([0, -1, row + offset, refPos.col], positions[0], cmd)
+      assert_equal(1, positions[1][0], cmd)
+      assert_equal(pumAbove, positions[1][1] < row - 1, cmd)
+      assert_equal([row + pumOffset, refPos.col], positions[1][2 : ], cmd)
+      # Back where it was when the menu closes
+      assert_equal([0, -1, row + offset, refPos.col], positions[2], cmd)
+    endfor
+  finally
+    signature.SignatureHelp(srv, {}, {})
+    signature.BufferDeInit(bnr)
+    buf.BufLspServerRemove(bnr, srv)
+    unlet g:SigPumTestShow g:SigPumTestRecord
+    :%bw!
+  endtry
+enddef
+
 # Type "keys", which enter Insert mode, and return the [trigger kind, trigger
 # character] of the signature help requests of the language server
 # "lspserver" for it, waiting for the first one when "waitForRequest" is true

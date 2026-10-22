@@ -17,6 +17,9 @@ var sig_state = {
   bnr: -1,              # buffer the session is anchored to
   popupRow: -1,         # window line that the signature popup is above
   popupClosesOnMove: false,  # the popup closes when the cursor moves
+  popupScreenRow: -1,   # screen line of the cursor when the popup was created
+  popupScreenCol: -1,   # screen column of the cursor when the popup was created
+  popupBelow: false,    # the popup is below the cursor line, not above it
 }
 
 # Mirrors LSP 3.17 SignatureHelpTriggerKind enum values.
@@ -320,6 +323,9 @@ def ResetSignatureState()
   sig_state.bnr = -1
   sig_state.popupRow = -1
   sig_state.popupClosesOnMove = false
+  sig_state.popupScreenRow = -1
+  sig_state.popupScreenCol = -1
+  sig_state.popupBelow = false
   ResetSignatureContentChangeState()
 enddef
 
@@ -805,12 +811,56 @@ def RestoreSignatureFirstLine(bnr: number, signatureText: string)
   prop_clear(1, 1, {bufnr: bnr})
 enddef
 
+# Return true when the signature popup should be below the cursor line: when
+# the completion menu, at the screen position "pumpos" (as pum_getpos()
+# returns it, empty when there is no menu), is above the cursor line, as Vim
+# draws it near the bottom of the window.  The popup is above the cursor line
+# otherwise, so that it doesn't cover the menu below it.
+def SignaturePopupBelow(pumpos: dict<any>): bool
+  if pumpos->empty() || sig_state.popupScreenRow < 0
+    return false
+  endif
+  # pum_getpos() counts the screen lines from 0
+  return pumpos.row + 1 < sig_state.popupScreenRow
+enddef
+
+# Return the position options of the signature popup: above the screen
+# position of the cursor where the popup was created, or below it when
+# "below" is true or there is no screen line above it.
+def SignaturePopupPos(below: bool): dict<any>
+  # A "line" of 0 would center the popup
+  var isBelow: bool = below || sig_state.popupScreenRow <= 1
+  return {
+    line: isBelow ? sig_state.popupScreenRow + 1
+		  : sig_state.popupScreenRow - 1,
+    col: sig_state.popupScreenCol,
+    pos: isBelow ? 'topleft' : 'botleft'
+  }
+enddef
+
+# Move the signature popup below the cursor line when the completion menu at
+# "pumpos" opens above it, and back above the cursor line when the menu closes
+# or opens below it, so that the two don't overlap (CompleteChanged and
+# CompleteDone).
+export def PumChanged(pumpos: dict<any>)
+  var popupID: number = sig_state.lspserver->get('signaturePopup', -1)
+  if popupID == -1 || popup_list()->index(popupID) == -1
+    return
+  endif
+  var below: bool = SignaturePopupBelow(pumpos)
+  if below != sig_state.popupBelow
+    popupID->popup_move(SignaturePopupPos(below))
+    sig_state.popupBelow = below
+  endif
+enddef
+
 # Show the signature help "lines" in the signature popup of "lspserver", with
 # the active parameter highlighted as "hlinfo" says and the markdown rendered
 # when "filetype" is "lspgfm".  The popup is created above the cursor when
 # there is none and reused while the cursor stays on that window line, so
 # that it doesn't move as the user types; it is created anew on another line,
-# as after a line break in the arguments.
+# as after a line break in the arguments.  It is below the cursor line while
+# the completion menu is above it (see PumChanged()).
 #
 # In Insert mode, the session autocmds update the popup as the cursor moves
 # and close it when Insert mode is left.  In the other modes, as after
@@ -832,14 +882,16 @@ def ShowPopupSignature(lspserver: dict<any>, lines: list<string>,
   endif
 
   if popupID == -1
-    var popupAttrs = opt.PopupConfigure('SignatureHelp', {
-      line: 'cursor-1',
-      col: 'cursor',
-      pos: 'botleft',
-      posinvert: true,
-      padding: [0, 1, 0, 1],
-      callback: (id, result) => SignaturePopupCloseCb(lspserver, id, result)
-    })
+    var [winRow, winCol] = win_screenpos(0)
+    sig_state.popupScreenRow = winRow + row - 1
+    sig_state.popupScreenCol = winCol + wincol() - 1
+    sig_state.popupBelow = SignaturePopupBelow(pum_getpos())
+    var popupAttrs = opt.PopupConfigure('SignatureHelp',
+      SignaturePopupPos(sig_state.popupBelow)->extend({
+	posinvert: true,
+	padding: [0, 1, 0, 1],
+	callback: (id, result) => SignaturePopupCloseCb(lspserver, id, result)
+      }))
     if closesOnMove
       popupAttrs.moved = 'any'
     endif
@@ -962,6 +1014,9 @@ def EnableSignatureSessionAutocmds()
   # moved in insert mode or the text is changed.
   AddSignatureAutocmd(bnr, 'CursorMovedI', 'g:LspHandleSignatureContentChange()')
   AddSignatureAutocmd(bnr, 'TextChangedI', 'g:LspHandleSignatureContentChange()')
+  # Keep the signature popup and the completion menu apart
+  AddSignatureAutocmd(bnr, 'CompleteChanged', 'PumChanged(v:event)')
+  AddSignatureAutocmd(bnr, 'CompleteDone', 'PumChanged({})')
   # Close the signature popup when leaving insert mode or the window
   AddSignatureAutocmd(bnr, 'InsertLeave', 'CloseCurBufSignaturePopup()')
   AddSignatureAutocmd(bnr, 'WinLeave', 'CloseCurBufSignaturePopup()')
@@ -975,6 +1030,8 @@ def DisableSignatureSessionAutocmds()
   endif
   autocmd_delete([{bufnr: bnr, group: 'LspSignatureHelp', event: 'CursorMovedI'}])
   autocmd_delete([{bufnr: bnr, group: 'LspSignatureHelp', event: 'TextChangedI'}])
+  autocmd_delete([{bufnr: bnr, group: 'LspSignatureHelp', event: 'CompleteChanged'}])
+  autocmd_delete([{bufnr: bnr, group: 'LspSignatureHelp', event: 'CompleteDone'}])
   autocmd_delete([{bufnr: bnr, group: 'LspSignatureHelp', event: 'InsertLeave'}])
   autocmd_delete([{bufnr: bnr, group: 'LspSignatureHelp', event: 'WinLeave'}])
 enddef
