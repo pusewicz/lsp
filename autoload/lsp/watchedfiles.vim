@@ -487,7 +487,8 @@ enddef
 # Returns why the "registrations" of a "client/registerCapability" request
 # from language server "lspserver" are not valid, or an empty string after
 # registering their file system watchers.  Registers none of them when one is
-# not valid, and ignores them when the "watchFiles" option is not set.
+# not valid, and ignores them when the "watchFiles" option is not set or the
+# "watchFiles" feature of the language server is off.
 export def Register(lspserver: dict<any>, registrations: list<any>): string
   var regs: dict<list<dict<any>>> = {}
   for registration in registrations
@@ -511,6 +512,7 @@ export def Register(lspserver: dict<any>, registrations: list<any>): string
   endfor
 
   if regs->empty() || !opt.lspOptions.watchFiles
+      || !lspserver->get('features', {})->get('watchFiles', true)
     return ''
   endif
   if !servers->has_key(lspserver.id)

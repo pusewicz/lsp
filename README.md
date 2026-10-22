@@ -50,7 +50,7 @@ The following language server protocol (LSP) features are supported:
 * Linked editing (e.g. renaming an HTML tag also renames its closing tag)
 * Visually select symbol block/region
 * Semantic Highlight
-* Notify the language servers of changes to the files that they watch, also the changes made outside Vim (with [fswatch](https://github.com/emcrisostomo/fswatch))
+* Notify the language servers of changes to the files that they watch, also the changes made outside Vim (with [fswatch](https://github.com/emcrisostomo/fswatch)); a server can be left to watch its own files
 
 ## Configuration
 

@@ -262,7 +262,8 @@ def InitServer(lspserver: dict<any>, bnr: number)
   endif
 
   initparams.trace = 'off'
-  initparams.capabilities = capabilities.GetClientCaps()
+  initparams.capabilities =
+    capabilities.GetClientCaps(lspserver.featureEnabled('watchFiles'))
   if !lspserver.initializationOptions->empty()
     initparams.initializationOptions = lspserver.initializationOptions
   else
