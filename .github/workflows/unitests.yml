@@ -24,15 +24,24 @@ jobs:
       HOMEBREW_NO_AUTO_UPDATE: 1
       HOMEBREW_NO_INSTALL_CLEANUP: 1
       LSP_TEST_GUI: ${{ matrix.ui == 'gui' && '1' || '' }}
+      # The MacVim release to test with: Homebrew's cask lags behind the Vim
+      # patches that the plugin uses (see test/check_vim_version.sh)
+      MACVIM_RELEASE: prerelease-183.2
     steps:
       - name: Checkout LSP plugin Code
         uses: actions/checkout@v7.0.1
       - name: Install MacVim
         run: |
           set -euo pipefail
-          brew install --cask macvim-app
+          curl -fsSL --retry 3 -o MacVim.dmg \
+            "https://github.com/macvim-dev/macvim/releases/download/$MACVIM_RELEASE/MacVim.dmg"
+          hdiutil attach MacVim.dmg -nobrowse -readonly -mountpoint /Volumes/MacVim
+          cp -R /Volumes/MacVim/MacVim.app /Applications/
+          hdiutil detach /Volumes/MacVim
+          rm MacVim.dmg
           brew install coreutils fswatch
-          /Applications/MacVim.app/Contents/MacOS/Vim --version
+      - name: Check the MacVim version
+        run: test/check_vim_version.sh
       - name: Install clangd
         if: matrix.tests == 'clangd'
         run: |

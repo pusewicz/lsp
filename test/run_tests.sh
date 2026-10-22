@@ -4,9 +4,12 @@
 VIMPRG="${VIMPRG:-/Applications/MacVim.app/Contents/MacOS/Vim}"
 
 if [[ ! -x "$VIMPRG" ]]; then
-  echo "ERROR: vim ($VIMPRG) not found or not executable.  Install MacVim with \`brew install --cask macvim-app\`."
+  echo "ERROR: vim ($VIMPRG) not found or not executable.  Install MacVim from https://github.com/macvim-dev/macvim/releases."
   exit 1
 fi
+
+# Stop at once when Vim is too old, rather than with failing tests
+VIMPRG="$VIMPRG" "$(dirname "$0")/check_vim_version.sh" || exit 1
 
 # GNU coreutils' "timeout", installed without or with the "g" prefix
 TIMEOUT_CMD=""

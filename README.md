@@ -264,11 +264,12 @@ For code actions, when multiple servers return actions, the menu shows one merge
 The tests run with the Vim of MacVim against real language servers, as the GitHub Actions workflow does:
 
 ```sh
-brew install --cask macvim-app
 brew install coreutils llvm go gopls rustup node fswatch
 rustup default stable && rustup component add rust-src
 (cd test && npm ci)
 ```
+
+Install the MacVim in `/Applications` from its [releases](https://github.com/macvim-dev/macvim/releases), not Homebrew's cask, which has an older Vim: the tests stop at once unless it has the patches the plugin needs (`test/check_vim_version.sh` has the oldest one). CI uses the release named in the workflow.
 
 The clangd tests need clangd 22 or later, which they take from Homebrew's `llvm`. The Rust tests use the `rust-analyzer` on `PATH`; CI pins it to the [2024-06-24 release](https://github.com/rust-lang/rust-analyzer/releases/tag/2024-06-24). Then run the whole suite, only some test files, or a group of them: `clangd` for the files that need clangd, `others` for the rest. CI runs each group in the terminal and in the MacVim GUI, in parallel jobs.
 

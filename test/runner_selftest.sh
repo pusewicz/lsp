@@ -13,6 +13,8 @@
 # - runner_selftest_notrun.vim: runner.vim reports each declared test that is
 #   not a global function after sourcing the file, such as one nested in
 #   another test by a misplaced "enddef", and runs legacy test functions.
+# - run_tests.sh stops at once, before any test, with a Vim that is older than
+#   check_vim_version.sh asks for.
 # The test files run through run_tests.sh like any other.
 
 cd "$(dirname "$0")" || exit 1
@@ -121,6 +123,19 @@ Test_Legacy: pass"
 CheckRun runner_selftest_timeout.vim 5 2 \
   "RESULT: Vim timed out while running runner_selftest_timeout.vim." \
   "Test_First: pass"
+
+# run_tests.sh stops before any test runs, with status 1, when Vim is older
+# than the patch that the plugin needs, and names that patch and the Vim.
+output=$(MIN_VIM_PATCH=99999 ./run_tests.sh runner_selftest_fixture.vim 2>&1)
+status=$?
+if [[ $status -ne 1 ]] \
+    || ! grep -qF "ERROR: The tests need Vim 9.2.99999 or later" <<< "$output" \
+    || ! grep -q "^Included patches:" <<< "$output" \
+    || grep -q "Running:" <<< "$output"; then
+  echo "$output"
+  echo "FAIL: run_tests.sh returned $status instead of stopping at once with an old Vim"
+  FAILED=1
+fi
 
 if (( FAILED )); then
   exit 1
