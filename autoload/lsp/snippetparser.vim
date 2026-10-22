@@ -20,6 +20,8 @@ vim9script
 #	      "capitalize", "camelcase" or "pascalcase"), conditional on the
 #	      capture group also "ifValue" and/or "elseValue".
 
+import './jsregexp.vim'
+
 const caseModifiers = ['upcase', 'downcase', 'capitalize', 'camelcase',
 		       'pascalcase']
 
@@ -357,192 +359,6 @@ export def Parse(snippet: string): list<dict<any>>
   return ParseNodes(NewParser(snippet), false)
 enddef
 
-# Return the Vim pattern for the JavaScript character class in "chars" that
-# starts after its "[" at index "start", and the index after its "]".
-# Returns v:none for a class that Vim can't express.
-def JsClassToVim(chars: list<string>, start: number): any
-  var i = start
-  var negated = chars->get(i, '') == '^'
-  if negated
-    i += 1
-  endif
-  var members = ''
-  while i < chars->len() && chars[i] != ']'
-    var ch = chars[i]
-    if ch == '\'
-      var esc = chars->get(i + 1, '')
-      i += 2
-      if esc ==# 'd'
-	members ..= '0-9'
-      elseif esc ==# 'w'
-	members ..= '0-9A-Za-z_'
-      elseif esc ==# 's'
-	members ..= ' \t\r\n\x0b\x0c'
-      elseif esc =~# '^[tnr]$'
-	members ..= '\' .. esc
-      elseif esc->empty() || esc =~ '^[A-Za-z0-9]$'
-	return v:none
-      else
-	members ..= ']^-\'->stridx(esc) >= 0 ? '\' .. esc : esc
-      endif
-      continue
-    endif
-    # A "^" first in a Vim collection negates it.
-    members ..= ch == '^' && members->empty() ? '\^' : ch
-    i += 1
-  endwhile
-  if i >= chars->len()
-    return v:none
-  endif
-  if members->empty()
-    # "[^]" matches any character, "[]" none.
-    return negated ? ['\_.', i + 1] : v:none
-  endif
-  return [(negated ? '\[^' : '\[') .. members .. ']', i + 1]
-enddef
-
-# Return the Vim pattern for the JavaScript quantifier in "chars" at index
-# "start", and the index after it.  Returns v:none when there is no
-# quantifier there.
-def JsQuantifierToVim(chars: list<string>, start: number): any
-  var ch = chars[start]
-  var i = start + 1
-  var min: number
-  var max: number
-  if ch == '*'
-    [min, max] = [0, -1]
-  elseif ch == '+'
-    [min, max] = [1, -1]
-  elseif ch == '?'
-    [min, max] = [0, 1]
-  else
-    var spec = chars[i : ]->join('')->matchstr('^\d\+\%(,\d*\)\=}')
-    if spec->empty()
-      return v:none
-    endif
-    i += spec->strcharlen()
-    var bounds = spec->strpart(0, spec->len() - 1)->split(',', true)
-    min = bounds[0]->str2nr()
-    max = bounds->len() == 1 ? min
-      : bounds[1]->empty() ? -1 : bounds[1]->str2nr()
-  endif
-
-  var lazy = chars->get(i, '') == '?'
-  if lazy
-    i += 1
-  elseif max < 0 && min <= 1
-    return [min == 0 ? '\*' : '\+', i]
-  elseif min == 0 && max == 1
-    return ['\=', i]
-  endif
-  var lazyMark = lazy ? '-' : ''
-  var maxText = max < 0 ? '' : string(max)
-  return [$'\{{{lazyMark}{min},{maxText}}}', i]
-enddef
-
-# Return the JavaScript regular expression "regex" with the flags "flags" as
-# a Vim pattern.  Returns v:none for an expression that Vim can't express.
-export def JsRegexToVim(regex: string, flags: string): any
-  var chars = regex->split('\zs')
-  # Very nomagic: only constructs with a backslash are special.
-  var pat = flags =~# 'i' ? '\V\c' : '\V\C'
-  var groupEnds: list<string> = []
-  var i = 0
-  while i < chars->len()
-    var ch = chars[i]
-    if ch == '\'
-      var esc = chars->get(i + 1, '')
-      i += 2
-      if esc =~# '^[dDwWsStnr1-9]$'
-	pat ..= '\' .. esc
-      elseif esc ==# 'b'
-	pat ..= '\%(\<\|\>\)'
-      elseif esc ==# 'x' && chars[i : i + 1]->join('') =~ '^\x\x$'
-	pat ..= '\%x' .. chars[i : i + 1]->join('')
-	i += 2
-      elseif esc ==# 'u' && chars[i : i + 3]->join('') =~ '^\x\{4}$'
-	pat ..= '\%u' .. chars[i : i + 3]->join('')
-	i += 4
-      elseif esc->empty() || esc =~ '^[A-Za-z0-9]$'
-	return v:none
-      elseif esc == '\'
-	pat ..= '\\'
-      elseif esc == '^' || esc == '$'
-	# Literally, not as an anchor at the start or the end.
-	pat ..= printf('\%%x%02x', char2nr(esc))
-      else
-	pat ..= esc
-      endif
-    elseif ch == '['
-      var cls = JsClassToVim(chars, i + 1)
-      if IsNone(cls)
-	return v:none
-      endif
-      pat ..= cls[0]
-      i = cls[1]
-    elseif ch == '('
-      var ext = chars[i + 1 : i + 3]->join('')
-      if ext !~ '^?'
-	pat ..= '\('
-	groupEnds->add('\)')
-	i += 1
-      elseif ext =~ '^?:'
-	pat ..= '\%('
-	groupEnds->add('\)')
-	i += 3
-      elseif ext =~ '^?[=!]'
-	pat ..= '\%('
-	groupEnds->add(ext[1] == '=' ? '\)\@=' : '\)\@!')
-	i += 3
-      elseif ext =~ '^?<[=!]'
-	pat ..= '\%('
-	groupEnds->add(ext[2] == '=' ? '\)\@<=' : '\)\@<!')
-	i += 4
-      else
-	# A named capture group
-	var name = chars[i + 2 : ]->join('')->matchstr('^<\a\w*>')
-	if name->empty()
-	  return v:none
-	endif
-	pat ..= '\('
-	groupEnds->add('\)')
-	i += 2 + name->strcharlen()
-      endif
-    elseif ch == ')'
-      if groupEnds->empty()
-	return v:none
-      endif
-      pat ..= groupEnds->remove(-1)
-      i += 1
-    elseif ch == '|'
-      pat ..= '\|'
-      i += 1
-    elseif ch == '.'
-      pat ..= flags =~# 's' ? '\_.' : '\.'
-      i += 1
-    elseif ch == '^' || ch == '$'
-      pat ..= '\_' .. ch
-      i += 1
-    elseif '*+?{'->stridx(ch) >= 0
-      var quantifier = JsQuantifierToVim(chars, i)
-      if !IsNone(quantifier)
-	pat ..= quantifier[0]
-	i = quantifier[1]
-      elseif ch == '{'
-	# A "{" that doesn't start a quantifier is literal.
-	pat ..= ch
-	i += 1
-      else
-	return v:none
-      endif
-    else
-      pat ..= ch
-      i += 1
-    endif
-  endwhile
-  return groupEnds->empty() ? pat : v:none
-enddef
-
 # Return "value" in camel case ("pascal" false) or pascal case: its words of
 # letters and digits joined, each with an upper case first letter, except
 # for the first word in camel case.
@@ -598,7 +414,7 @@ enddef
 # of its regular expression replaced with its format.  Returns "value"
 # unchanged when Vim can't express the regular expression.
 export def ApplyTransform(value: string, transform: dict<any>): string
-  var pat = JsRegexToVim(transform.regex, transform.options)
+  var pat = jsregexp.ToVim(transform.regex, transform.options)
   if IsNone(pat)
     return value
   endif

@@ -2048,8 +2048,12 @@ linkedEditing		|Boolean| option.  When the cursor is in a range of
 			space after an HTML tag name), or when the ranges are
 			changed some other way (for example, by breaking a
 			line in one).  The language server tells what a word
-			is.  When it doesn't, a word has no white space,
-			quotes, backticks or any of the characters "<>/=".
+			is, with a JavaScript regular expression translated
+			to a Vim pattern like those of snippet
+			transformations.  When it doesn't, or when the
+			regular expression has something that Vim patterns
+			don't have, a word has no white space, quotes,
+			backticks or any of the characters "<>/=".
 
 			While the completion popup menu is shown, the other
 			ranges are changed when the menu is closed if one of
