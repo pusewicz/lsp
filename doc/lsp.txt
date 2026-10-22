@@ -2488,7 +2488,9 @@ watchFiles		|Boolean| option.  Send the language servers the
 			files itself, like rust-analyzer, then does that.
 			The directories in |lsp-opt-workspaceIgnoredPaths| are
 			not watched.  The option applies to the language
-			servers started after it is set.
+			servers started after it is set.  To leave a single
+			language server to watch its own files, turn off its
+			"watchFiles" feature (|lsp-features-watchFiles|).
 
 			Default: |true|
 
@@ -4248,6 +4250,15 @@ willSaveWaitUntil		Used to make the edits that a language server
 				file.  By setting this to |false| buffers are
 				written without the edits of the language
 				server.  See |lsp-format-on-save|.
+						*lsp-features-watchFiles*
+watchFiles			Used to send the language server the changes
+				to the files that it watches (see
+				|lsp-opt-watchFiles|).  By setting this to
+				|false| the language server is not offered to
+				have its files watched, and one that can watch
+				files itself, like rust-analyzer, then does
+				that, while the other language servers still
+				use the client's file watching.
 workspaceSymbol			Used by the |:LspSymbolSearch| command.
 
 ==============================================================================

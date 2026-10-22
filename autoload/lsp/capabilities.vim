@@ -485,8 +485,10 @@ export def ProcessServerCaps(lspserver: dict<any>, caps: dict<any>)
   endif
 enddef
 
-# Return all the LSP client capabilities
-export def GetClientCaps(): dict<any>
+# Return all the LSP client capabilities.  "watchFiles" is false for a
+# language server whose "watchFiles" feature is off: it is then not offered
+# to have its files watched, so that it can watch them itself.
+export def GetClientCaps(watchFiles: bool = true): dict<any>
   # client capabilities (ClientCapabilities)
   var clientCaps: dict<any> = {
     general: {
@@ -738,7 +740,7 @@ export def GetClientCaps(): dict<any>
     offsetEncoding: ['utf-32', 'utf-16', 'utf-8']
   }
 
-  if watchedfiles.CanWatch()
+  if watchFiles && watchedfiles.CanWatch()
     clientCaps.workspace.didChangeWatchedFiles = {
       dynamicRegistration: true,
       relativePatternSupport: true
