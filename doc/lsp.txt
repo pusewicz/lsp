@@ -2646,6 +2646,10 @@ text it inserts; for a snippet item without a filter text, that is the word
 inserted for the snippet, without its placeholders.  The resulting filtered
 list is displayed as the completion menu.
 
+The lines after the first line of a multi-line item get the indent of the
+line it is inserted in, like those of a snippet (|lsp-snippets|), unless the
+item asks for its text as it is ("insertTextMode").
+
 It's worth noting that different language servers handle completion filtering
 in distinct ways. Some servers perform the filtering directly on the
 server-side, while others delegate this task to the client-side, which is the
