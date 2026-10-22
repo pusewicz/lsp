@@ -5,6 +5,7 @@ import '../autoload/lsp/completion.vim' as completion
 import '../autoload/lsp/buffer.vim' as buf
 import '../autoload/lsp/capabilities.vim' as capabilities
 import '../autoload/lsp/documentlink.vim' as documentlink
+import '../autoload/lsp/jsregexp.vim' as jsregexp
 import '../autoload/lsp/offset.vim' as offset
 import '../autoload/lsp/selection.vim' as selection
 import '../autoload/lsp/semantichighlight.vim' as semantichighlight
@@ -2528,6 +2529,67 @@ def g:Test_SnippetParser_RenderVariables()
   for [snippetText, text, tabstops] in cases
     assert_equal({text: text, tabstops: tabstops},
 		 RenderSnippet(snippetText, variables), snippetText)
+  endfor
+enddef
+
+# Test that a JavaScript regular expression, like the word pattern of linked
+# editing ranges or the regular expression of a snippet transformation, is
+# translated to a Vim pattern that matches the same text, and that one that
+# uses something without a Vim equivalent, or is invalid, is not.
+def g:Test_JsRegexp_ToVim()
+  # Returns true if "regex" (with "flags") matches the whole of "text".
+  def Matches(regex: string, text: string, flags = ''): bool
+    var pat = jsregexp.ToVim(regex, flags)
+    assert_equal(v:t_string, pat->type(), regex)
+    return text =~ $'\%^\%({pat}\)\%$'
+  enddef
+
+  var cases: list<list<any>> = [
+    # The pattern of the TypeScript language server for JSX tag names
+    ['[a-zA-Z0-9:\-\._$]*', ['my-el', 'svg:rect', 'Foo.Bar', ''],
+     ['div class', 'div>']],
+    # The word pattern of VS Code for HTML
+    ['(-?\d*\.\d\w*)|([^\`\~\!\@\$\^\&\*\(\)\=\+\[\{\]\}\\\|\;\:\''\"\,\.\<\>\/\s]+)',
+     ['my-element', 'h1', '1.5'],
+     ['a b', 'a.b', 'a]', 'a\', 'a"', 'a[', 'a^', 'a-b c']],
+    ['a{2,3}?b+?c*?d??', ['aab', 'aaabbcd'], ['ab']],
+    ['a{b(?:c|d)', ['a{bc', 'a{bd'], ['abc']],
+    ['[\w-]+', ['a_1-b'], ['a b', 'a.b']],
+    ['[^\x41-\x43[]', ['D', 'a'], ['A', 'C', '[']],
+    ['[[:a]+', ['[:a'], ['b']],
+    ['\x41é[è-ê]', ['Aéê'], ['Aée', 'aéé']],
+    ['[\t\f\v]+\f\v', ["\t\x0c\x0b\x0c\x0b"], ['\f\v']],
+    ['[\b]', ["\b"], ['b']],
+    ['[^]', ['x'], ['']],
+    ['é', ['é'], ['e']],
+    ['a', ['a'], ['A']],
+    ['a.c', ['abc'], ['ac']],
+    ['\$b\^', ['$b^'], ['b']],
+    ['~b=\/', ['~b=/'], ['b']],
+    ['a(?=b)b', ['ab'], ['aa']],
+    ['(\w)\1', ['aa'], ['ab']],
+    ['(?<n>a)b', ['ab'], ['b']],
+    ['\bdiv', ['div'], ['xdiv']],
+  ]
+  for [regex, matching, notMatching] in cases
+    for text in matching
+      assert_true(Matches(regex, text), $'{regex} should match "{text}"')
+    endfor
+    for text in notMatching
+      assert_false(Matches(regex, text), $'{regex} should not match "{text}"')
+    endfor
+  endfor
+
+  assert_true(Matches('A', 'a', 'i'))
+  assert_true(Matches('a.c', "a\nc", 's'))
+  assert_equal('\V\Ca\{-2,3}b\{-1,}c\{-0,}d\{-0,1}',
+	       jsregexp.ToVim('a{2,3}?b+?c*?d??'))
+  assert_equal('\V\C\[0-9A-Za-z_\-]\+', jsregexp.ToVim('[\w-]+'))
+
+  for unsupported in ['\p{L}+', '\Bb', '\0', '\k<n>', '[]', '[\d-z]', '[\D]',
+		      '[a', 'a\', '\x4', '\u12', '(a', 'a)', '*a', 'a**',
+		      '(?<1>a)', '(?=a)*', '^*', '\b+', '(|*)']
+    assert_equal(v:none, jsregexp.ToVim(unsupported), unsupported)
   endfor
 enddef
 

@@ -10928,42 +10928,6 @@ def g:Test_WatchedFiles_ExternalChanges()
   g:WaitForAssert(() => assert_equal([], FswatchJobs()))
 enddef
 
-# Test that a JavaScript regular expression, like the word pattern of linked
-# editing ranges, is converted to a Vim regexp that matches the same text,
-# and that one that uses something without a Vim equivalent here is not.
-def g:Test_LinkedEditing_JsRegexpToVim()
-  # The pattern of the TypeScript language server for JSX tag names
-  var ts = linkedediting.JsRegexpToVim('[a-zA-Z0-9:\-\._$]*')
-  assert_equal('\C\v[a-zA-Z0-9:\-._$]*', ts)
-  for [text, matches] in [['my-el', true], ['svg:rect', true],
-			  ['Foo.Bar', true], ['', true], ['div class', false],
-			  ['div>', false]]
-    assert_equal(matches, text->matchstr(ts) ==# text, text)
-  endfor
-
-  # The word pattern of VS Code for HTML
-  var html = linkedediting.JsRegexpToVim(
-    '(-?\d*\.\d\w*)|([^\`\~\!\@\$\^\&\*\(\)\=\+\[\{\]\}\\\|\;\:\''\"\,\.\<\>\/\s]+)')
-  for [text, matches] in [['my-element', true], ['h1', true], ['1.5', true],
-			  ['a b', false], ['a.b', false], ['a]', false],
-			  ['a\', false], ['a"', false]]
-    assert_equal(matches, text->matchstr(html) ==# text, text)
-  endfor
-
-  assert_equal('\C\va{-2,3}b{-1,}c{-}d{-0,1}',
-	       linkedediting.JsRegexpToVim('a{2,3}?b+?c*?d??'))
-  assert_equal('\C\va[{]b%(c|d)', linkedediting.JsRegexpToVim('a{b(?:c|d)'))
-  assert_equal('\C\v[0-9A-Za-z_\-]+', linkedediting.JsRegexpToVim('[\w-]+'))
-  assert_equal('\C\v[^\x41-\x43\x5b]', linkedediting.JsRegexpToVim('[^\x41-\x43[]'))
-  assert_equal('é', 'é'->matchstr(linkedediting.JsRegexpToVim('é')))
-  assert_equal('', 'A'->matchstr(linkedediting.JsRegexpToVim('a')))
-
-  for unsupported in ['(?<=<)\w+', '(?=a)', '\bdiv', '(\w)\1', '\p{L}+',
-		      '[]', '[^]', '[\d-z]', '[a', 'a\', '\x4']
-    assert_equal('', linkedediting.JsRegexpToVim(unsupported), unsupported)
-  endfor
-enddef
-
 # Returns the line, the column and the length of each linked editing range in
 # buffer "bnr".
 def LinkedRanges(bnr: number): list<list<number>>
