@@ -3134,6 +3134,13 @@ For cursor based jumps (for example |Ctrl-]|), the tag function uses
 example |:tag| or |:tjump| with a symbol name), it uses
 "workspace/symbol" and keeps only exact symbol-name matches.
 
+Vim also looks up a regexp with the tag function: for ":tag /pattern" and when
+completing a name with <Tab> after |:tag|, |:tselect| or |:tjump| (Vim 9.2.1116
+and later).  The tag function then keeps the symbols whose name the regexp
+matches, with 'ignorecase' applying as for any pattern match.  As the server
+can't take a regexp, it is asked for the word the regexp starts with.  The
+language server is asked on each completion, and Vim waits for its reply.
+
 Note that most of the language servers return only one symbol location even if
 the symbol is defined in multiple places in the code.
 
