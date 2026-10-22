@@ -961,9 +961,7 @@ export def BufferLoadedInWin(bnr: number)
     return
   endif
   # Refresh the displayed diags visuals
-  if opt.lspOptions.autoHighlightDiags
-    diag.DiagsRefresh(bnr)
-  endif
+  diag.DiagsRefresh(bnr)
 
   completion.BufferLoadedInWin(bnr)
 

@@ -1769,6 +1769,9 @@ aleSupport		|Boolean| option. If true, diagnostics will be sent to
 			Hints are sent as information, as Ale has no type for
 			them.  The hints with a tag (|lsp-diags-tags|) aren't
 			sent to Ale, unless "highlightDiagInline" is set to
+			false.  Ale has no notion of the tags, so this plugin
+			still draws the highlights for the tags of all the
+			diagnostics, unless "highlightDiagInline" is set to
 			false.
 
 						*lsp-opt-autoComplete*
@@ -2976,7 +2979,8 @@ text of such a diagnostic is also highlighted with the
 "LspDiagInlineUnnecessary" group, which dims it (linked to "Comment" by
 default), or with the "LspDiagInlineDeprecated" group, which strikes it
 through.  These highlights are combined with the one for the severity of the
-diagnostic.
+diagnostic.  With |lsp-opt-aleSupport|, these highlights are the only part
+of the diagnostics that this plugin draws.
 
 Language servers report much of the unnecessary and deprecated code as hints
 with a tag, often for every unused import or parameter.  As in other editors,
