@@ -140,10 +140,28 @@ def ProcessProgressNotif(lspserver: dict<any>, reply: dict<any>)
     endif
   endif
 
-  # Trigger statusline refresh
-  if exists('#User#LspProgressUpdate')
-    doautocmd <nomodeline> User LspProgressUpdate
+  QueueProgressUpdate()
+enddef
+
+# Delay of the "LspProgressUpdate" autocmd after a progress notification
+const PROGRESS_UPDATE_DELAY = 100
+var progressUpdateTimer = 0
+
+# Fire the "LspProgressUpdate" autocmd (usually a statusline refresh) at most
+# once every PROGRESS_UPDATE_DELAY ms: a server can send hundreds of progress
+# notifications while indexing.  The timer isn't restarted by later
+# notifications, so a steady stream still updates the statusline, and the
+# autocmd always runs after the last notification and sees its state.
+def QueueProgressUpdate()
+  if progressUpdateTimer != 0
+    return
   endif
+  progressUpdateTimer = timer_start(PROGRESS_UPDATE_DELAY, (_) => {
+    progressUpdateTimer = 0
+    if exists('#User#LspProgressUpdate')
+      doautocmd <nomodeline> User LspProgressUpdate
+    endif
+  })
 enddef
 
 const lsp_notif_handlers: dict<func> =

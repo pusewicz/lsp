@@ -1431,6 +1431,49 @@ def g:Test_ProcessNotif_Progress_PullsDiagnosticsOnEnd()
   endtry
 enddef
 
+# Test that a stream of progress notifications fires the LspProgressUpdate
+# autocmd once, after the last one, and that it sees the latest state.
+def g:Test_ProcessNotif_Progress_CoalescesUpdateAutocmd()
+  var lspserver = MakeTestLspServer([])
+  g:ProgressUpdates = []
+  augroup LspProgressTest
+    au!
+    au User LspProgressUpdate g:ProgressUpdates->add(
+          \ deepcopy(g:LspProgress->get('X-progress', {})))
+  augroup END
+
+  def Progress(value: dict<any>)
+    handlers.ProcessNotif(lspserver, {jsonrpc: '2.0', method: '$/progress',
+      params: {token: 'X-progress', value: value}})
+  enddef
+
+  try
+    Progress({kind: 'begin', title: 'Indexing'})
+    Progress({kind: 'report', message: '1/2', percentage: 50})
+    Progress({kind: 'report', message: '2/2', percentage: 100})
+    assert_equal([], g:ProgressUpdates)
+    g:WaitForAssert(() => assert_equal(1, g:ProgressUpdates->len()))
+    assert_equal('2/2', g:ProgressUpdates[0].message)
+    assert_equal(100, g:ProgressUpdates[0].percentage)
+
+    # A notification after the autocmd fired fires it again.
+    Progress({kind: 'end'})
+    g:WaitForAssert(() => assert_equal(2, g:ProgressUpdates->len()))
+    assert_equal({}, g:ProgressUpdates[1])
+    sleep 150m
+    assert_equal(2, g:ProgressUpdates->len())
+  finally
+    augroup LspProgressTest
+      au!
+    augroup END
+    augroup! LspProgressTest
+    unlet g:ProgressUpdates
+    if g:LspProgress->has_key('X-progress')
+      g:LspProgress->remove('X-progress')
+    endif
+  endtry
+enddef
+
 # Test that a document highlight request supersedes only the pending request
 # for the same buffer.
 def g:Test_DocHighlight_CancelsSupersededRequestForSameBuffer()
