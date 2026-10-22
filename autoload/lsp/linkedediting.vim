@@ -14,6 +14,7 @@ vim9script
 import './options.vim' as opt
 import './buffer.vim' as buf
 import './util.vim'
+import './jsregexp.vim'
 
 # The text property type and the highlight group of the linked ranges
 const PROP_TYPE = 'LspLinkedEditingRange'
@@ -40,167 +41,6 @@ export def InitOnce()
     prop_type_add(PROP_TYPE, {highlight: PROP_TYPE, start_incl: true,
 			      end_incl: true})
   endif
-enddef
-
-# Returns the character "c" for a Vim regexp collection ("[]").
-def CollectionChar(c: string): string
-  if c == '['
-    # Avoid "[:", "[=" and "[." in a collection
-    return '\x5b'
-  endif
-  return c =~ '^[]^\\-]$' ? $'\{c}' : c
-enddef
-
-# Returns the character "c" for a very magic Vim regexp.
-def LiteralChar(c: string): string
-  if c =~ '^\w$' || c->char2nr() > 127
-    return c
-  endif
-  return $'[{CollectionChar(c)}]'
-enddef
-
-# Returns the Vim regexp, for a very magic regexp or else in a collection
-# ("inClass"), of the JavaScript escape sequence at character "i" of "chars"
-# (the characters of a regexp), which is just after a backslash, and the
-# number of characters of the sequence.  Returns an empty regexp when the
-# sequence has no equivalent here.
-def EscapeToVim(chars: list<string>, i: number, inClass: bool): list<any>
-  var c = chars->get(i, '')
-  if c =~# '^[dws]$'
-    return [inClass ? {d: '0-9', w: '0-9A-Za-z_', s: '[:space:]'}[c] : $'\{c}',
-	    1]
-  elseif c =~# '^[DWS]$'
-    return [inClass ? '' : $'\{c}', 1]
-  elseif c =~# '^[tnr]$'
-    return [$'\{c}', 1]
-  elseif c == 'f' || c == 'v'
-    var hex = c == 'f' ? '\x0c' : '\x0b'
-    return [inClass ? hex : $'[{hex}]', 1]
-  elseif c == 'x' || c == 'u'
-    var len = c == 'x' ? 2 : 4
-    var hex = chars[i + 1 : i + len]->join('')
-    if hex !~ $'^\x\{{{len}}}$'
-      return ['', 0]
-    endif
-    return [inClass ? $'\{c}{hex}' : $'[\{c}{hex}]', len + 1]
-  elseif c =~ '^\w$' || c->empty()
-    # Word boundaries, backreferences, Unicode properties, ...
-    return ['', 0]
-  endif
-  return [inClass ? CollectionChar(c) : LiteralChar(c), 1]
-enddef
-
-# Returns the Vim regexp for a collection of the character or the escape
-# sequence at character "i" of "chars", which is in a JavaScript character
-# class, whether it is a single character, and the index of the character
-# after it.  Returns an empty regexp when it has no equivalent here.
-def ClassAtomToVim(chars: list<string>, i: number): list<any>
-  if chars[i] != '\'
-    return [CollectionChar(chars[i]), true, i + 1]
-  endif
-  var [esc, len] = EscapeToVim(chars, i + 1, true)
-  return [esc, chars->get(i + 1, '') !~# '^[dws]$', i + 1 + len]
-enddef
-
-# Returns the Vim regexp collection for the JavaScript character class that
-# starts at character "i" of "chars" (the characters of a regexp), and the
-# index of the character after the class.  Returns an empty collection when
-# the class has no equivalent here.
-def ClassToVim(chars: list<string>, i: number): list<any>
-  var j = i + 1
-  var negate = chars->get(j, '') == '^'
-  if negate
-    j += 1
-  endif
-  if chars->get(j, '') == ']'
-    # An empty class
-    return ['', 0]
-  endif
-
-  var items: list<string> = []
-  while j < chars->len() && chars[j] != ']'
-    var [item, isChar, next] = ClassAtomToVim(chars, j)
-    if item->empty()
-      return ['', 0]
-    endif
-    j = next
-    if chars->get(j, '') == '-' && chars->get(j + 1, ']') != ']'
-      # A range
-      var [endItem, endIsChar, endNext] = ClassAtomToVim(chars, j + 1)
-      if endItem->empty() || !isChar || !endIsChar
-	return ['', 0]
-      endif
-      item = $'{item}-{endItem}'
-      j = endNext
-    endif
-    items->add(item)
-  endwhile
-  if j >= chars->len()
-    return ['', 0]
-  endif
-
-  return [$'[{negate ? '^' : ''}{items->join('')}]', j + 1]
-enddef
-
-# Returns the Vim regexp for the JavaScript regular expression "pattern", or
-# an empty string when it uses something that has no equivalent here, e.g. a
-# lookaround, a backreference or a Unicode property.  The regexp matches case.
-export def JsRegexpToVim(pattern: string): string
-  var chars: list<string> = pattern->split('\zs')
-  var out: list<string> = []
-  var i = 0
-  while i < chars->len()
-    var c = chars[i]
-    if c == '\'
-      var [esc, len] = EscapeToVim(chars, i + 1, false)
-      if esc->empty()
-	return ''
-      endif
-      out->add(esc)
-      i += 1 + len
-    elseif c == '['
-      var [collection, next] = ClassToVim(chars, i)
-      if collection->empty()
-	return ''
-      endif
-      out->add(collection)
-      i = next
-    elseif c == '('
-      if chars->get(i + 1, '') != '?'
-	out->add('(')
-	i += 1
-      elseif chars->get(i + 2, '') == ':'
-	out->add('%(')
-	i += 3
-      else
-	return ''
-      endif
-    elseif c =~ '^[)|^$.]$'
-      out->add(c)
-      i += 1
-    elseif c =~ '^[*+?{]$'
-      var quantifier = chars[i : ]->join('')
-	->matchstr('^\%([*+?]\|{\d\+\%(,\d*\)\=}\)')
-      if quantifier->empty()
-	# A "{" that doesn't start a quantifier is itself
-	out->add(LiteralChar(c))
-	i += 1
-	continue
-      endif
-      i += quantifier->len()
-      if chars->get(i, '') == '?'
-	# A lazy quantifier
-	quantifier = {'*': '{-}', '+': '{-1,}', '?': '{-0,1}'}
-	  ->get(quantifier, $'{{-{quantifier[1 : ]}')
-	i += 1
-      endif
-      out->add(quantifier)
-    else
-      out->add(LiteralChar(c))
-      i += 1
-    endif
-  endwhile
-  return $'\C\v{out->join('')}'
 enddef
 
 # Forget the linked ranges in buffer "bnr".
@@ -256,14 +96,14 @@ export def RangesSet(bnr: number, ranges: list<dict<any>>, wordPattern: string)
     return
   endif
 
-  var regexp = wordPattern->empty() ? '' : JsRegexpToVim(wordPattern)
+  var regexp: any = wordPattern->empty() ? v:none : jsregexp.ToVim(wordPattern)
   for [lnum, col, length] in spans
     prop_add(lnum, col, {type: PROP_TYPE, length: length, bufnr: bnr})
   endfor
   linkedRanges[bnr] = {
     count: spans->len(),
     text: text,
-    regexp: regexp->empty() ? DEFAULT_WORD_REGEXP : regexp
+    regexp: regexp->type() == v:t_none ? DEFAULT_WORD_REGEXP : regexp
   }
 enddef
 
