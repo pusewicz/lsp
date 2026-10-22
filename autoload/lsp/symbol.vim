@@ -554,7 +554,7 @@ export def TagFunc(lspserver: dict<any>,
 
   for tagloc in taglocations
     var tagitem = {}
-    tagitem.name = pat
+    tagitem.name = tagloc->get('name', pat)
 
     var [uri, range] = util.LspLocationParse(tagloc)
     tagitem.filename = util.LspUriToFile(uri)

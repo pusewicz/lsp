@@ -3483,18 +3483,26 @@ enddef
 # Dicts in a format accepted by the 'tagfunc' option.
 # Returns null if the LSP server doesn't support getting the location of a
 # symbol definition or the symbol is not defined.
+#
+# "flags" contains "r" when "pat" is a regexp: for ":tag /Foo" and when
+# completing ":tag Fo<Tab>", where it is "^Fo".  The symbols whose name it
+# matches are returned, each with its own name.
 def TagFunc(lspserver: dict<any>, pat: string, flags: string, info: dict<any>): any
   var taglocations: list<dict<any>> = []
 
   # For explicit tag lookups (for example: :tag Foo), use workspace/symbol.
   # The definition request uses only the cursor position and may return the
   # wrong symbol for these lookups.
-  if pat != '' && pat != expand('<cword>')
+  var isRegexp = flags =~ 'r'
+  if isRegexp || (pat != '' && pat != expand('<cword>'))
     if !lspserver.isWorkspaceSymbolProvider
       return null
     endif
 
-    var wsReply = lspserver.rpc('workspace/symbol', {query: pat}, {handleError: false})
+    # The server is asked for the word a regexp starts with, as it matches
+    # the query itself, not as a regexp.
+    var query = isRegexp ? pat->matchstr('^\^\=\zs\w*') : pat
+    var wsReply = lspserver.rpc('workspace/symbol', {query: query}, {handleError: false})
     if !wsReply->has_key('result') || wsReply.result->empty()
       return null
     endif
@@ -3503,10 +3511,11 @@ def TagFunc(lspserver: dict<any>, pat: string, flags: string, info: dict<any>): 
       if !sym->has_key('location') || !sym.location->has_key('range')
 	continue
       endif
-      if sym->get('name', '') != pat
+      var name = sym->get('name', '')
+      if isRegexp ? name !~ pat : name != pat
 	continue
       endif
-      taglocations->add(sym.location)
+      taglocations->add(sym.location->extendnew({name: name}))
     endfor
 
     if taglocations->empty()
