@@ -1206,6 +1206,111 @@ def g:Test_SemanticTokens_StaleReplyIsCachedNotShown()
   :%bw!
 enddef
 
+# A delta reply only updates the lines that its edits change and the lines
+# that the buffer changes replaced, and leaves the text properties of the
+# other lines, which moved with their text, as they are.
+def g:Test_SemanticTokens_DeltaUpdatesChangedLines()
+  silent! edit XSemanticTokensDeltaLines.txt
+  setline(1, ['a1', 'a2', 'a3', 'a4', 'a5', 'a6'])
+  if prop_type_get('LspSemanticFunction')->empty()
+    semantichighlight.InitOnce()
+  endif
+  var lspserver = {
+    posEncoding: 32,
+    semanticTokensLegend: {tokenTypes: ['function', 'variable'],
+                           tokenModifiers: []},
+    isSemanticTokensProvider: true,
+  }
+  var bnr = bufnr()
+  var saveSemanticHighlight = opt.lspOptions.semanticHighlight
+  g:LspOptionsSet({semanticHighlight: true})
+  semantichighlight.BufferInit(lspserver, bnr)
+  try
+    var data = SemanticTokensData(range(6)->mapnew((_, l) => [l, 0, 2, 0]))
+    semantichighlight.UpdateTokens(lspserver, {resultId: '1', data: data}, {},
+				   bnr, b:changedtick)
+    assert_equal(range(1, 6)->mapnew((_, l) => [l, 1, 2, 'LspSemanticFunction']),
+		 SemanticProps())
+
+    # Removed without changing the text, so only a full update adds it back.
+    prop_remove({type: 'LspSemanticFunction', bufnr: bnr}, 6)
+
+    # An edit of the type of the token on line 2 updates lines 1 to 3.
+    var delta = {resultId: '2', edits: [{start: 8, deleteCount: 1, data: [1]}]}
+    semantichighlight.UpdateTokens(lspserver, delta, {}, bnr, b:changedtick)
+    var expected = [
+      [1, 1, 2, 'LspSemanticFunction'],
+      [2, 1, 2, 'LspSemanticVariable'],
+      [3, 1, 2, 'LspSemanticFunction'],
+      [4, 1, 2, 'LspSemanticFunction'],
+      [5, 1, 2, 'LspSemanticFunction'],
+    ]
+    assert_equal(expected, SemanticProps())
+
+    # setline() drops the text properties of line 4; a delta reply without
+    # edits adds them back.
+    setline(4, 'a4')
+    assert_equal(4, SemanticProps()->len())
+    delta = {resultId: '3', edits: []}
+    semantichighlight.UpdateTokens(lspserver, delta, {}, bnr, b:changedtick)
+    assert_equal(expected, SemanticProps())
+
+    # A line inserted above the tokens moves their text properties, and the
+    # edit of the line of the first token updates the first lines.
+    append(0, 'new')
+    delta = {resultId: '4', edits: [{start: 0, deleteCount: 1, data: [1]}]}
+    semantichighlight.UpdateTokens(lspserver, delta, {}, bnr, b:changedtick)
+    assert_equal(expected->mapnew((_, p) => [p[0] + 1] + p[1 : ]),
+		 SemanticProps())
+
+    # Two edits next to each other: tokens on lines 3 and 4 (the second and
+    # the third) both become variables.
+    delta = {resultId: '5', edits: [{start: 8, deleteCount: 1, data: [1]},
+				    {start: 13, deleteCount: 1, data: [1]}]}
+    semantichighlight.UpdateTokens(lspserver, delta, {}, bnr, b:changedtick)
+    assert_equal([
+      [2, 1, 2, 'LspSemanticFunction'],
+      [3, 1, 2, 'LspSemanticVariable'],
+      [4, 1, 2, 'LspSemanticVariable'],
+      [5, 1, 2, 'LspSemanticFunction'],
+      [6, 1, 2, 'LspSemanticFunction'],
+    ], SemanticProps())
+
+    # Deleting the last two tokens updates the lines from the token before
+    # them to the end of the buffer.
+    delta = {resultId: '6', edits: [{start: 20, deleteCount: 10, data: []}]}
+    semantichighlight.UpdateTokens(lspserver, delta, {}, bnr, b:changedtick)
+    expected = [
+      [2, 1, 2, 'LspSemanticFunction'],
+      [3, 1, 2, 'LspSemanticVariable'],
+      [4, 1, 2, 'LspSemanticVariable'],
+      [5, 1, 2, 'LspSemanticFunction'],
+    ]
+    assert_equal(expected, SemanticProps())
+
+    # Reloading the buffer removes the text properties without the listener
+    # knowing, so the next delta reply updates all the lines.
+    silent write
+    silent edit!
+    assert_equal([], SemanticProps())
+    delta = {resultId: '7', edits: []}
+    semantichighlight.UpdateTokens(lspserver, delta, {}, bnr, b:changedtick)
+    assert_equal(expected, SemanticProps())
+
+    # A full reply updates all the lines.
+    data = SemanticTokensData(range(1, 6)->mapnew((_, l) => [l, 0, 2, 1]))
+    semantichighlight.UpdateTokens(lspserver, {resultId: '8', data: data}, {},
+				   bnr, b:changedtick)
+    assert_equal(range(2, 7)->mapnew((_, l) => [l, 1, 2, 'LspSemanticVariable']),
+		 SemanticProps())
+  finally
+    semantichighlight.BufferDeInit(bnr)
+    g:LspOptionsSet({semanticHighlight: saveSemanticHighlight})
+    :%bw!
+    delete('XSemanticTokensDeltaLines.txt')
+  endtry
+enddef
+
 # Returns the LSP range from character "start" to "end" on the first line.
 def FirstLineRange(start: number, end: number): dict<any>
   return {start: {line: 0, character: start}, end: {line: 0, character: end}}
