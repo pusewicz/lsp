@@ -10801,6 +10801,46 @@ def g:Test_WatchedFiles_WatchFilesOption()
   endtry
 enddef
 
+# Test that a language server whose "watchFiles" feature is off is not
+# offered to have its files watched and that its watchers are ignored, while
+# another language server's are used.
+def g:Test_WatchedFiles_FeatureOff()
+  silent! edit XWatchedFilesFeatureOff.txt
+  var notifications1: list<dict<any>> = []
+  var responses1: list<dict<any>> = []
+  var server1 = MakeWatchingLspServer(notifications1, responses1)
+  server1.features = {watchFiles: false}
+  var notifications2: list<dict<any>> = []
+  var responses2: list<dict<any>> = []
+  var server2 = MakeWatchingLspServer(notifications2, responses2)
+  var watcher: dict<any> = {globPattern: '/XLspWatch/*'}
+  try
+    assert_false(capabilities.GetClientCaps(false).workspace
+		   ->has_key('didChangeWatchedFiles'))
+
+    for [lspserver, watching] in [[server1, false], [server2, true]]
+      lspserver.job = StartStubServerJob([])
+      lspserver.initServer(bufnr())
+      assert_equal(watching && executable('fswatch') == 1,
+		   !!lspserver.rpcInitializeRequest.capabilities.workspace
+		     ->has_key('didChangeWatchedFiles'))
+      job_stop(lspserver.job)
+    endfor
+
+    RegisterWatchers(server1, responses1, 'r', [watcher])
+    RegisterWatchers(server2, responses2, 'r', [watcher])
+    watchedfiles.VimChangedFile('/XLspWatch/x', watchedfiles.FILE_CHANGED)
+    g:WaitForAssert(() => assert_equal(1, notifications2->len()))
+    assert_equal([], notifications1)
+  finally
+    job_stop(server1->get('job', null_job))
+    job_stop(server2->get('job', null_job))
+    watchedfiles.RemoveServer(server1)
+    watchedfiles.RemoveServer(server2)
+    :%bw!
+  endtry
+enddef
+
 # Test that the changes to files that Vim writes are sent.
 def g:Test_WatchedFiles_VimWrites()
   var dir = 'XWatchedFilesVimWrites'
