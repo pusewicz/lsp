@@ -2767,6 +2767,13 @@ def g:Test_LspTagFunc()
   :tag yFuncTag
   assert_equal([5, 6], [line('.'), col('.')])
 
+  # Completing a tag name and a pattern based lookup use the symbol names.
+  assert_equal(['aFuncTag'], getcompletion('aFuncT', 'tag'))
+  assert_equal(['xFuncTag'], getcompletion('xFuncT', 'tag'))
+  cursor(11, 4)
+  :tag /^bFuncT
+  assert_equal([14, 6], [line('.'), col('.')])
+
   :set tagfunc&
   :%bw!
   delete('Xtagfunc.c')

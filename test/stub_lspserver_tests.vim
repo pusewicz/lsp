@@ -1388,6 +1388,68 @@ def g:Test_GotoDefinitionAndTagFunc_ErrorReplyFindsNothing()
   :%bw!
 enddef
 
+# Test that the tag function treats the pattern as a regexp with the "r" flag,
+# as Vim does for ":tag /Foo" and when completing ":tag Fo<Tab>": it asks the
+# server for the word the pattern starts with and returns the symbols whose
+# name the pattern matches, each with its own name.
+def g:Test_TagFunc_RegexpFlagMatchesSymbolNames()
+  var fname = 'XTagFuncRegexp.txt'
+  writefile(['MyFirst', 'MySecond', 'Other', 'XMyThing'], fname)
+  silent! execute 'edit' fname
+  var uri = util.LspBufnrToUri(bufnr())
+  var lspserver = MakeTestLspServer([])
+  lspserver.isWorkspaceSymbolProvider = true
+  var queries: list<string> = []
+  var symbols: list<dict<any>> = []
+  for lnum in range(1, 4)
+    var pos = {line: lnum - 1, character: 0}
+    symbols->add({
+      name: getline(lnum),
+      location: {uri: uri, range: {start: pos, end: pos}}
+    })
+  endfor
+  lspserver.rpc = (method: string, params: any, opts: dict<any> = {}) => {
+    queries->add($'{method} {params.query}')
+    return {result: symbols}
+  }
+  try
+    var tags = lspserver.tagFunc('^My', 'r', {})
+    assert_equal(['MyFirst', 'MySecond'], tags->mapnew((_, tag) => tag.name))
+    assert_equal(['/\%1l\%1c/', '/\%2l\%1c/'], tags->mapnew((_, tag) => tag.cmd))
+    assert_equal(['workspace/symbol My'], queries)
+
+    queries = []
+    assert_equal(['MySecond'],
+      lspserver.tagFunc('My.*d$', 'r', {})->mapnew((_, tag) => tag.name))
+    assert_equal(['workspace/symbol My'], queries)
+
+    # Not anchored, as for ":tag /Thing", which finds the symbol, too.
+    queries = []
+    assert_equal(['XMyThing'],
+      lspserver.tagFunc('Thing', 'r', {})->mapnew((_, tag) => tag.name))
+    assert_equal(['workspace/symbol Thing'], queries)
+
+    # The word under the cursor is looked up as a symbol name, not a definition.
+    queries = []
+    normal! gg0
+    assert_equal(['MyFirst'],
+      lspserver.tagFunc('MyFirst', 'r', {})->mapnew((_, tag) => tag.name))
+    assert_equal(['workspace/symbol MyFirst'], queries)
+
+    # Without the flag a name has to match completely.
+    queries = []
+    assert_equal(['MySecond'],
+      lspserver.tagFunc('MySecond', '', {})->mapnew((_, tag) => tag.name))
+    assert_equal(null, lspserver.tagFunc('My', '', {}))
+    assert_equal(['workspace/symbol MySecond', 'workspace/symbol My'], queries)
+
+    assert_equal(null, lspserver.tagFunc('^Nothing', 'r', {}))
+  finally
+    :%bw!
+    delete(fname)
+  endtry
+enddef
+
 # Test that a "$/cancelRequest" notification from the server is accepted
 # quietly.
 def g:Test_ProcessNotif_CancelRequestIsIgnored()
