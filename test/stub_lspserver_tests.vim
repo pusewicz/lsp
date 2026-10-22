@@ -6046,6 +6046,313 @@ def g:Test_TextdocDidChange_BufferWithoutLines()
   g:LspOptionsSet({incrementalSync: false})
 enddef
 
+# Returns the offset in a document with "lines" of the LSP position "pos",
+# in a document with one byte per character.
+def DocumentOffset(lines: list<string>, pos: dict<number>): number
+  var docOffset = pos.character
+  for i in range(pos.line)
+    docOffset += lines[i]->len() + 1
+  endfor
+  return docOffset
+enddef
+
+# Returns the document "text" after a language server made the
+# "contentChanges" of a "textDocument/didChange" notification to it.
+def ApplyContentChanges(text: string, contentChanges: list<dict<any>>): string
+  var doc = text
+  for change in contentChanges
+    if !change->has_key('range')
+      doc = change.text
+      continue
+    endif
+    var lines = doc->split("\n", true)
+    var startOffset = DocumentOffset(lines, change.range.start)
+    var endOffset = DocumentOffset(lines, change.range.end)
+    doc = doc->strpart(0, startOffset) .. change.text .. doc->strpart(endOffset)
+  endfor
+  return doc
+enddef
+
+# Returns the document that a language server has for buffer "bnr" when it is
+# in sync: the text that Vim writes.
+def DocumentText(bnr: number): string
+  if util.BufIsEmpty(bnr)
+    return ''
+  endif
+  return bnr->getbufline(1, '$')->join("\n") .. (util.BufWritesEol(bnr) ? "\n" : '')
+enddef
+
+# Returns a test language server like MakeTestLspServer() does, which
+# lsp.AddBufListener() can add a listener for.
+def MakeListenedLspServer(notifications: list<dict<any>>): dict<any>
+  var lspserver = MakeTestLspServer(notifications)
+  lspserver.isDiagnosticsProvider = false
+  return lspserver
+enddef
+
+# Test that sending the changes the listener passes to a server that wants
+# incremental changes keeps the document of each server equal to the buffer,
+# also when the lines are changed in other ways than typing, and with or
+# without a newline at the end of the document.
+def g:Test_TextdocDidChange_ListenerChangesKeepDocumentsInSync()
+  g:LspOptionsSet({incrementalSync: true})
+  var ops = [
+    "ox\<Esc>", "ddk", "Jx", "Oabc\<Esc>", "yyp", "3ddu", "u\<C-r>",
+    ":s/a/BB/g\<CR>", "ix\<CR>y\<Esc>", "A tail\<Esc>", "0D",
+    ":g/a/normal Ax\<CR>", "P", ":2,3d\<CR>", "Vjd", "ccnew\<Esc>", ">>",
+    ":%s/\\d\\+/N/\<CR>", ":%j\<CR>", "uu", ":m0\<CR>", "G$x", "ggdG",
+    "ione\<CR>two\<CR>three\<Esc>", "ddp", "dd", "p", ":%d\<CR>", "ix\<Esc>",
+    "yyPjdd", "G\<C-v>kkd"
+  ]
+  for eol in [true, false]
+    silent! edit XListenerSync.txt
+    setline(1, range(1, 12)->mapnew((_, n) => $'line {n} a'))
+    execute eol ? 'setlocal eol fixeol' : 'setlocal noeol nofixeol'
+    var bnr = bufnr()
+    var servers: list<dict<any>>
+    var notifications: list<list<dict<any>>>
+    var docs: list<string>
+    for i in range(2)
+      notifications->add([])
+      servers->add(MakeListenedLspServer(notifications[i]))
+      servers[i].textdocDidOpen(bnr, 'text')
+      lsp.AddBufListener(servers[i], bnr)
+      docs->add(DocumentText(bnr))
+    endfor
+    var ranges = 0
+    try
+      for op in ops
+        execute 'silent! normal' op
+        listener_flush(bnr)
+        for i in range(2)
+          for notification in notifications[i]
+            assert_equal('textDocument/didChange', notification.method)
+            var contentChanges = notification.params.contentChanges
+            ranges += contentChanges->copy()->filter((_, c) => c->has_key('range'))->len()
+            docs[i] = ApplyContentChanges(docs[i], contentChanges)
+          endfor
+          notifications[i]->filter((_, _) => false)
+          assert_equal(DocumentText(bnr), docs[i],
+		       $'eol: {eol}, server {i}, after {op->string()}')
+          assert_equal(util.BufIsEmpty(bnr) ? [] : bnr->getbufline(1, '$'),
+		       servers[i].cachedBufferContent[bnr])
+        endfor
+      endfor
+    finally
+      lsp.RemoveBufListener(bnr)
+      :%bw!
+    endtry
+    # Most changes are sent as the lines that changed, not the whole text
+    assert_true(ranges > ops->len(), $'eol: {eol}, changes with a range: {ranges}')
+  endfor
+  g:LspOptionsSet({incrementalSync: false})
+enddef
+
+# Test the changes sent for the usual edits: each replaces the lines that
+# changed, in the order they were made, and the changes made before the
+# listener is invoked are sent together.
+def g:Test_TextdocDidChange_ListenerChangesAreTheChangedLines()
+  g:LspOptionsSet({incrementalSync: true})
+  silent! edit XListenerLines.txt
+  setline(1, ['one', 'two', 'three'])
+  var notifications: list<dict<any>> = []
+  var lspserver = MakeListenedLspServer(notifications)
+  var bnr = bufnr()
+  lspserver.textdocDidOpen(bnr, 'text')
+  lsp.AddBufListener(lspserver, bnr)
+  try
+    setline(2, 'TWO')
+    listener_flush(bnr)
+    assert_equal(1, notifications->len())
+    assert_equal([{range: {start: {line: 1, character: 0},
+			   end: {line: 2, character: 0}},
+		   text: "TWO\n"}],
+		 notifications[0].params.contentChanges)
+
+# Changes to the same line are sent in the order they were made, each for
+# the document after the ones before it.
+notifications->remove(0, -1)
+setline(2, 'two')
+setline(2, 'dos')
+listener_flush(bnr)
+assert_equal(1, notifications->len())
+var lineRange = {start: {line: 1, character: 0}, end: {line: 2, character: 0}}
+assert_equal([{range: lineRange, text: "two\n"},
+		  {range: lineRange, text: "dos\n"}],
+		 notifications[0].params.contentChanges)
+
+notifications->remove(0, -1)
+append(1, ['uno', 'tres'])
+listener_flush(bnr)
+assert_equal([{range: {start: {line: 1, character: 0},
+			   end: {line: 1, character: 0}},
+		   text: "uno\ntres\n"}],
+		 notifications[0].params.contentChanges)
+
+notifications->remove(0, -1)
+deletebufline(bnr, 1)
+listener_flush(bnr)
+assert_equal([{range: {start: {line: 0, character: 0},
+			   end: {line: 1, character: 0}},
+		   text: ''}],
+		 notifications[0].params.contentChanges)
+assert_equal(['uno', 'tres', 'dos', 'three'],
+		 lspserver.cachedBufferContent[bnr])
+  finally
+    lsp.RemoveBufListener(bnr)
+    :%bw!
+    g:LspOptionsSet({incrementalSync: false})
+  endtry
+enddef
+
+# Test that the last line of a document without a newline at the end is
+# replaced relative to the end of the line before it.
+def g:Test_TextdocDidChange_ListenerChangesWithoutNewlineAtEnd()
+  g:LspOptionsSet({incrementalSync: true})
+  silent! edit XListenerNoEol.txt
+  setline(1, ['abc', 'def'])
+  setlocal noeol nofixeol
+  var notifications: list<dict<any>> = []
+  var lspserver = MakeListenedLspServer(notifications)
+  var bnr = bufnr()
+  lspserver.textdocDidOpen(bnr, 'text')
+  lsp.AddBufListener(lspserver, bnr)
+  try
+    setline(2, 'XYZ')
+    listener_flush(bnr)
+    assert_equal([{range: {start: {line: 0, character: 3},
+			   end: {line: 1, character: 3}},
+		   text: "\nXYZ"}],
+		 notifications[0].params.contentChanges)
+    assert_equal("abc\nXYZ",
+		 ApplyContentChanges("abc\ndef",
+				     notifications[0].params.contentChanges))
+
+    notifications->remove(0, -1)
+    setline(1, 'ABC')
+    listener_flush(bnr)
+    assert_equal([{range: {start: {line: 0, character: 0},
+			   end: {line: 1, character: 0}},
+		   text: "ABC\n"}],
+		 notifications[0].params.contentChanges)
+  finally
+    lsp.RemoveBufListener(bnr)
+    :%bw!
+    g:LspOptionsSet({incrementalSync: false})
+  endtry
+enddef
+
+# Test that the whole text is sent when the changes don't fit the document of
+# the server, which is then the one of the buffer again, and that a document
+# that is not the buffer's is corrected by comparing the two.
+def g:Test_TextdocDidChange_ListenerChangesThatDontFitSendTheWholeText()
+  g:LspOptionsSet({incrementalSync: true})
+  silent! edit XListenerMismatch.txt
+  setline(1, ['one', 'two', 'three'])
+  var notifications: list<dict<any>> = []
+  var lspserver = MakeListenedLspServer(notifications)
+  var bnr = bufnr()
+  lspserver.textdocDidOpen(bnr, 'text')
+  lsp.AddBufListener(lspserver, bnr)
+  try
+    # The server lost a line
+    lspserver.cachedBufferContent[bnr]->remove(0)
+    setline(3, 'THREE')
+    listener_flush(bnr)
+    assert_equal([{text: "one\ntwo\nTHREE\n"}],
+		 notifications[-1].params.contentChanges)
+    assert_equal(['one', 'two', 'THREE'], lspserver.cachedBufferContent[bnr])
+
+    # The server has other text on a line, which only a comparison finds out
+    notifications->remove(0, -1)
+    lspserver.cachedBufferContent[bnr][1] = 'WRONG'
+    setline(1, 'ONE')
+    listener_flush(bnr)
+    assert_equal(1, notifications->len())
+    lspserver.textdocDidChange(bnr)
+    assert_equal(2, notifications->len())
+    assert_equal({range: {start: {line: 1, character: 0},
+			   end: {line: 2, character: 0}},
+		  text: "two\n"},
+		 notifications[1].params.contentChanges[0])
+    assert_equal(['ONE', 'two', 'THREE'], lspserver.cachedBufferContent[bnr])
+
+    # From and to a document with no text
+    notifications->remove(0, -1)
+    :%d
+    listener_flush(bnr)
+    assert_equal([{text: ''}], notifications[-1].params.contentChanges)
+    setline(1, 'abc')
+    listener_flush(bnr)
+    assert_equal([{text: "abc\n"}], notifications[-1].params.contentChanges)
+    notifications->remove(0, -1)
+    execute "normal! ddp"
+    listener_flush(bnr)
+    var doc = "abc\n"
+    for notification in notifications
+      doc = ApplyContentChanges(doc, notification.params.contentChanges)
+    endfor
+    assert_equal(DocumentText(bnr), doc)
+  finally
+    lsp.RemoveBufListener(bnr)
+    :%bw!
+    g:LspOptionsSet({incrementalSync: false})
+  endtry
+enddef
+
+# Test that a change that Vim hasn't passed to the listener yet is made to
+# the document of the server before the buffer is compared with it, so that it
+# is neither sent twice nor lost.
+def g:Test_TextdocDidChange_PendingListenerChangesAreSentOnce()
+  g:LspOptionsSet({incrementalSync: true})
+  silent! edit XListenerPending.txt
+  setline(1, ['one', 'two', 'three'])
+  var notifications: list<dict<any>> = []
+  var lspserver = MakeListenedLspServer(notifications)
+  var bnr = bufnr()
+  lspserver.textdocDidOpen(bnr, 'text')
+  lsp.AddBufListener(lspserver, bnr)
+  try
+    setline(2, 'TWO')
+    lspserver.textdocDidChange(bnr)
+    assert_equal(1, notifications->len())
+    listener_flush(bnr)
+    assert_equal(1, notifications->len())
+    assert_equal(['one', 'TWO', 'three'], lspserver.cachedBufferContent[bnr])
+  finally
+    lsp.RemoveBufListener(bnr)
+    :%bw!
+    g:LspOptionsSet({incrementalSync: false})
+  endtry
+enddef
+
+# Test that a server gets the whole text on each change when the
+# 'incrementalSync' option is off, as before, with no text for the changes.
+def g:Test_TextdocDidChange_ListenerChangesNotUsedForFullSync()
+  g:LspOptionsSet({incrementalSync: false})
+  silent! edit XListenerFull.txt
+  setline(1, ['one', 'two'])
+  var notifications: list<dict<any>> = []
+  var lspserver = MakeTestLspServer(notifications)
+  var bnr = bufnr()
+  lspserver.textdocDidOpen(bnr, 'text')
+  assert_false(lspserver.usesIncrementalSync())
+  var changes: list<dict<any>>
+  var listenerId = listener_add((_, _, _, _, listenerChanges) => {
+    changes = listenerChanges->deepcopy()
+  }, bnr, {text: lspserver.usesIncrementalSync()})
+  try
+    setline(2, 'TWO')
+    listener_flush(bnr)
+    assert_false(changes[0]->has_key('text'))
+    lspserver.textdocDidChange(bnr, changes)
+    assert_equal([{text: "one\nTWO\n"}], notifications[-1].params.contentChanges)
+  finally
+    listener_remove(listenerId)
+    :%bw!
+  endtry
+enddef
+
 # Text edits are relative to the server's document, which ends with a newline
 # exactly when Vim writes one, so a range ending on the line after the last
 # one covers the whole last line.
