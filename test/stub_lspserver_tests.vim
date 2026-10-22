@@ -2609,6 +2609,8 @@ enddef
 # g:LspTestAleCalls, and send the diagnostics to them.  Returns the directory
 # to pass to RemoveAleStub().
 def InstallAleStub(): string
+  # The plugin draws the highlights for the diagnostic tags with ALE.
+  DiagInitOnce()
   var root = tempname()
   mkdir($'{root}/autoload/ale', 'p')
   var fname = $'{root}/autoload/ale/other_source.vim'
@@ -3253,6 +3255,8 @@ enddef
 
 # A hint displayed only by the highlight for its tag isn't sent to ALE.  The
 # diagnostics are sent again right away when "highlightDiagInline" changes.
+# ALE draws the other diagnostics, and the plugin draws only the highlights for
+# the tags, of every diagnostic.
 def g:Test_DiagTags_Ale()
   DiagInitOnce()
   var aleStub = InstallAleStub()
@@ -3261,19 +3265,44 @@ def g:Test_DiagTags_Ale()
   var bnr = bufnr()
   var clangd = MakeDiagServer('clangd')
   buf.BufLspServerSet(bnr, clangd)
+  g:LspOptionsSet({showDiagWithVirtualText: true})
   try
     diag.DiagNotification(clangd, util.LspBufnrToUri(bnr), ListedTestDiags(),
 			  'push')
     assert_equal({clangd: ['error', 'plain hint', 'tagged warning']},
 		 AleResultsByLinter())
+    assert_equal([[2, 5, 3], [5, 1, 3]],
+		 PropLocations('LspDiagInlineUnnecessary'))
+    assert_equal([[4, 1, 3]], PropLocations('LspDiagInlineDeprecated'))
+    assert_equal(3, PropCount('^LspDiag'))
+    assert_equal([], sign_getplaced(bnr, {group: 'LSPDiag'})[0].signs)
+
+    # The tag highlights go with the diagnostics.
+    diag.DiagNotification(clangd, util.LspBufnrToUri(bnr),
+			  ListedTestDiags()[: 1], 'push')
+    assert_equal([[2, 5, 3]], PropLocations('LspDiagInlineUnnecessary'))
+    assert_equal(1, PropCount('^LspDiag'))
+    diag.DiagNotification(clangd, util.LspBufnrToUri(bnr), ListedTestDiags(),
+			  'push')
+    assert_equal(3, PropCount('^LspDiag'))
 
     g:LspOptionsSet({highlightDiagInline: false})
     assert_equal({clangd: ['error', 'unused', 'plain hint', 'deprecated',
 			   'tagged warning']}, AleResultsByLinter())
+    assert_equal(0, PropCount('^LspDiag'))
     g:LspOptionsSet({highlightDiagInline: true})
     assert_equal({clangd: ['error', 'plain hint', 'tagged warning']},
 		 AleResultsByLinter())
+    assert_equal(3, PropCount('^LspDiag'))
+
+    # Without ALE, the plugin draws everything again.
+    g:LspOptionsSet({aleSupport: false, autoHighlightDiags: true})
+    assert_equal(3, sign_getplaced(bnr, {group: 'LSPDiag'})[0].signs->len())
+    g:LspOptionsSet({aleSupport: true, autoHighlightDiags: false})
+    assert_equal([], sign_getplaced(bnr, {group: 'LSPDiag'})[0].signs)
+    assert_equal(3, PropCount('^LspDiag'))
   finally
+    g:LspOptionsSet({showDiagWithVirtualText: false})
     g:LspOptionsSet({highlightDiagInline: true})
     diag.DiagRemoveFile(bnr)
     buf.BufLspServerRemove(bnr, clangd)
