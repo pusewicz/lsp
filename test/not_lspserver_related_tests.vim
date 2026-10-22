@@ -1494,11 +1494,24 @@ def ResolveCompletionStub(lspserver: dict<any>, requests: list<bool>,
   return {}
 enddef
 
+# Waits until the selected completion item was resolved: for the timer of
+# completion.ResolveCompletionLater() (50 ms), up to 2 seconds.  A fixed sleep
+# was sometimes too short on the CI runners.
+def WaitForCompletionResolveTimer()
+  sleep 60m
+  for _ in range(200)
+    if timer_info()->indexof((_, t) => t.time == 50 && !t.paused) == -1
+      return
+    endif
+    sleep 10m
+  endfor
+enddef
+
 # Selects items in the completion menu of "lspserver", a MakeTextEditServer()
 # with the items "fob" and "foo", for the word "fo" on the second line, with
 # the keys "selectKeys", and accepts the selected item.  <F2> in "selectKeys"
-# waits longer than the selection waits before resolving an item.  The resolve
-# requests are replied when "reply" is true, and are recorded in "requests".
+# waits until the selected item was resolved.  The resolve requests are
+# replied when "reply" is true, and are recorded in "requests".
 def AcceptCompletionItem(lspserver: dict<any>, requests: list<bool>,
 			 reply: bool, selectKeys: string)
   deletebufline(bufnr(), 1, '$')
@@ -1510,7 +1523,7 @@ def AcceptCompletionItem(lspserver: dict<any>, requests: list<bool>,
   completion.BufferInit(lspserver, bufnr(), &filetype)
   setlocal completeopt=menuone,noinsert,noselect
   inoremap <buffer> <F5> <ScriptCmd>completion.LspComplete(true)<CR>
-  inoremap <buffer> <F2> <ScriptCmd>sleep 150m<CR>
+  inoremap <buffer> <F2> <ScriptCmd>WaitForCompletionResolveTimer()<CR>
   test_override('char_avail', 1)
   try
     cursor(2, 2)
