@@ -146,12 +146,37 @@ def g:WaitForReplies()
   endfor
 enddef
 
-# Execute "keys" that start omni completion, e.g. "A\<C-X>\<C-O>".  They are
-# not handled as if typed: a typed key, like the <Esc> with which feedkeys()
-# ends Insert mode, makes 'omnifunc' stop waiting for the reply of the
+# Returns true while 'omnifunc' of the current buffer waits for the reply of a
 # language server.
+def OmniCompletePending(): bool
+  return buf.CurbufGetServers()
+    ->indexof((_, lspserver) => lspserver.omniCompletePending) != -1
+enddef
+
+# Execute "keys" that start omni completion, e.g. "A\<C-X>\<C-O>", then leave
+# Insert mode.  Input that is waiting makes 'omnifunc' stop waiting for the
+# reply of the language server: typed keys always, and since Vim 9.2.0741 the
+# others as well, like the keys after CTRL-X CTRL-O that feedkeys() with "x"
+# has waiting, and the <Esc> it ends Insert mode with.  So the keys after each
+# CTRL-X CTRL-O are typed by a timer once the completion is done and Vim
+# waits for a key.
 def g:FeedOmniCompleteKeys(keys: string)
-  feedkeys(keys, 'x')
+  var chunks = keys->split("\<C-X>\<C-O>\\zs")
+  chunks->add("\<Esc>")
+  var nextChunk = 1
+  var timer = timer_start(1, (_) => {
+    if nextChunk < chunks->len() && !OmniCompletePending()
+      feedkeys(chunks[nextChunk], 't')
+      nextChunk += 1
+    endif
+  }, {repeat: -1})
+  try
+    # "!" keeps Vim in Insert mode, for the timer to go on
+    feedkeys(chunks[0], 'x!')
+  finally
+    timer_stop(timer)
+  endtry
+  assert_true(nextChunk >= chunks->len() - 1, 'not all the keys were typed')
 enddef
 
 # Wait for the LSP server to load and process a file.  This works by waiting

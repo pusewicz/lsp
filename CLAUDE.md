@@ -15,7 +15,7 @@ Fork of yegappan/lsp for MacVim / Vim 9.2+ only: no compat code for older Vims o
 - Never run two test runs in the same `test/` directory at once: they share `results.txt`.
 - Async requests reply asynchronously in tests (#124): wait for effects with `g:WaitForAssert()` or `g:WaitForReplies()`.  Keys pending after a command in the same `feedkeys()`, `:normal` or mapping wait for its reply (#123), the next line of a test doesn't.
 - Prefer stub-server tests in `test/stub_lspserver_tests.vim` over real servers; `StartStubServerJob()` gives a real job channel.
-- CI's MacVim (Homebrew cask) is older than a local build, so typeahead and timing behaviour can differ.
+- CI installs the MacVim release named in `MACVIM_RELEASE` in the workflow, not Homebrew's cask, which lags behind; it can differ from a local build in typeahead and timing behaviour. `test/check_vim_version.sh` holds the oldest Vim patch the plugin needs: raise `MIN_VIM_PATCH` there, and the release, when the plugin starts to use a newer one.
 - The runner fails a file whose declared `Test_` functions don't all run (e.g. an `enddef` moved below the next test nests it), so read such a FAIL after a conflict fix as a broken merge.
 
 ## Gotchas
