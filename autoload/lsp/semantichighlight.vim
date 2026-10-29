@@ -413,16 +413,16 @@ enddef
 # text are not sent again in a delta reply.  The lines before "first" and
 # after "last" did not change; those after "last" moved by "added" lines.
 def BufferChanged(bnr: number, _start: number, _end: number, _added: number,
-		  changes: list<dict<number>>)
+		  changes: list<dict<any>>)
   var changed: list<number> = bnr->getbufvar('LspSemanticChangedLines', [])
   # Each change in the order they were made, as the lines of a change are
   # those of the buffer after the changes before it
   for change in changes
     # The lines from "lnum" to "end" - 1 are now from "lnum" to
     # "end" - 1 + "added"; a deletion joins its neighbours at "lnum".
-    var first = change.lnum
-    var last = max([first, change.end - 1 + change.added])
-    var totalAdded = change.added
+    var first: number = change.lnum
+    var last: number = max([first, change.end - 1 + change.added])
+    var totalAdded: number = change.added
     if !changed->empty()
       first = min([first, changed[0]])
       var prevLast = changed[1] >= change.end ? changed[1] + change.added
