@@ -10390,6 +10390,46 @@ def g:Test_FoldExpr_RequestsWhenServerReady()
   :%bw!
 enddef
 
+def g:Test_BufferListeners_ShareChangesWithText()
+  g:LspOptionsSet({semanticHighlight: true, incrementalSync: true})
+  silent! edit XListenersShared.txt
+  setline(1, ['a', 'b', 'c'])
+  :setlocal foldmethod=expr foldexpr=lsp#lsp#FoldExpr() foldlevel=0
+  var requests: list<dict<any>> = []
+  var lspserver = MakeCapsServer({textDocumentSync: {openClose: true, change: 2},
+				  foldingRangeProvider: true,
+				  semanticTokensProvider: {
+				    legend: {tokenTypes: ['variable'],
+					     tokenModifiers: []},
+				    full: true}}, [])
+  lspserver.rpc_a = (method, params, Cb, _: dict<any> = {}) => {
+    requests->add({method: method})
+    return requests->len()
+  }
+  var bnr = bufnr()
+  buf.BufLspServerSet(bnr, lspserver)
+  try
+    lsp.BufferInit(lspserver.id, bnr)
+    assert_equal(1, bnr->getbufvar('LspListenerIds')->len())
+    assert_notequal(0, bnr->getbufvar('LspSemanticListener'))
+    g:WaitForAssert(() => assert_notequal(0, b:LspFoldState.listenerId))
+    setline(2, 'changed')
+    var caught = ''
+    try
+      listener_flush(bnr)
+    catch
+      caught = v:exception
+    endtry
+    assert_equal('', caught)
+    assert_equal([2, 2, 0], bnr->getbufvar('LspSemanticChangedLines'))
+  finally
+    lsp.RemoveFile(bnr)
+    buf.BufLspServerRemove(bnr, lspserver)
+    :%bw!
+    g:LspOptionsSet({semanticHighlight: false, incrementalSync: false})
+  endtry
+enddef
+
 # Test that the folds of all the windows that show a buffer, also in another
 # tab page, are computed again with its new folding ranges.  A new fold that
 # has the cursor line of a window is open in it, and a closed fold that has it

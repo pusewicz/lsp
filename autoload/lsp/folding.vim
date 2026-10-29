@@ -141,7 +141,7 @@ enddef
 # Vim computes the folds of the changed lines again, and requests the folding
 # ranges again after a while.
 def BufferChanged(bnr: number, start: number, end: number, added: number,
-		  _: list<dict<number>>)
+		  _: list<dict<any>>)
   var state: dict<any> = getbufvar(bnr, 'LspFoldState', null_dict)
   # listener_remove() leaves an unbuffered listener to be called for the next
   # change.
