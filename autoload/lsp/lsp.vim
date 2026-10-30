@@ -622,20 +622,49 @@ def RemoveBufLocalAutocmds(bnr: number): void
   endtry
 enddef
 
+# Add language server "lspserver" to the ones that the listener of buffer
+# "bnr" passes the changes to, and add that listener when the buffer has none.
+# A buffer has one listener for all its servers, so that a change is passed
+# to them in one call: each server that wants incremental changes is sent the
+# lines that changed, and the change for the others is sent shortly after (see
+# lspserver.QueueDocChange()).  The listener gets the text of the changes
+# also for the latter, as 'incrementalSync' can be set later.
 export def AddBufListener(lspserver: dict<any>, bnr: number): void
-  # Add a per-buffer listener so incremental text changes are pushed to the
-  # server and pull diagnostics are debounced from edits.  A server that gets
-  # the changed lines is passed the text of each change, so that the buffer
-  # needn't be compared with the document of the server.
-  var listenerOpts: any = lspserver.usesIncrementalSync() ? {text: true} : false
-  var listenerId = listener_add((_bnr: number, start: number, end: number, added: number, changes: list<dict<any>>) => {
-    lspserver.textdocDidChange(bnr, changes)
+  var servers: list<dict<any>> = bnr->getbufvar('LspListenedServers', [])
+  if bnr->getbufvar('LspListenerIds', [])->empty()
+    servers = []
+    var listenerId = listener_add((_, _, _, _, changes: list<dict<any>>) => {
+      BufferChanged(servers, bnr, changes)
+    }, bnr, {text: true})
+    setbufvar(bnr, 'LspListenerIds', [listenerId])
+    setbufvar(bnr, 'LspListenedServers', servers)
+  else
+    # The changes not passed to the listener yet were made before the
+    # document was opened at "lspserver", so they are not for it.
+    bnr->listener_flush()
+  endif
+  # A server that is attached again replaces its old entry
+  servers->filter((_, lspsrv) => lspsrv.id != lspserver.id)
+  servers->add(lspserver)
+enddef
+
+# The listener of buffer "bnr": pass the "changes" to the language servers
+# "servers" that have the document of the buffer open.
+def BufferChanged(servers: list<dict<any>>, bnr: number,
+		  changes: list<dict<any>>): void
+  for lspserver in servers->copy()
+    if !lspserver.docVersions->has_key(bnr)
+      continue
+    endif
+    if lspserver.usesIncrementalSync()
+      lspserver.textdocDidChange(bnr, changes)
+    else
+      lspserver.queueDocChange(bnr)
+    endif
     if lspserver.isDiagnosticsProvider
       lspserver.queuePullDiagnostics(bnr)
     endif
-  }, bnr, listenerOpts)
-  var listenerIds = bnr->getbufvar('LspListenerIds', [])
-  setbufvar(bnr, 'LspListenerIds', listenerIds + [listenerId])
+  endfor
 enddef
 
 export def RemoveBufListener(bnr: number): void
@@ -643,6 +672,7 @@ export def RemoveBufListener(bnr: number): void
     listener_remove(listenerId)
   endfor
   setbufvar(bnr, 'LspListenerIds', [])
+  setbufvar(bnr, 'LspListenedServers', [])
 enddef
 
 # LspAttached autocmd per buffer state

@@ -593,6 +593,7 @@ def OpenTwoTestDocuments(messages: list<dict<any>>,
   setline(1, ['two'])
   var bufnrs = [bufnr('XPendingChanges1.txt'), bufnr('XPendingChanges2.txt')]
   var lspserver = MakeRecordingLspServer(messages)
+  lspserver.textDocumentSync = 1
   lspserver.isDocumentFormattingProvider = true
   lspserver.job = StartStubServerJob(results->mapnew((i, result) => ({
     jsonrpc: '2.0', id: lspserver.nextSyncRpcId + i, result: result})))
@@ -5733,7 +5734,7 @@ def g:Test_TextdocDidChange_IncrementalSync_MultiHunkDeleteAppliesBottomUp()
   assert_equal({line: 1, character: 0}, changes[1].range.end)
   assert_equal('', changes[1].text)
 
-  g:LspOptionsSet({incrementalSync: false})
+  g:LspOptionsSet({incrementalSync: true})
   :%bw!
 enddef
 
@@ -5764,7 +5765,7 @@ def g:Test_TextdocDidChange_IncrementalSync_MultiHunkInsertDescendingOrder()
   assert_equal({line: 0, character: 0}, changes[1].range.end)
   assert_equal("zero\n", changes[1].text)
 
-  g:LspOptionsSet({incrementalSync: false})
+  g:LspOptionsSet({incrementalSync: true})
   :%bw!
 enddef
 
@@ -5796,7 +5797,7 @@ def g:Test_TextdocDidChange_IncrementalSync_NoEolAnchorsToLastLineEnd()
   assert_equal({line: 2, character: 3}, changes[0].range.end)
   assert_equal('', changes[0].text)
 
-  g:LspOptionsSet({incrementalSync: false})
+  g:LspOptionsSet({incrementalSync: true})
   :%bw!
 enddef
 
@@ -5833,7 +5834,7 @@ def g:Test_TextdocDidChange_IncrementalSync_NoEolEmptyLastLine()
 		 text: "\n"}],
 	       notifications[-1].params.contentChanges)
 
-  g:LspOptionsSet({incrementalSync: false})
+  g:LspOptionsSet({incrementalSync: true})
   :%bw!
 enddef
 
@@ -5889,6 +5890,7 @@ enddef
 # server can make edits.  The text that is sent is the one that incremental
 # sync diffs against when it is turned on.
 def g:Test_TextdocDidChange_FullSync_SkipsUnchangedText()
+  g:LspOptionsSet({incrementalSync: false})
   silent! edit XFullSyncUnchanged.txt
   setline(1, ['abc'])
   var notifications: list<dict<any>> = []
@@ -5916,8 +5918,8 @@ def g:Test_TextdocDidChange_FullSync_SkipsUnchangedText()
 			   end: {line: 1, character: 0}},
 		   text: "def\n"}],
 		 notifications[-1].params.contentChanges)
-    g:LspOptionsSet({incrementalSync: false})
   endif
+  g:LspOptionsSet({incrementalSync: true})
   :%bw!
 enddef
 
@@ -5947,7 +5949,7 @@ def g:Test_TextdocDidChange_IncrementalSync_FixEolAppendLine()
 		 text: "\n"}],
 	       notifications[-1].params.contentChanges)
 
-  g:LspOptionsSet({incrementalSync: false})
+  g:LspOptionsSet({incrementalSync: true})
   :%bw!
 enddef
 
@@ -5987,7 +5989,7 @@ def g:Test_TextdocDidChange_IncrementalSync_WriteRuleToggleSendsFullText()
   assert_equal([{text: "abc\nghi"}], notifications[-1].params.contentChanges)
   assert_false(lspserver.cachedBufferEol[bnr])
 
-  g:LspOptionsSet({incrementalSync: false})
+  g:LspOptionsSet({incrementalSync: true})
   :%bw!
 enddef
 
@@ -6058,7 +6060,7 @@ def g:Test_EolOptionSet_SendsChange()
       :%bw!
     endtry
   endfor
-  g:LspOptionsSet({incrementalSync: false})
+  g:LspOptionsSet({incrementalSync: true})
 enddef
 
 # A buffer without lines has no text, but getbufline() returns one empty line
@@ -6136,7 +6138,7 @@ def g:Test_TextdocDidChange_BufferWithoutLines()
 
     :%bw!
   endfor
-  g:LspOptionsSet({incrementalSync: false})
+  g:LspOptionsSet({incrementalSync: true})
 enddef
 
 # Returns the offset in a document with "lines" of the LSP position "pos",
@@ -6238,7 +6240,7 @@ def g:Test_TextdocDidChange_ListenerChangesKeepDocumentsInSync()
     # Most changes are sent as the lines that changed, not the whole text
     assert_true(ranges > ops->len(), $'eol: {eol}, changes with a range: {ranges}')
   endfor
-  g:LspOptionsSet({incrementalSync: false})
+  g:LspOptionsSet({incrementalSync: true})
 enddef
 
 # Test the changes sent for the usual edits: each replaces the lines that
@@ -6294,7 +6296,7 @@ assert_equal(['uno', 'tres', 'dos', 'three'],
   finally
     lsp.RemoveBufListener(bnr)
     :%bw!
-    g:LspOptionsSet({incrementalSync: false})
+    g:LspOptionsSet({incrementalSync: true})
   endtry
 enddef
 
@@ -6331,7 +6333,7 @@ def g:Test_TextdocDidChange_ListenerChangesWithoutNewlineAtEnd()
   finally
     lsp.RemoveBufListener(bnr)
     :%bw!
-    g:LspOptionsSet({incrementalSync: false})
+    g:LspOptionsSet({incrementalSync: true})
   endtry
 enddef
 
@@ -6389,7 +6391,7 @@ def g:Test_TextdocDidChange_ListenerChangesThatDontFitSendTheWholeText()
   finally
     lsp.RemoveBufListener(bnr)
     :%bw!
-    g:LspOptionsSet({incrementalSync: false})
+    g:LspOptionsSet({incrementalSync: true})
   endtry
 enddef
 
@@ -6415,33 +6417,124 @@ def g:Test_TextdocDidChange_PendingListenerChangesAreSentOnce()
   finally
     lsp.RemoveBufListener(bnr)
     :%bw!
-    g:LspOptionsSet({incrementalSync: false})
+    g:LspOptionsSet({incrementalSync: true})
   endtry
 enddef
 
-# Test that a server gets the whole text on each change when the
-# 'incrementalSync' option is off, as before, with no text for the changes.
-def g:Test_TextdocDidChange_ListenerChangesNotUsedForFullSync()
+# Test that a server that gets the whole text on each change is sent the
+# changes made in a short time together, and at once before a request or
+# when they are flushed.
+def g:Test_TextdocDidChange_FullSyncChangesAreCoalesced()
   g:LspOptionsSet({incrementalSync: false})
   silent! edit XListenerFull.txt
   setline(1, ['one', 'two'])
   var notifications: list<dict<any>> = []
-  var lspserver = MakeTestLspServer(notifications)
+  var lspserver = MakeListenedLspServer(notifications)
   var bnr = bufnr()
   lspserver.textdocDidOpen(bnr, 'text')
   assert_false(lspserver.usesIncrementalSync())
-  var changes: list<dict<any>>
-  var listenerId = listener_add((_, _, _, _, listenerChanges) => {
-    changes = listenerChanges->deepcopy()
-  }, bnr, {text: lspserver.usesIncrementalSync()})
+  lsp.AddBufListener(lspserver, bnr)
   try
     setline(2, 'TWO')
     listener_flush(bnr)
-    assert_false(changes[0]->has_key('text'))
-    lspserver.textdocDidChange(bnr, changes)
-    assert_equal([{text: "one\nTWO\n"}], notifications[-1].params.contentChanges)
+    setline(1, 'ONE')
+    listener_flush(bnr)
+    assert_equal([], notifications)
+    g:WaitForAssert(() => assert_equal(1, notifications->len()))
+    assert_equal([{text: "ONE\nTWO\n"}], notifications[0].params.contentChanges)
+    assert_equal(-1, lspserver.docChangeTimer)
+
+    # Flushing sends the queued change, and the timer then sends nothing
+    setline(1, 'uno')
+    listener_flush(bnr)
+    assert_equal(1, notifications->len())
+    lspserver.flushDocChanges(bnr)
+    assert_equal(2, notifications->len())
+    assert_equal([{text: "uno\nTWO\n"}], notifications[1].params.contentChanges)
+    assert_equal(bnr->getbufvar('changedtick'),
+		 notifications[1].params.textDocument.version)
+    sleep 250m
+    assert_equal(2, notifications->len())
+
+    # A change not passed to the listener yet is sent too
+    setline(2, 'dos')
+    lspserver.flushDocChanges(bnr)
+    assert_equal([{text: "uno\ndos\n"}], notifications[-1].params.contentChanges)
+
+    # A queued change is dropped when the document is closed
+    setline(2, 'tres')
+    listener_flush(bnr)
+    var count = notifications->len()
+    lspserver.textdocDidClose(bnr)
+    sleep 250m
+    assert_equal(count, notifications->len())
   finally
-    listener_remove(listenerId)
+    lsp.RemoveBufListener(bnr)
+    :%bw!
+    g:LspOptionsSet({incrementalSync: true})
+  endtry
+enddef
+
+# Test that one listener passes the changes of a buffer to all its language
+# servers: the lines that changed to one that wants incremental changes and
+# the whole text to one that doesn't.  Turning 'incrementalSync' on while a
+# change for the whole text is queued keeps the document in sync.
+def g:Test_TextdocDidChange_OneListenerForAllServers()
+  g:LspOptionsSet({incrementalSync: true})
+  silent! edit XListenerServers.txt
+  setline(1, ['one', 'two', 'three'])
+  var bnr = bufnr()
+  var notifications: list<list<dict<any>>> = [[], []]
+  var servers = [MakeListenedLspServer(notifications[0]),
+		 MakeListenedLspServer(notifications[1])]
+  servers[1].textDocumentSync = 1
+  for lspserver in servers
+    lspserver.textdocDidOpen(bnr, 'text')
+    lsp.AddBufListener(lspserver, bnr)
+  endfor
+  # Adding a server again replaces it
+  lsp.AddBufListener(servers[0], bnr)
+  try
+    assert_equal(1, bnr->getbufvar('LspListenerIds')->len())
+    assert_equal(2, bnr->getbufvar('LspListenedServers')->len())
+    setline(2, 'TWO')
+    listener_flush(bnr)
+    assert_equal([{range: {start: {line: 1, character: 0},
+			   end: {line: 2, character: 0}},
+		   text: "TWO\n"}],
+		 notifications[0][0].params.contentChanges)
+    assert_equal(1, notifications[0]->len())
+    assert_equal([], notifications[1])
+    g:WaitForAssert(() => assert_equal(1, notifications[1]->len()))
+    assert_equal([{text: "one\nTWO\nthree\n"}],
+		 notifications[1][0].params.contentChanges)
+
+    # A server whose document is closed gets no changes
+    servers[1].textdocDidClose(bnr)
+    notifications[1]->filter((_, _) => false)
+    setline(1, 'ONE')
+    listener_flush(bnr)
+    sleep 250m
+    assert_equal([], notifications[1])
+
+    # The change queued before 'incrementalSync' is turned on
+    var doc = DocumentText(bnr)
+    notifications[0]->filter((_, _) => false)
+    g:LspOptionsSet({incrementalSync: false})
+    setline(3, 'THREE')
+    listener_flush(bnr)
+    assert_equal([], notifications[0])
+    g:LspOptionsSet({incrementalSync: true})
+    append(0, 'zero')
+    listener_flush(bnr)
+    for notification in notifications[0]
+      doc = ApplyContentChanges(doc, notification.params.contentChanges)
+    endfor
+    assert_equal(DocumentText(bnr), doc)
+    assert_equal(bnr->getbufline(1, '$'), servers[0].cachedBufferContent[bnr])
+  finally
+    lsp.RemoveBufListener(bnr)
+    assert_equal([], bnr->getbufvar('LspListenedServers'))
     :%bw!
   endtry
 enddef
@@ -7510,6 +7603,7 @@ def g:Test_ApplyWorkspaceEdit_ChecksDocumentVersion()
   var uri = util.LspFileToUri(fname)
   var notifications: list<dict<any>> = []
   var lspserver = MakeTestLspServer(notifications)
+  lspserver.textDocumentSync = 1
   silent! exe $'edit {fname}'
   setline(1, ['one'])
   var bnr = bufnr()
@@ -10601,7 +10695,7 @@ def g:Test_BufferListeners_ShareChangesWithText()
     lsp.RemoveFile(bnr)
     buf.BufLspServerRemove(bnr, lspserver)
     :%bw!
-    g:LspOptionsSet({semanticHighlight: false, incrementalSync: false})
+    g:LspOptionsSet({semanticHighlight: false, incrementalSync: true})
   endtry
 enddef
 
