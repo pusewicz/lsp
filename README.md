@@ -137,6 +137,7 @@ call LspOptionsSet(#{
         \   completionInPreview: v:false,
         \   closePreviewOnComplete: v:true,
         \   ignoreMissingServer: v:false,
+        \   incrementalSync: v:true,
         \   inlineCompletionDelay: 100,
         \   keepFocusInDiags: v:true,
         \   keepFocusInReferences: v:true,

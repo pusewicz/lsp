@@ -658,7 +658,7 @@ def StaleTextDocumentEdit(lspserver: dict<any>, change: dict<any>): string
   if !bnr->bufloaded() || !lspserver.docVersions->has_key(bnr)
     return ''
   endif
-  bnr->listener_flush()
+  lspserver.flushDocChanges(bnr)
   var current: number = lspserver.docVersions[bnr]
   if version == current
     return ''

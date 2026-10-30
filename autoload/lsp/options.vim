@@ -293,7 +293,7 @@ export var lspOptions: dict<any> = {
   documentationFormat: ['markdown', 'plaintext'],
 
   # incremental text document sync with the server
-  incrementalSync: false,
+  incrementalSync: incrementalSyncSupported,
 
   # Send the language servers the changes to the files that they watch, made
   # in Vim and by other programs.  Needs the fswatch program.
