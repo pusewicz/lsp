@@ -45,7 +45,7 @@ The following language server protocol (LSP) features are supported:
 * Formatting code
 * Folding code
 * Inlay hints
-* Document colors
+* Document colors, and writing a color another way (e.g. `#ff0000` as `rgb(255 0 0)`)
 * Inline completion (ghost text)
 * Linked editing (e.g. renaming an HTML tag also renames its closing tag)
 * Visually select symbol block/region
@@ -212,6 +212,7 @@ Command|Description
 `:LspOrganizeImports`|Request source.organizeImports code actions for the current file from all eligible language servers, then apply the selected action.
 `:LspCodeLens`|Display a list of code lens commands and apply a selected code lens command to the current file.
 `:LspCodeLensRun`|Run the code lens command for the current line, or a selected one when the line has several.
+`:LspColorPresentation`|Write the color under the cursor another way (e.g. `#ff0000` as `rgb(255 0 0)`), chosen from the ones the language server offers.
 `:LspDiag current`|Display the diagnostic message for the current line.
 `:LspDiag first`|Jump to the first diagnostic message for the current buffer.
 `:LspDiag here`|Jump to the next diagnostic message in the current line.
