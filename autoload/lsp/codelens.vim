@@ -15,7 +15,13 @@ export def InitOnce()
   autocmd_add([{group: 'LspCmds',
 		event: 'User',
 		pattern: 'LspOptionsChanged',
-		cmd: 'LspCodeLensOptionsChanged()'}])
+		cmd: 'LspCodeLensOptionsChanged()'},
+	       # The pattern of WinScrolled is a window ID, so this cannot be a
+	       # buffer-local autocmd.
+	       {group: 'LspCmds',
+		event: 'WinScrolled',
+		pattern: '*',
+		cmd: 'CodeLensWinScrolled()'}])
 enddef
 
 # Let the user select one of the resolved code lens items "codeLensItems" in
@@ -134,6 +140,41 @@ def CodeLensUpdate(bnr: number)
   lspserver.codeLensShow(bnr)
 enddef
 
+# Resolve the code lenses of buffer "bnr" that came into view.
+def CodeLensResolveVisible(bnr: number)
+  var lspserver: dict<any> = buf.BufLspServerGet(bnr, 'codeLens')
+  if !lspserver->empty()
+    lspserver.codeLensResolveVisible(bnr)
+  endif
+enddef
+
+# A window was scrolled or resized.  In Normal mode, resolve the code lenses
+# that it now shows.  In the other modes, the next CursorHold updates them.
+def CodeLensWinScrolled()
+  if !opt.lspOptions.showCodeLens || mode() != 'n'
+    return
+  endif
+
+  # v:event is empty when the autocmd was triggered with :doautocmd
+  var winids: list<number> = v:event->keys()
+    ->filter((_, k) => k != 'all')->mapnew((_, k) => k->str2nr())
+  if winids->empty()
+    winids = gettabinfo(tabpagenr())[0].windows
+  endif
+
+  var bufnrs: list<number> = []
+  for winid in winids
+    var bnr = winid->winbufnr()
+    if bnr > 0 && bufnrs->index(bnr) == -1
+	&& exists($'#LspCodeLens#CursorHold#<buffer={bnr}>')
+      bufnrs->add(bnr)
+    endif
+  endfor
+  for bnr in bufnrs
+    CodeLensResolveVisible(bnr)
+  endfor
+enddef
+
 # The text of buffer "bnr" changed, so its code lenses need to be updated.
 def CodeLensChanged(bnr: number)
   setbufvar(bnr, 'LspCodeLensNeedsUpdate', true)
@@ -187,6 +228,12 @@ export def BufferInit(lspserver: dict<any>, bnr: number)
 	      group: 'LspCodeLens',
 	      replace: true,
 	      cmd: $'CodeLensUpdate({bnr})'})
+  # Resolve the code lenses in view when a window shows the buffer.
+  acmds->add({bufnr: bnr,
+	      event: 'BufWinEnter',
+	      group: 'LspCodeLens',
+	      replace: true,
+	      cmd: $'CodeLensResolveVisible({bnr})'})
   # Reloading the buffer removes the code lenses.
   acmds->add({bufnr: bnr,
 	      event: 'BufReadPost',
@@ -206,6 +253,7 @@ enddef
 # "showCodeLens" option is reset.
 export def BufferDeInit(bnr: number)
   CodeLensClear(bnr)
+  setbufvar(bnr, 'LspCodeLensState', {})
   CodeLensChanged(bnr)
   if exists('#LspCodeLens')
     autocmd_delete([{bufnr: bnr, group: 'LspCodeLens'}])

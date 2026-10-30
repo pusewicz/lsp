@@ -2272,9 +2272,13 @@ showCodeLens		|Boolean| option.  Show the code lenses from the
 			requested again when the cursor has not moved for
 			|'updatetime'| milliseconds (|CursorHold|), and when
 			the language server asks for them to be refreshed,
-			right away in the buffers shown in a window.  Use
-			|:LspCodeLensRun| to run the code lens on the cursor
-			line.  By default this is set to false.
+			right away in the buffers shown in a window.  A code
+			lens that the server sends without its text, as
+			rust-analyzer does for its reference counts, is
+			resolved only once a window shows its line, so it
+			appears after the others.  Use |:LspCodeLensRun| to
+			run the code lens on the cursor line.  By default this
+			is set to false.
 
 						*lsp-opt-showDiagInBalloon*
 showDiagInBalloon	|Boolean| option.  When the mouse is over a range of
