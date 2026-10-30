@@ -3157,6 +3157,60 @@ def DocumentColorsUpdate(lspserver: dict<any>, bnr: number)
   })
 enddef
 
+# Returns true when the LSP position "pos" is in the LSP range "range": at or
+# after its start and before its end.
+def PosInRange(pos: dict<number>, range: dict<any>): bool
+  var p = [pos.line, pos.character]
+  var start = [range.start.line, range.start.character]
+  var end = [range.end.line, range.end.character]
+  return (p[0] > start[0] || (p[0] == start[0] && p[1] >= start[1]))
+      && (p[0] < end[0] || (p[0] == end[0] && p[1] < end[1]))
+enddef
+
+# Offer the ways that the language server can write the color under the
+# cursor, e.g. "#ff0000" or "rgb(255 0 0)" in CSS, in a menu, and write the
+# chosen one instead.  A number "choice" above 0 chooses without a menu.
+# Requests: "textDocument/documentColor", "textDocument/colorPresentation"
+# Params: DocumentColorParams, ColorPresentationParams
+def ColorPresentation(lspserver: dict<any>, choice: number)
+  if !lspserver.isColorProvider
+    util.ErrMsg('LSP server does not support colors')
+    return
+  endif
+
+  var bnr: number = bufnr()
+  var reqctx: dict<number> = util.RequestContextGet('cursor', bnr)
+  # The cursor in the server's position encoding, like the ranges it sends
+  var pos: dict<number> = lspserver.getPosition(false)
+  var textDocument = {uri: util.LspBufnrToUri(bnr)}
+  AsyncRpcInContext(lspserver, reqctx, 'colorPresentation documentColor',
+		    'textDocument/documentColor', {textDocument: textDocument},
+		    (_: dict<any>, result: any, _) => {
+    # Result: ColorInformation[]
+    var colors: list<dict<any>> = result->type() == v:t_list ? result : []
+    var idx: number = colors->indexof((_, c) => PosInRange(pos, c.range))
+    if idx < 0
+      util.WarnMsg('No color at the cursor')
+      return
+    endif
+
+    var colorInfo: dict<any> = colors[idx]
+    var params = {textDocument: textDocument, color: colorInfo.color,
+		  range: colorInfo.range}
+    AsyncRpcInContext(lspserver, reqctx, 'textDocument/colorPresentation',
+		      'textDocument/colorPresentation', params,
+		      (_: dict<any>, presentations: any, _) => {
+      # Result: ColorPresentation[]
+      if presentations->type() != v:t_list || presentations->empty()
+	util.WarnMsg('No other way to write the color')
+	return
+      endif
+      documentcolor.PresentationChoose(lspserver, bnr, colorInfo.range,
+				       presentations, choice)
+    }, {beforePendingKeys: true})
+  }, {beforePendingKeys: true})
+enddef
+
 # Display the links in buffer "bnr" in a location or quickfix list.
 def ShowDocumentLinks(lspserver: dict<any>, bnr: number)
   if !lspserver.isDocumentLinkProvider
@@ -3839,6 +3893,7 @@ export def NewLspServer(serverParams: dict<any>): dict<any>
     resolveCodeAction: function(ResolveCodeAction, [lspserver]),
     resolveCodeLens: function(ResolveCodeLens, [lspserver]),
     documentColorsUpdate: function(DocumentColorsUpdate, [lspserver]),
+    colorPresentation: function(ColorPresentation, [lspserver]),
     showDocumentLinks: function(ShowDocumentLinks, [lspserver]),
     openDocumentLink: function(OpenDocumentLink, [lspserver]),
     resolveDocumentLink: function(ResolveDocumentLink, [lspserver]),

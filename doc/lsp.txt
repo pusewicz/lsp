@@ -570,6 +570,9 @@ when no keys are pending.
 :LspCodeLens		Display all the code lens commands available for the
 			current file and apply the selected command.
 :LspCodeLensRun		Run the code lens command for the current line.
+:LspColorPresentation [N]
+			Write the color under the cursor another way, chosen
+			from the ones the language server offers.
 :LspDiag current	Display the diagnostic message for the current line.
 :LspDiag first		Jump to the first diagnostic message for the current
 			buffer.
@@ -1307,6 +1310,17 @@ Commands to modify, rename, or format your code using the language server.
 
 			    nnoremap <buffer> <Leader>l <Cmd>LspCodeLensRun<CR>
 <
+
+						*:LspColorPresentation*
+:LspColorPresentation [N]
+			Offers the ways that the language server can write
+			the color under the cursor in a menu, and writes the
+			color the chosen way instead, for example "#ff0000",
+			"rgb(255 0 0)" or "hsl(0 100% 50%)" in a CSS file.
+			With a number [N], the [N]th way is chosen without a
+			menu.  Uses the "textDocument/documentColor" and
+			"textDocument/colorPresentation" requests, also when
+			|lsp-opt-showDocumentColors| is not set.
 
 							*:LspFold*
 :LspFold		Create folds for the current buffer.
@@ -4212,7 +4226,8 @@ diagnostics			Used to disable diagnostics for a single
 				from a specific server.
 						*lsp-features-documentColor*
 documentColor			Used to show the colors in a buffer when
-				|lsp-opt-showDocumentColors| is set.
+				|lsp-opt-showDocumentColors| is set, and by
+				the |:LspColorPresentation| command.
 					*lsp-features-documentFormatting*
 documentFormatting		Used by the |:LspFormat| command, and
 				'formatexpr'

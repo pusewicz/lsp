@@ -8279,6 +8279,68 @@ def g:Test_LspCodeLensRun()
   endtry
 enddef
 
+# Test that ":LspColorPresentation" asks for the ways to write the color under
+# the cursor and writes the chosen one, with its additional edits, and that
+# without a color at the cursor it says so.
+def g:Test_LspColorPresentation()
+  silent! edit XColorPresentation.css
+  setline(1, ['a { color: #ff0000; }', 'b {}'])
+  var colorRange = {start: {line: 0, character: 11},
+		    end: {line: 0, character: 18}}
+  var red = {red: 1.0, green: 0.0, blue: 0.0, alpha: 1.0}
+  var presentations = [
+    {label: '#ff0000'},
+    {label: 'rgb(255 0 0)',
+     textEdit: {range: colorRange, newText: 'rgb(255 0 0)'},
+     additionalTextEdits: [MakeTextEdit(1, 3, 1, 3, '/* red */')]}
+  ]
+  var requests: list<dict<any>> = []
+  var lspserver = MakeTestLspServer([])
+  lspserver.running = true
+  lspserver.ready = true
+  lspserver.isColorProvider = true
+  lspserver.rpc_a = (method: string, params: any, Cbfunc: func, _ = {}) => {
+    requests->add({method: method, params: params})
+    var result: any = null
+    if method == 'textDocument/documentColor'
+      result = [{range: colorRange, color: red}]
+    elseif method == 'textDocument/colorPresentation'
+      result = presentations
+    endif
+    Cbfunc(lspserver, result, {})
+    return 1
+  }
+  buf.BufLspServerSet(bufnr(), lspserver)
+  try
+    # Without a textEdit, the label replaces the color.
+    cursor(1, 13)
+    :LspColorPresentation 1
+    assert_equal(['textDocument/documentColor',
+		  'textDocument/colorPresentation'],
+		 requests->mapnew((_, r) => r.method))
+    assert_equal({textDocument: {uri: util.LspBufnrToUri(bufnr())},
+		  color: red, range: colorRange}, requests[1].params)
+    assert_equal('a { color: #ff0000; }', getline(1))
+
+    # Chosen in the menu, with its additional edit
+    requests = []
+    feedkeys(":LspColorPresentation\<CR>2\<CR>", 'xt')
+    assert_equal(['a { color: rgb(255 0 0); }', 'b {/* red */}'],
+		 getline(1, '$'))
+
+    # The cursor before the color
+    requests = []
+    cursor(1, 3)
+    :LspColorPresentation 1
+    assert_equal(['textDocument/documentColor'],
+		 requests->mapnew((_, r) => r.method))
+    assert_equal('Warn: No color at the cursor', LastMessage())
+  finally
+    buf.BufLspServerRemove(bufnr(), lspserver)
+    :%bw!
+  endtry
+enddef
+
 # Returns a stub language server that replies to "textDocument/documentLink"
 # with "links" and to "documentLink/resolve" with "resolved".  The server is a
 # resolve provider only if "resolved" is not empty.  The requests sent to the
