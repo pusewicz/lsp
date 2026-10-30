@@ -3030,9 +3030,10 @@ def g:Test_ReloadBufferWithDiags()
   signs = sign_getplaced('%', {group: '*'})[0].signs
   assert_equal(5, signs[0].lnum)
   :edit!
-  sleep 200m
-  signs = sign_getplaced('%', {group: '*'})[0].signs
-  assert_equal(3, signs[0].lnum)
+  # The diagnostics come back with the server's reply to the reload.
+  var SignLnums = () => sign_getplaced('%', {group: '*'})[0].signs
+    ->mapnew((_, sign) => sign.lnum)
+  g:WaitForAssert(() => assert_equal([3], SignLnums()))
 
   :%bw!
   delete('Xreloadbuffer.c')
