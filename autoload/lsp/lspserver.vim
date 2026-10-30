@@ -37,6 +37,13 @@ import './buffer.vim' as buf
 import './watchedfiles.vim'
 
 const DIAG_PULL_DEBOUNCE_MSEC = 200
+
+# The time in milliseconds that the changes to a document are collected for
+# before they are sent to a server that gets the whole text on each change:
+# while typing, that sends the text once for several keys.  The changes are
+# sent at once before a request (see SendPendingChanges()).
+const FULL_SYNC_DELAY_MSEC = 100
+
 const LSP_ERROR_SERVER_CANCELLED = -32802
 
 # LSP server standard output handler
@@ -73,6 +80,7 @@ def Exit_cb(lspserver: dict<any>, job: job, status: number): void
     lspserver.diagnosticPullTimer = -1
   endif
   ClearMap(lspserver.pendingPullBufnrs)
+  StopDocChangeTimer(lspserver)
   ClearMap(lspserver.pendingRequests)
   ClearMap(lspserver.awaitedReplies)
   lspserver.running = false
@@ -118,6 +126,7 @@ def StartServer(lspserver: dict<any>, bnr: number): number
   ClearMap(lspserver.workDoneProgressTokens)
   ClearMap(lspserver.pendingPullBufnrs)
   lspserver.diagnosticPullTimer = -1
+  StopDocChangeTimer(lspserver)
   ClearMap(lspserver.pendingRequests)
   ClearMap(lspserver.awaitedReplies)
   ClearMap(lspserver.supersedableRequests)
@@ -332,6 +341,7 @@ def StopServer(lspserver: dict<any>): number
     lspserver.diagnosticPullTimer = -1
   endif
   ClearMap(lspserver.pendingPullBufnrs)
+  StopDocChangeTimer(lspserver)
   ClearMap(lspserver.pendingRequests)
   ClearMap(lspserver.awaitedReplies)
   lspserver.running = false
@@ -543,7 +553,8 @@ enddef
 # or its reply can depend on other documents (see CROSS_DOCUMENT_REQUESTS):
 # requests are made on most keystrokes and cursor moves, so they must not
 # take time proportional to the number of open documents.
-def SendPendingChanges(docBufnrs: dict<number>, method: string, params: any)
+def SendPendingChanges(lspserver: dict<any>, method: string, params: any)
+  var docBufnrs: dict<number> = lspserver.docBufnrs
   var uri = RequestDocumentUri(params)
   var bufnrs: list<number>
   if docBufnrs->has_key(uri) && !CROSS_DOCUMENT_REQUESTS->has_key(method)
@@ -553,7 +564,7 @@ def SendPendingChanges(docBufnrs: dict<number>, method: string, params: any)
   endif
   for bnr in bufnrs
     if bnr->bufloaded()
-      bnr->listener_flush()
+      FlushDocChanges(lspserver, bnr)
     endif
   endfor
 enddef
@@ -589,7 +600,7 @@ def Rpc(lspserver: dict<any>, method: string, params: any,
     return {}
   endif
 
-  SendPendingChanges(lspserver.docBufnrs, method, params)
+  SendPendingChanges(lspserver, method, params)
 
   var id = lspserver.nextSyncRpcId
   lspserver.nextSyncRpcId += 1
@@ -852,7 +863,7 @@ def AsyncRpc(lspserver: dict<any>, method: string, params: any, Cbfunc: func,
     return -1
   endif
 
-  SendPendingChanges(lspserver.docBufnrs, method, params)
+  SendPendingChanges(lspserver, method, params)
 
   # Do the asynchronous RPC call
   var Fn = function('AsyncRpcCb', [lspserver, method, params, Cbfunc, opts,
@@ -1320,6 +1331,9 @@ def TextdocDidClose(lspserver: dict<any>, bnr: number): void
   if lspserver.pendingPullBufnrs->has_key(bnr)
     lspserver.pendingPullBufnrs->remove(bnr)
   endif
+  if lspserver.pendingDocChanges->has_key(bnr)
+    lspserver.pendingDocChanges->remove(bnr)
+  endif
 enddef
 
 def RestartDiagnosticPullTimer(lspserver: dict<any>)
@@ -1475,6 +1489,14 @@ def TextdocDidChange(lspserver: dict<any>, bnr: number,
     return
   endif
 
+  # A change queued for a full sync is sent now.  The changes the listener
+  # passes along don't fit the document of the server then: it is older than
+  # the one they were made to, when 'incrementalSync' was set since.
+  var wasQueued = lspserver.pendingDocChanges->has_key(bnr)
+  if wasQueued
+    lspserver.pendingDocChanges->remove(bnr)
+  endif
+
   var incremental = UsesIncrementalSync(lspserver)
   if incremental && changes->empty()
     # The changes that the listener has yet to get are made to the document
@@ -1490,7 +1512,7 @@ def TextdocDidChange(lspserver: dict<any>, bnr: number,
   var isCached = cachedBufferContent->has_key(bnr)
     && cachedBufferEol->get(bnr, !hasEol) == hasEol
 
-  if incremental && isCached && !changes->empty()
+  if incremental && isCached && !changes->empty() && !wasQueued
     var listenerChanges = ListenerChanges(lspserver, bnr,
 					  cachedBufferContent[bnr], changes,
 					  hasEol)
@@ -1536,6 +1558,54 @@ def NextDocVersion(lspserver: dict<any>, bnr: number): number
 			 lspserver.docVersions->get(bnr, 0) + 1]->max()
   lspserver.docVersions[bnr] = version
   return version
+enddef
+
+# Queue a change to the document of buffer "bnr" for a server that gets the
+# whole text on each change: it is sent when FULL_SYNC_DELAY_MSEC have passed
+# since the first change queued, or before that by FlushDocChanges().
+def QueueDocChange(lspserver: dict<any>, bnr: number): void
+  lspserver.pendingDocChanges[bnr] = true
+  if lspserver.docChangeTimer == -1
+    lspserver.docChangeTimer = timer_start(FULL_SYNC_DELAY_MSEC,
+      function(SendQueuedDocChanges, [lspserver]))
+  endif
+enddef
+
+# Send the changes queued by QueueDocChange().
+def SendQueuedDocChanges(lspserver: dict<any>, _timerid: number): void
+  lspserver.docChangeTimer = -1
+  for key in lspserver.pendingDocChanges->keys()
+    var bnr = key->str2nr()
+    if !lspserver.pendingDocChanges->has_key(bnr)
+      # Sent by an earlier change in this loop
+      continue
+    endif
+    if !bnr->bufloaded() || !lspserver.docVersions->has_key(bnr)
+      lspserver.pendingDocChanges->remove(bnr)
+      continue
+    endif
+    TextdocDidChange(lspserver, bnr)
+  endfor
+enddef
+
+# Stop the timer of the changes queued by QueueDocChange(), and drop them.
+def StopDocChangeTimer(lspserver: dict<any>): void
+  if lspserver.docChangeTimer != -1
+    timer_stop(lspserver.docChangeTimer)
+    lspserver.docChangeTimer = -1
+  endif
+  ClearMap(lspserver.pendingDocChanges)
+enddef
+
+# Send the changes to the document of buffer "bnr" that the server doesn't
+# have yet: the ones that Vim hasn't passed to the listener of the buffer, and
+# the ones queued by QueueDocChange().  Then the version of the document is
+# that of the text of the buffer.
+def FlushDocChanges(lspserver: dict<any>, bnr: number): void
+  bnr->listener_flush()
+  if lspserver.pendingDocChanges->has_key(bnr)
+    TextdocDidChange(lspserver, bnr)
+  endif
 enddef
 
 # Send a change notification for buffer "bnr" when setting 'endofline',
@@ -1645,7 +1715,7 @@ enddef
 def GetInlineCompletion(lspserver: dict<any>, triggerKind: number): void
   var bnr = bufnr()
   # The version of the document includes the changes sent before the request
-  bnr->listener_flush()
+  FlushDocChanges(lspserver, bnr)
   # interface InlineCompletionParams
   #   interface TextDocumentPositionParams
   #   interface InlineCompletionContext
@@ -2027,8 +2097,9 @@ def DidSaveFile(lspserver: dict<any>, bnr: number): void
 
   # The server must get the changes made just before the write (e.g. by a
   # BufWritePre autocmd) before the notification.  Vim passes them to the
-  # listeners only before redrawing.
-  bnr->listener_flush()
+  # listeners only before redrawing, and the changes for a full sync are sent
+  # a little later.
+  FlushDocChanges(lspserver, bnr)
 
   # Notification: 'textDocument/didSave'
   # Params: DidSaveTextDocumentParams
@@ -3803,6 +3874,8 @@ export def NewLspServer(serverParams: dict<any>): dict<any>
   var supersedableRequests: dict<dict<number>> = {}
   var diagnosticResultIds: dict<string> = {}
   var pendingPullBufnrs: dict<bool> = {}
+  # The buffers with a change that QueueDocChange() queued
+  var pendingDocChanges: dict<bool> = {}
   var workDoneProgressTokens: dict<bool> = {}
   var cachedBufferContent: dict<list<string>> = {}
   var cachedBufferEol: dict<bool> = {}
@@ -3848,6 +3921,8 @@ export def NewLspServer(serverParams: dict<any>): dict<any>
     diagnosticResultIds: diagnosticResultIds,
     diagnosticPullTimer: -1,
     pendingPullBufnrs: pendingPullBufnrs,
+    pendingDocChanges: pendingDocChanges,
+    docChangeTimer: -1,
     supportsDidOpenClose: false,
     supportsDidSave: false,
     supportsWillSave: false,
@@ -3909,6 +3984,8 @@ export def NewLspServer(serverParams: dict<any>): dict<any>
     textdocDidChange: function(TextdocDidChange, [lspserver]),
     usesIncrementalSync: function(UsesIncrementalSync, [lspserver]),
     textdocEolChanged: function(TextdocEolChanged, [lspserver]),
+    queueDocChange: function(QueueDocChange, [lspserver]),
+    flushDocChanges: function(FlushDocChanges, [lspserver]),
     sendInitializedNotif: function(SendInitializedNotif, [lspserver]),
     sendWorkspaceConfig: function(SendWorkspaceConfig, [lspserver]),
     getCompletion: function(GetCompletion, [lspserver]),
