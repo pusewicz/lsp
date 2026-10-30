@@ -3766,8 +3766,11 @@ The returned dict has the following methods:
 
 	getPosition(find_ident: bool): dict<number>
 		Return the current cursor position as a LSP position.
-		find_ident will search for a identifier in front of the
-		cursor, just like CTRL-] and c_CTRL-R_CTRL-W does.
+		With find_ident, a cursor on blanks moves to the next
+		symbol after them, and a cursor on an identifier
+		('iskeyword' characters) to its start.  On any other
+		character, such as the "+" of an overloaded C++ operator,
+		the position is the cursor's.
 
 		LSP line and column numbers start from zero, whereas Vim line
 		and column numbers start from one. The LSP column number is
