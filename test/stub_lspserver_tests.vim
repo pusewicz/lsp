@@ -6642,6 +6642,41 @@ def g:Test_ApplyTextEdits_InsertAfterLastLine()
   :%bw!
 enddef
 
+# Text edits change only the lines that differ (#147): the text properties of
+# the lines between the edits stay, and b:changedtick goes up once per
+# changed line, not once per line from the first edit to the last.
+def g:Test_ApplyTextEdits_ChangesOnlyEditedLines()
+  silent! edit XApplyTextEditsMinimal.txt
+  var bnr = bufnr()
+  setline(1, range(1, 1000)->mapnew((_, n) => $'line{n}'))
+  prop_type_add('XMinimalEdit', {bufnr: bnr})
+  for lnum in [2, 500, 999]
+    prop_add(lnum, 1, {type: 'XMinimalEdit', length: 4, bufnr: bnr})
+  endfor
+  var tick = b:changedtick
+  textedit.ApplyTextEdits(bnr, [MakeTextEdit(0, 0, 0, 5, 'first'),
+				MakeTextEdit(499, 4, 499, 4, 'X'),
+				MakeTextEdit(998, 0, 999, 0, ''),
+				MakeTextEdit(999, 0, 999, 0, "a\nb\n")])
+  assert_equal('first', getline(1))
+  assert_equal('lineX500', getline(500))
+  assert_equal(['a', 'b', 'line1000'], getline(999, '$'))
+  assert_true(b:changedtick - tick < 10, $'changedtick + {b:changedtick - tick}')
+  # The properties of the unchanged line 2 stay, those of the changed lines
+  # 500 and 999 go.
+  assert_equal(1, prop_list(2, {bufnr: bnr})->len())
+  assert_equal([], prop_list(500, {bufnr: bnr}))
+
+  # Lines with a NUL are compared too.
+  :%d
+  setline(1, ["a\nb", 'c'])
+  textedit.ApplyTextEdits(bnr, [MakeTextEdit(1, 0, 1, 1, 'd')])
+  assert_equal(["a\nb", 'd'], getline(1, '$'))
+
+  prop_type_delete('XMinimalEdit', {bufnr: bnr})
+  :%bw!
+enddef
+
 # Text edits keep the cursor of each window on the buffer on the same text:
 # it moves with the text after an edit, also when the edit adds or removes
 # lines on the cursor line (#171), stays before text inserted at it, and keeps
