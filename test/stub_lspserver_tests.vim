@@ -8189,6 +8189,53 @@ def g:Test_CodeLens_ShownAboveTheirLines()
   endtry
 enddef
 
+# Test that only the code lenses in view are resolved (#121): the others when
+# a window scrolls to them, once.  The resolved ones are shown right away.
+def g:Test_CodeLens_ResolvesOnlyVisible()
+  CodeLensInitOnce()
+  silent! edit XCodeLensVisible.txt
+  setline(1, range(1, 200)->mapnew((_, n) => $'fn f{n}() {{}}'))
+  var bnr = bufnr()
+  var lenses = [
+    {range: CodeLensRange(0, 0), command: {title: 'Run', command: 'run'}},
+    {range: CodeLensRange(1, 0), data: 'top'},
+    {range: CodeLensRange(199, 0), data: 'bottom'}
+  ]
+  var resolved = {
+    top: {range: CodeLensRange(1, 0), command: {title: 'Top', command: 't'}},
+    bottom: {range: CodeLensRange(199, 0),
+	     command: {title: 'Bottom', command: 'b'}}}
+  var requests: list<string> = []
+  var lspserver = MakeCodeLensServer(lenses, resolved, requests, [])
+  opt.lspOptions.showCodeLens = true
+  try
+    cursor(1, 1)
+    codelens.BufferInit(lspserver, bnr)
+    assert_equal(['textDocument/codeLens', 'codeLens/resolve'], requests)
+    var texts = CodeLensTexts()
+    assert_equal([['Run'], ['Top'], []], [texts[0], texts[1], texts[199]])
+
+    :normal! G
+    doautocmd WinScrolled
+    assert_equal(['textDocument/codeLens', 'codeLens/resolve',
+		  'codeLens/resolve'], requests)
+    texts = CodeLensTexts()
+    assert_equal([['Run'], ['Top'], ['Bottom']],
+		 [texts[0], texts[1], texts[199]])
+
+    # Not resolved again
+    :normal! gg
+    doautocmd WinScrolled
+    :normal! G
+    doautocmd WinScrolled
+    assert_equal(3, requests->len())
+  finally
+    opt.lspOptions.showCodeLens = false
+    buf.BufLspServerRemove(bnr, lspserver)
+    :%bw!
+  endtry
+enddef
+
 # Test that the code lenses are updated when the cursor rests after a change,
 # that a reply to a request made before a change is dropped, and that the code
 # lenses are not updated in Insert mode, but when the cursor rests after it.

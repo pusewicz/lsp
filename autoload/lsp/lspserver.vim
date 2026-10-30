@@ -2985,9 +2985,10 @@ def CodeLens(lspserver: dict<any>, fname: string, onCursorLine: bool = false)
   }, {beforePendingKeys: true})
 enddef
 
-# Request the code lenses of buffer "bnr", resolve them and show them above
-# their lines, unless the buffer changed or was detached from the server in
-# the meantime.
+# Request the code lenses of buffer "bnr" and show them above their lines,
+# unless the buffer changed or was detached from the server in the meantime.
+# The ones without a command are resolved when they are in view (see
+# CodeLensResolveVisible()).
 # Request: "textDocument/codeLens"
 # Param: CodeLensParams
 def CodeLensShow(lspserver: dict<any>, bnr: number)
@@ -3020,13 +3021,67 @@ def CodeLensShow(lspserver: dict<any>, bnr: number)
       endfor
     endif
 
-    ResolveCodeLenses(lspserver, bnr, codeLensItems,
-		      (resolvedItems: list<dict<any>>) => {
-      if IsCurrent()
-	codelens.ShowCodeLenses(bnr, resolvedItems)
+    # Show the code lenses that come with a command now, and resolve the
+    # others as they come into view (#121): resolving one can be costly, e.g.
+    # a references search for rust-analyzer's reference counts.
+    setbufvar(bnr, 'LspCodeLensState', {items: codeLensItems,
+	requested: {}, changedtick: changedtick, serverId: lspserver.id})
+    codelens.ShowCodeLenses(bnr, codeLensItems->copy()
+      ->filter((_, item) => item->has_key('command')))
+    CodeLensResolveVisible(lspserver, bnr)
+  }, {handleError: false})
+enddef
+
+# Resolve the code lenses of buffer "bnr" that CodeLensShow() got and that
+# are on the lines shown in a window of the current tab page, if they were not
+# resolved or asked for yet, and then show the resolved code lenses again.
+# Request: "codeLens/resolve"
+# Param: CodeLens
+def CodeLensResolveVisible(lspserver: dict<any>, bnr: number)
+  var state: dict<any> = bnr->getbufvar('LspCodeLensState', {})
+  if state->empty() || state.serverId != lspserver.id
+      || bnr->getbufvar('changedtick', -1) != state.changedtick
+    return
+  endif
+
+  var visible: list<list<number>> = []
+  var tabnr = tabpagenr()
+  for winid in bnr->win_findbuf()
+    if winid->win_id2tabwin()[0] == tabnr
+      visible->add([line('w0', winid), line('w$', winid)])
+    endif
+  endfor
+
+  var items: list<dict<any>> = state.items
+  var toResolve: list<number> = []
+  for i in items->len()->range()
+    var lnum: number = items[i].range.start.line + 1
+    if !items[i]->has_key('command') && !state.requested->has_key(i)
+	&& visible->indexof((_, r) => lnum >= r[0] && lnum <= r[1]) >= 0
+      toResolve->add(i)
+    endif
+  endfor
+  if toResolve->empty()
+    return
+  endif
+
+  var IsCurrent = (): bool => bnr->getbufvar('LspCodeLensState', {}) is state
+    && bnr->getbufvar('changedtick', -1) == state.changedtick
+    && !buf.BufLspServerGetById(bnr, lspserver.id)->empty()
+  var pending: number = toResolve->len()
+  for i in toResolve
+    state.requested[i] = true
+    ResolveCodeLens(lspserver, bnr, items[i], (resolved: dict<any>) => {
+      if resolved->has_key('command')
+	items[i] = resolved
+      endif
+      pending -= 1
+      if pending == 0 && IsCurrent()
+	codelens.ShowCodeLenses(bnr, items->copy()
+	  ->filter((_, item) => item->has_key('command')))
       endif
     })
-  }, {handleError: false})
+  endfor
 enddef
 
 # Resolve the items in "codeLensItems" of buffer "bnr" that have no command,
@@ -3836,6 +3891,7 @@ export def NewLspServer(serverParams: dict<any>): dict<any>
     queuePullDiagnosticsAllBuffers: function(QueuePullDiagnosticsAllBuffers, [lspserver]),
     codeLens: function(CodeLens, [lspserver]),
     codeLensShow: function(CodeLensShow, [lspserver]),
+    codeLensResolveVisible: function(CodeLensResolveVisible, [lspserver]),
     resolveCodeAction: function(ResolveCodeAction, [lspserver]),
     resolveCodeLens: function(ResolveCodeLens, [lspserver]),
     documentColorsUpdate: function(DocumentColorsUpdate, [lspserver]),
