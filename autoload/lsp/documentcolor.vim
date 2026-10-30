@@ -8,6 +8,7 @@ vim9script
 import './options.vim' as opt
 import './buffer.vim' as buf
 import './util.vim'
+import './textedit.vim'
 
 # The text shown before a color, in that color
 const SWATCH = '■ '
@@ -123,6 +124,36 @@ export def ColorsShow(bnr: number, colors: list<dict<any>>)
     prop_add(start.line + 1, util.GetLineByteFromPos(bnr, start) + 1,
 	     {type: SwatchType(colorInfo.color), text: SWATCH, bufnr: bnr})
   endfor
+enddef
+
+# Write the color in range "range" (in the position encoding of the language
+# server "lspserver") of buffer "bnr" the way of one of the LSP
+# ColorPresentations "presentations": the one numbered "choice" (from 1), or
+# else the one chosen in a menu.  Nothing is written when the buffer was
+# changed meanwhile.
+export def PresentationChoose(lspserver: dict<any>, bnr: number,
+			      range: dict<any>, presentations: list<dict<any>>,
+			      choice: number)
+  var n: number = choice
+  if n <= 0
+    var labels = presentations->mapnew((i, p) => $'{i + 1}. {p.label}')
+    n = inputlist(['Color presentation:'] + labels)
+  endif
+  if n < 1 || n > presentations->len()
+    return
+  endif
+
+  var p: dict<any> = presentations[n - 1]
+  var edits: list<dict<any>> =
+	[p->get('textEdit', {range: range, newText: p.label})]
+	+ p->get('additionalTextEdits', [])
+  edits = edits->deepcopy()
+  if lspserver.needOffsetEncoding
+    for e in edits
+      lspserver.decodeRange(bnr, e.range)
+    endfor
+  endif
+  textedit.ApplyTextEdits(bnr, edits)
 enddef
 
 # Stop the pending update of the colors in buffer "bnr".

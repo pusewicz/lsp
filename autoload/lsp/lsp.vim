@@ -1747,6 +1747,17 @@ export def DocumentLinkOpen(cmdmods: string)
   lspserver.openDocumentLink(cmdmods)
 enddef
 
+# Write the color under the cursor another way, chosen from the ones that
+# the language server offers, or the "choice"th one (from 1).
+export def ColorPresentation(choice: number)
+  var lspserver: dict<any> = buf.CurbufGetServerChecked('documentColor')
+  if lspserver->empty()
+    return
+  endif
+
+  lspserver.colorPresentation(choice)
+enddef
+
 # Perform a workspace wide symbol lookup
 # Uses LSP "workspace/symbol" request
 export def SymbolSearch(queryArg: string, cmdmods: string)
