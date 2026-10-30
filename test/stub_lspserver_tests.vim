@@ -866,6 +866,37 @@ def StopAsyncReplyingLspServer(lspserver: dict<any>, bnr: number)
   buf.BufLspServerRemove(bnr, lspserver)
 enddef
 
+# The position of goto, references and rename (getPosition(true)) moves from
+# blanks to the next symbol and from inside an identifier to its start, but
+# stays on any other character, which can be a symbol itself, like the "+" of
+# an overloaded C++ operator (#110).
+def g:Test_GetPosition_FindIdent()
+  :enew!
+  var lspserver = MakeTestLspServer([])
+  # [line, cursor column, expected character]
+  var cases: list<list<any>> = [
+    ['a + b', 3, 2],
+    ['a + b', 2, 2],
+    ['a  b', 2, 3],
+    ['abc def', 6, 4],
+    ["x 'a y", 3, 2],
+    ['$x = 1', 1, 0],
+    ['$x = 1', 2, 1],
+    ['f(arg)', 2, 1],
+    ['  foo', 1, 2],
+    ['foo   ', 5, 6],
+  ]
+  for [text, col, expected] in cases
+    setline(1, text)
+    cursor(1, col)
+    assert_equal({line: 0, character: expected}, lspserver.getPosition(true),
+		 $'{text}, {col}')
+    assert_equal({line: 0, character: col - 1}, lspserver.getPosition(false),
+		 $'{text}, {col}')
+  endfor
+  :%bw!
+enddef
+
 # Test that the reply to a goto definition request jumps to the definition
 # when it arrives, unless the cursor moved before it did.
 def g:Test_GotoDefinition_DropsReplyAfterCursorMoved()

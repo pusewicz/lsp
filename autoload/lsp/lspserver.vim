@@ -1552,8 +1552,9 @@ def TextdocEolChanged(lspserver: dict<any>, bnr: number): void
 enddef
 
 # Return the current cursor position as a LSP position.
-# find_ident will search for a identifier in front of the cursor, just like
-# CTRL-] and c_CTRL-R_CTRL-W does.
+# With find_ident, a cursor on blanks moves to the next symbol after them, and
+# a cursor on an identifier ('iskeyword' characters) to its start; on any
+# other character, the position is the cursor's.
 #
 # LSP line and column numbers start from zero, whereas Vim line and column
 # numbers start from one. The LSP column number is the character index in the
@@ -1564,13 +1565,15 @@ def GetPosition(lspserver: dict<any>, find_ident: bool): dict<number>
   var line = getline('.')
 
   if find_ident
-    # 1. skip to start of identifier
-    while line[col] != '' && line[col] !~ '\k'
+    # 1. skip the blanks before the next symbol.  Other characters can be
+    # symbols themselves, e.g. an overloaded C++ operator (#110), so the
+    # position stays on them.
+    while line[col] =~ '\s'
       col = col + 1
     endwhile
 
-    # 2. back up to start of identifier
-    while col > 0 && line[col - 1] =~ '\k'
+    # 2. back up to the start of the identifier under the cursor
+    while col > 0 && line[col] =~ '\k' && line[col - 1] =~ '\k'
       col = col - 1
     endwhile
   endif
