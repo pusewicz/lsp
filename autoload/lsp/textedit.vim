@@ -142,6 +142,25 @@ def ByteIdx(text: string, idx: number): number
   return idx > nchars ? text->len() + idx - nchars : text->byteidx(idx)
 enddef
 
+# Replaces the "count" lines of buffer "bnr" after line "after" with the lines
+# "newLines".  Changes the lines in place, so that the cursor does not move to
+# the last line added, as it would if the old lines were deleted and the new
+# ones appended: appends the lines beyond the old ones after them, or deletes
+# the old lines beyond the new ones.
+def ReplaceBufLines(bnr: number, after: number, count: number,
+		    newLines: list<string>)
+  var n: number = newLines->len()
+  appendbufline(bnr, after + count, newLines->slice(count))
+  if count > 0 && n > 0
+    setbufline(bnr, after + 1, newLines->slice(0, count))
+  endif
+  if n < count
+    # Workaround for Vim issues #12568 & #18136
+    prop_clear(after + n + 1, after + count, {bufnr: bnr})
+    deletebufline(bnr, after + n + 1, after + count)
+  endif
+enddef
+
 # Apply set of text edits to the specified buffer
 # The text edit logic is ported from the Neovim lua implementation
 #
@@ -225,38 +244,26 @@ export def ApplyTextEdits(bnr: number, text_edits: list<dict<any>>): void
   # The last of the buffer lines that the edited lines replace
   var last_line: number = [finish_line + 1, linecount]->min()
 
-  # Now we apply the textedits to the actual buffer.
-  # In theory we could just delete all old lines and append the new lines.
-  # This would however cause the cursor to change position: It will always be
-  # on the last line added.
-  #
-  # Luckily there is an even simpler solution, that has no cursor sideeffects.
-  #
-  # Logically this method is split into the following three cases:
-  #
-  # 1. The number of new lines is equal to the number of old lines:
-  #    Just replace the lines inline with setbufline()
-  #
-  # 2. The number of new lines is greater than the old ones:
-  #    First append the missing lines at the **end** of the range, then use
-  #    setbufline() again. This does not cause the cursor to change position.
-  #
-  # 3. The number of new lines is less than before:
-  #    First use setbufline() to replace the lines that we can replace.
-  #    Then remove superfluous lines.
-  #
-  # Luckily, the three different cases exist only logically, we can reduce
-  # them to a single case practically, because appendbufline() does not append
-  # anything if an empty list is passed just like deletebufline() does not
-  # delete anything, if the last line of the range is before the first line.
-  # We just need to be careful with all indices.
-  appendbufline(bnr, last_line, lines[last_line - start_line : -1])
-  setbufline(bnr, start_line + 1, lines)
+  # Replace only the lines that differ, so that the text properties of the
+  # other lines stay and b:changedtick and the listeners see only the
+  # changed lines (#147).  diff() joins the lines with "\n", so lines with a
+  # NUL (a "\n" in the string) are replaced as one hunk.
+  var old: list<string> = bnr->getbufline(start_line + 1, last_line)
+  var hunks: list<any>
+  if old->indexof((_, l) => l->stridx("\n") >= 0) >= 0
+      || lines->indexof((_, l) => l->stridx("\n") >= 0) >= 0
+    hunks = [{from_idx: 0, from_count: old->len(),
+	      to_idx: 0, to_count: lines->len()}]
+  else
+    hunks = diff(old, lines, {output: 'indices'})
+  endif
 
-  # Workaround for Vim issues #12568 & #18136
-  prop_clear(start_line + 1 + lines->len(), last_line, {'bufnr': bnr})
-
-  deletebufline(bnr, start_line + 1 + lines->len(), last_line)
+  # Apply the hunks bottom-up, so that the line numbers of the earlier ones
+  # stay valid.
+  for h in hunks->reverse()
+    ReplaceBufLines(bnr, start_line + h.from_idx, h.from_count,
+		    lines->slice(h.to_idx, h.to_idx + h.to_count))
+  endfor
 
   # Vim keeps the line number of a cursor inside the rewritten lines, which
   # can then be on other text, so put each cursor back on its text.
@@ -265,7 +272,7 @@ export def ApplyTextEdits(bnr: number, text_edits: list<dict<any>>): void
     var [lnum, col] = EditedPos(pos, updated_edits)
     lnum = [lnum + 1, newLinecount]->min()
     var bytecol: number = ByteIdx(bnr->getbufoneline(lnum), col) + 1
-    if [lnum, bytecol] != curpos[1 : 2]
+    if [lnum, bytecol] != winid->getcurpos()[1 : 2]
       win_execute(winid, $'cursor({lnum}, {bytecol}, {curpos[3]})')
     endif
   endfor
