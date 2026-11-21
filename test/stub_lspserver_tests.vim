@@ -16,6 +16,7 @@ import '../autoload/lsp/ontypeformat.vim' as ontypeformat
 import '../autoload/lsp/linkedediting.vim' as linkedediting
 import '../autoload/lsp/textedit.vim' as textedit
 import '../autoload/lsp/inlayhints.vim' as inlayhints
+import '../autoload/lsp/semantichighlight.vim'
 import '../autoload/lsp/documentcolor.vim' as documentcolor
 import '../autoload/lsp/inlinecompletion.vim' as inlinecompletion
 import '../autoload/lsp/snippet.vim' as snippet
@@ -11471,6 +11472,193 @@ def g:Test_BufferListeners_ShareChangesWithText()
     buf.BufLspServerRemove(bnr, lspserver)
     :%bw!
     g:LspOptionsSet({semanticHighlight: false, incrementalSync: true})
+  endtry
+enddef
+
+def MakeSemanticRangeServer(provider: dict<any>, requests: list<dict<any>>,
+			    notifications: list<dict<any>>): dict<any>
+  if prop_type_get('LspSemanticVariable')->empty()
+    semantichighlight.InitOnce()
+  endif
+  var lspserver = MakeCapsServer({
+    textDocumentSync: {openClose: true, change: 1},
+    semanticTokensProvider: {legend: {tokenTypes: ['variable'],
+				      tokenModifiers: []}}->extend(provider)
+  }, notifications)
+  lspserver.rpc_a = (method, params, Cb, _: dict<any> = {}) => {
+    requests->add({method: method, params: params->deepcopy(), Reply: Cb})
+    return requests->len()
+  }
+  lspserver.sendResponse = function(CaptureResponse, [[]])
+  return lspserver
+enddef
+
+def OneTokenPerLine(count: number): list<number>
+  return [0, 0, 1, 0, 0] + repeat([1, 0, 1, 0, 0], count - 1)
+enddef
+
+def SemanticPropLines(bnr: number): list<number>
+  return prop_list(1, {bufnr: bnr, end_lnum: -1,
+		       types: ['LspSemanticVariable']})
+    ->mapnew((_, p) => p.lnum)
+enddef
+
+def g:Test_SemanticTokensRange_ServerWithoutFull()
+  g:LspOptionsSet({semanticHighlight: true, semanticHighlightDelay: 1})
+  silent! edit XSemanticRangeOnly.txt
+  setline(1, range(300)->mapnew((_, i) => $'v{i}'))
+  var bnr = bufnr()
+  var requests: list<dict<any>> = []
+  var lspserver = MakeSemanticRangeServer({range: {}}, requests, [])
+  buf.BufLspServerSet(bnr, lspserver)
+  var height = winheight(0)
+  var rangeMethod = 'textDocument/semanticTokens/range'
+  try
+    lsp.BufferInit(lspserver.id, bnr)
+    g:WaitForAssert(() => assert_equal([rangeMethod], Methods(requests)))
+    var last = line('w$') + height
+    assert_equal({textDocument: {uri: util.LspBufnrToUri(bnr)},
+		  range: {start: {line: 0, character: 0},
+			  end: {line: last, character: 0}}},
+		 requests[0].params)
+
+    requests[0].Reply(lspserver, {resultId: 'r', data: OneTokenPerLine(300)},
+		      {})
+    assert_equal(range(1, last), SemanticPropLines(bnr))
+    assert_equal('', bnr->getbufvar('LspSemanticResultId', ''))
+    assert_equal([], bnr->getbufvar('LspSemanticTokensData', []))
+    assert_false(bnr->getbufvar('LspSemanticTokensShown', false))
+
+    execute "normal! 3\<C-E>"
+    :doautocmd WinScrolled
+    assert_equal(0, bnr->getbufvar('LspSemanticTimer', 0))
+
+    normal! G
+    :doautocmd WinScrolled
+    assert_true(bnr->getbufvar('LspSemanticTimer', 0) > 0)
+    g:WaitForAssert(() => assert_equal(2, requests->len()))
+    var first = line('w0') - height
+    assert_equal({start: {line: first - 1, character: 0},
+		  end: {line: 299, character: 4}}, requests[1].params.range)
+    requests[1].Reply(lspserver, {data: OneTokenPerLine(300)}, {})
+    assert_equal(range(1, last) + range(first, 300), SemanticPropLines(bnr))
+
+    normal! gg
+    :doautocmd WinScrolled
+    g:WaitForAssert(() => assert_equal(3, requests->len()))
+    append(0, 'added')
+    var shown = SemanticPropLines(bnr)
+    requests[2].Reply(lspserver, {data: OneTokenPerLine(301)}, {})
+    assert_equal(shown, SemanticPropLines(bnr))
+
+    :doautocmd TextChanged
+    g:WaitForAssert(() => assert_equal(4, requests->len()))
+    requests[3].Reply(lspserver, {data: OneTokenPerLine(301)}, {})
+    assert_equal(range(1, last), SemanticPropLines(bnr))
+
+    :doautocmd WinScrolled
+    assert_equal(0, bnr->getbufvar('LspSemanticTimer', 0))
+
+    normal! G
+    :doautocmd WinScrolled
+    g:WaitForAssert(() => assert_equal(5, requests->len()))
+    requests[4].Reply(lspserver, null, {})
+    assert_equal(range(1, last), SemanticPropLines(bnr))
+    :doautocmd WinScrolled
+    g:WaitForAssert(() => assert_equal(6, requests->len()))
+    requests[5].Reply(lspserver, {data: OneTokenPerLine(301)}, {})
+    assert_equal(range(1, last) + range(first + 1, 301),
+		 SemanticPropLines(bnr))
+
+    lspserver.processRequest({jsonrpc: '2.0', id: 1,
+			      method: 'workspace/semanticTokens/refresh'})
+    g:WaitForAssert(() => assert_equal(7, requests->len()))
+    requests[6].Reply(lspserver, {data: []}, {})
+    assert_equal([], SemanticPropLines(bnr))
+    assert_equal(repeat([rangeMethod], 7), Methods(requests))
+  finally
+    lsp.RemoveFile(bnr)
+    buf.BufLspServerRemove(bnr, lspserver)
+    :%bw!
+    g:LspOptionsSet({semanticHighlight: false, semanticHighlightDelay: 1000})
+  endtry
+enddef
+
+def g:Test_SemanticTokensRange_ShowsViewBeforeFullReply()
+  assert_true(capabilities.GetClientCaps().textDocument.semanticTokens
+	      .requests.range)
+  g:LspOptionsSet({semanticHighlight: true, semanticHighlightDelay: 1})
+  var rangeMethod = 'textDocument/semanticTokens/range'
+  var fullMethod = 'textDocument/semanticTokens/full'
+  try
+    for rangeFirst in [true, false]
+      silent! edit XSemanticRangeAndFull.txt
+      setline(1, range(300)->mapnew((_, i) => $'v{i}'))
+      var bnr = bufnr()
+      var requests: list<dict<any>> = []
+      var notifications: list<dict<any>> = []
+      var lspserver = MakeSemanticRangeServer(
+	{range: true, full: {delta: true}}, requests, notifications)
+      buf.BufLspServerSet(bnr, lspserver)
+      try
+	lsp.BufferInit(lspserver.id, bnr)
+	g:WaitForAssert(() => assert_equal([rangeMethod, fullMethod],
+					   Methods(requests)))
+	notifications->filter((_, _) => false)
+	if rangeFirst
+	  requests[0].Reply(lspserver, {data: OneTokenPerLine(300)}, {})
+	  assert_equal(range(1, line('w$') + winheight(0)),
+		       SemanticPropLines(bnr))
+	  assert_equal('', bnr->getbufvar('LspSemanticResultId', ''))
+	  assert_false(bnr->getbufvar('LspSemanticTokensShown', false))
+	endif
+	requests[1].Reply(lspserver, {resultId: '1',
+				      data: OneTokenPerLine(300)}, {})
+	assert_equal(range(1, 300), SemanticPropLines(bnr))
+	assert_equal('1', bnr->getbufvar('LspSemanticResultId', ''))
+	if !rangeFirst
+	  assert_equal([{method: '$/cancelRequest', params: {id: 1}}],
+		       notifications)
+	  requests[0].Reply(lspserver, {data: OneTokenPerLine(300)}, {})
+	  assert_equal(range(1, 300), SemanticPropLines(bnr))
+	endif
+
+	normal! G
+	:doautocmd WinScrolled
+	assert_equal(0, bnr->getbufvar('LspSemanticTimer', 0))
+	:doautocmd TextChanged
+	g:WaitForAssert(() => assert_equal(
+	  [rangeMethod, fullMethod, fullMethod .. '/delta'], Methods(requests)))
+	assert_equal('1', requests[2].params.previousResultId)
+      finally
+	lsp.RemoveFile(bnr)
+	buf.BufLspServerRemove(bnr, lspserver)
+	:%bw!
+      endtry
+    endfor
+  finally
+    g:LspOptionsSet({semanticHighlight: false, semanticHighlightDelay: 1000})
+  endtry
+enddef
+
+def g:Test_SemanticTokensRange_NotForBufferInView()
+  g:LspOptionsSet({semanticHighlight: true, semanticHighlightDelay: 1})
+  silent! edit XSemanticRangeSmall.txt
+  setline(1, ['v1', 'v2', 'v3'])
+  var bnr = bufnr()
+  var requests: list<dict<any>> = []
+  var lspserver = MakeSemanticRangeServer({range: true, full: true},
+					  requests, [])
+  buf.BufLspServerSet(bnr, lspserver)
+  try
+    lsp.BufferInit(lspserver.id, bnr)
+    g:WaitForAssert(() => assert_equal(['textDocument/semanticTokens/full'],
+      requests->mapnew((_, r) => r.method)))
+  finally
+    lsp.RemoveFile(bnr)
+    buf.BufLspServerRemove(bnr, lspserver)
+    :%bw!
+    g:LspOptionsSet({semanticHighlight: false, semanticHighlightDelay: 1000})
   endtry
 enddef
 

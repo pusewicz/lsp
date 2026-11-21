@@ -5,6 +5,9 @@ vim9script
 import './offset.vim'
 import './options.vim' as opt
 import './buffer.vim' as buf
+import './util.vim'
+
+const SCROLL_DELAY_MSEC = 100
 
 # Map token type names to higlight group/text property type names
 var TokenTypeMap: dict<string> = {
@@ -67,6 +70,11 @@ export def InitOnce()
   for hlName in TokenTypeMap->values()
     prop_type_add(hlName, {highlight: hlName, combine: true})
   endfor
+
+  autocmd_add([{group: 'LspCmds',
+		event: ['WinScrolled', 'TabEnter'],
+		pattern: '*',
+		cmd: 'LspSemanticWinScrolled()'}])
 enddef
 
 # Return the lines of the tokens at the indexes "indexes" in "tokens", as a
@@ -468,10 +476,16 @@ def StopSemanticHighlightTimer(bnr: number)
   endif
 enddef
 
+def RangeStateReset(bnr: number)
+  setbufvar(bnr, 'LspSemanticRangeRequested', [])
+  setbufvar(bnr, 'LspSemanticRangeTick', -1)
+enddef
+
 def SemanticHighlightCleanup(bnr: number)
   setbufvar(bnr, 'LspSemanticTokensData', [])
   setbufvar(bnr, 'LspSemanticResultId', '')
   setbufvar(bnr, 'LspSemanticTokensShown', false)
+  RangeStateReset(bnr)
 enddef
 
 # Stop the pending semantic highlight update for buffer "bnr" and drop its
@@ -573,11 +587,11 @@ export def UpdateTokens(lspserver: dict<any>, semTokens: any,
   # First clear the previous text properties
   ClearSemanticHighlightProps(bnr, ranges)
 
-  if props->empty()
-    return
-  endif
-
   # Apply the new text properties
+  AddSemanticHighlightProps(bnr, props)
+enddef
+
+def AddSemanticHighlightProps(bnr: number, props: dict<list<list<number>>>)
   for [tokenType, tokenProps] in props->items()
     if TokenTypeMap->has_key(tokenType)
       prop_add_list({bufnr: bnr, type: TokenTypeMap[tokenType]}, tokenProps)
@@ -585,8 +599,54 @@ export def UpdateTokens(lspserver: dict<any>, semTokens: any,
   endfor
 enddef
 
+export def RangeLinesToRequest(bnr: number, requestTick: number,
+			       hasFull: bool): list<number>
+  if hasFull && bnr->getbufvar('LspSemanticTokensShown', false)
+    return []
+  endif
+  var lines = util.VisibleLines(bnr, true)
+  if lines->empty()
+      || (hasFull && lines[0] <= 1
+	  && lines[1] >= bnr->getbufinfo()[0].linecount)
+    setbufvar(bnr, 'LspSemanticRangeRequested', [])
+    return []
+  endif
+  setbufvar(bnr, 'LspSemanticRangeRequested', lines + [requestTick])
+  return lines
+enddef
+
+export def UpdateRangeTokens(lspserver: dict<any>, semTokens: any,
+			     updateError: dict<any>, bnr: number,
+			     requestTick: number, lines: list<number>)
+  if !updateError->empty()
+    lspserver.traceLog($'Semantic tokens range update failed: {updateError.message}')
+  endif
+
+  if !updateError->empty() || semTokens->type() != v:t_dict
+      || semTokens->get('data')->type() != v:t_list
+    setbufvar(bnr, 'LspSemanticRangeRequested', [])
+    return
+  endif
+
+  if bnr->getbufvar('changedtick') != requestTick
+      || bnr->getbufvar('LspSemanticTokensShown', false)
+    return
+  endif
+
+  var ranges: list<list<number>> = [lines]
+  var props = ProcessSemanticTokens(lspserver, bnr, semTokens.data, ranges)
+  if bnr->getbufvar('LspSemanticRangeTick', -1) == requestTick
+    ClearSemanticHighlightProps(bnr, ranges)
+  else
+    ClearSemanticHighlightProps(bnr)
+  endif
+  setbufvar(bnr, 'LspSemanticRangeTick', requestTick)
+  AddSemanticHighlightProps(bnr, props)
+enddef
+
 # Update the semantic highlighting for buffer "bnr"
-def LspUpdateSemanticHighlight(bnr: number)
+def LspUpdateSemanticHighlight(bnr: number,
+			       delay: number = opt.lspOptions.semanticHighlightDelay)
   var lspserver: dict<any> = buf.BufLspServerGet(bnr, 'semanticTokens')
   if lspserver->empty()
     return
@@ -600,9 +660,38 @@ def LspUpdateSemanticHighlight(bnr: number)
   endif
 
   # Start new debounced timer
-  var timerId = timer_start(opt.lspOptions.semanticHighlightDelay,
+  var timerId = timer_start(delay,
     function('SemanticHighlightTimerCb', [lspserver, bnr]))
   setbufvar(bnr, 'LspSemanticTimer', timerId)
+enddef
+
+def LspSemanticWinScrolled()
+  if !opt.lspOptions.semanticHighlight
+    return
+  endif
+
+  for bnr in util.ScrolledBufnrs()
+    if bnr->getbufvar('LspSemanticListener', 0) == 0
+	|| bnr->getbufvar('LspSemanticTimer', 0) > 0
+      continue
+    endif
+    var lspserver: dict<any> = buf.BufLspServerGet(bnr, 'semanticTokens')
+    if lspserver->empty() || lspserver.semanticTokensFull
+	|| !lspserver.semanticTokensRange
+      continue
+    endif
+    var requested: list<number> =
+      bnr->getbufvar('LspSemanticRangeRequested', [])
+    var visible = util.VisibleLines(bnr, false)
+    if visible->empty()
+	|| (!requested->empty()
+	    && requested[2] == bnr->getbufvar('changedtick')
+	    && visible[0] >= requested[0] && visible[1] <= requested[1])
+      continue
+    endif
+    LspUpdateSemanticHighlight(bnr,
+      [SCROLL_DELAY_MSEC, opt.lspOptions.semanticHighlightDelay]->min())
+  endfor
 enddef
 
 # Refresh the semantic highlighting from "lspserver", which asked for it with a
@@ -618,6 +707,7 @@ export def Refresh(lspserver: dict<any>)
     if semanticServer->empty() || semanticServer.id != lspserver.id
       continue
     endif
+    RangeStateReset(bnr)
     if bnr->win_findbuf()->empty()
       autocmd_add([{bufnr: bnr,
 		    event: 'BufWinEnter',
@@ -635,6 +725,7 @@ enddef
 # its semantic highlighting.
 def BufferReloaded(bnr: number)
   setbufvar(bnr, 'LspSemanticTokensShown', false)
+  RangeStateReset(bnr)
   LspUpdateSemanticHighlight(bnr)
 enddef
 
@@ -645,6 +736,8 @@ export def BufferInit(lspserver: dict<any>, bnr: number)
     return
   endif
 
+  # TODO-UPDATE-COMMENT: only the lines in view for a server without full requests
+  # ---
   # Highlight all the semantic tokens
   AddBufferListener(bnr)
   LspUpdateSemanticHighlight(bnr)

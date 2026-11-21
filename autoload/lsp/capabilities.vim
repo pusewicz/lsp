@@ -405,8 +405,10 @@ export def ProcessServerCaps(lspserver: dict<any>, caps: dict<any>)
     lspserver.isSemanticTokensProvider = true
     lspserver.semanticTokensLegend =
       lspserver.caps.semanticTokensProvider.legend
-    lspserver.semanticTokensRange =
+    var semanticTokensRange: any =
       lspserver.caps.semanticTokensProvider->get('range', false)
+    lspserver.semanticTokensRange = semanticTokensRange->type() == v:t_dict
+      || (semanticTokensRange->type() == v:t_bool && semanticTokensRange)
     if lspserver.caps.semanticTokensProvider->has_key('full')
       if lspserver.caps.semanticTokensProvider.full->type() == v:t_bool
 	lspserver.semanticTokensFull =
@@ -427,6 +429,9 @@ export def ProcessServerCaps(lspserver: dict<any>, caps: dict<any>)
     endif
   else
     lspserver.isSemanticTokensProvider = false
+    lspserver.semanticTokensRange = false
+    lspserver.semanticTokensFull = false
+    lspserver.semanticTokensDelta = false
   endif
 
   # typeHierarchyProvider
@@ -689,7 +694,7 @@ export def GetClientCaps(watchFiles: bool = true): dict<any>
       semanticTokens: {
 	dynamicRegistration: false,
 	requests: {
-	  range: false,
+	  range: true,
 	  full: {
 	    delta: true
 	  }
