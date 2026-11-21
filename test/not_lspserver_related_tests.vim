@@ -2,6 +2,7 @@ vim9script
 # Unit tests for Vim Language Server Protocol (LSP) for various functionality 
 
 import '../autoload/lsp/completion.vim' as completion
+import '../autoload/lsp/configcheck.vim' as configcheck
 import '../autoload/lsp/buffer.vim' as buf
 import '../autoload/lsp/capabilities.vim' as capabilities
 import '../autoload/lsp/documentlink.vim' as documentlink
@@ -3268,6 +3269,281 @@ def g:Test_Snippet_Variables()
     assert_match(patterns[names[i]], values[i], names[i])
   endfor
   :%bw!
+enddef
+
+def g:Test_ConfigCheck_OptionProblems()
+  var defaults = opt.lspOptionDefaults
+  assert_equal([], configcheck.OptionProblems(defaults->deepcopy(), defaults))
+  assert_equal([], configcheck.OptionProblems({
+    omniComplete: true,
+    popupBorderHover: true,
+    popupBorderHighlightPeek: 'Title',
+    popupHighlightSymbolMenuInput: 'Normal',
+    popupOpacityCodeAction: 80,
+    completionKinds: {Text: 't'},
+    documentationFormat: ['plaintext'],
+  }, defaults))
+
+  assert_equal([
+    '"autoComplet" is not a known option',
+    '"autoComplete" is a Number, expected a Boolean',
+    '"completionKinds.Text" is a Number, expected a String',
+    '"completionMatcher" is "fuzy", expected one of "case", "icase", "fuzzy"',
+    '"documentationFormat[1]" is "html", expected one of "markdown", "plaintext"',
+    '"documentationFormat[2]" is a Number, expected a String',
+    '"omniComplete" is a String, expected a Boolean or null',
+    '"outlineWinSize" is a String, expected a Number',
+    '"popupBorderFoo" is not a known option',
+    '"popupBorderHover" is a String, expected a Boolean',
+    '"popupOpacityPeek" is a Float, expected a Number',
+    '"workspaceIgnoredPaths" is a String, expected a List',
+  ], configcheck.OptionProblems({
+    autoComplet: true,
+    autoComplete: 1,
+    completionKinds: {Text: 1},
+    completionMatcher: 'fuzy',
+    documentationFormat: ['markdown', 'html', 1],
+    omniComplete: 'yes',
+    outlineWinSize: '20',
+    popupBorderFoo: true,
+    popupBorderHover: 'yes',
+    popupOpacityPeek: 0.5,
+    workspaceIgnoredPaths: '/',
+  }, defaults))
+enddef
+
+def g:Test_ConfigCheck_ServerProblems()
+  assert_equal([], configcheck.ServerProblems({filetype: 'c', path: 'sh'}))
+  assert_equal([], configcheck.ServerProblems({
+    name: 'good',
+    filetype: ['c', 'cpp'],
+    path: 'sh',
+    args: ['-c', 1],
+    initializationOptions: {},
+    workspaceConfig: {},
+    rootSearch: ['.git/'],
+    runIfSearch: ['a'],
+    runUnlessSearch: ['b'],
+    customNotificationHandlers: {'x/y': (lspserver, reply) => 0},
+    customRequestHandlers: {'x/z': (lspserver, request) => 0},
+    features: {codeAction: false, watchFiles: true},
+    forceOffsetEncoding: 'utf-16',
+    languageId: () => 'c',
+    omnicompl: true,
+    processDiagHandler: (diags) => diags,
+    syncInit: true,
+    debug: false,
+    traceLevel: 'messages',
+  }))
+
+  var Problems = (server: dict<any>): list<list<string>> =>
+    configcheck.ServerProblems(server)
+      ->mapnew((_, p) => [p.text, p.action])
+
+  assert_equal([
+    ['"filetype" is missing', 'skip'],
+    ['"path" is missing', 'skip'],
+  ], Problems({}))
+
+  var missing = configcheck.ServerProblems({filetype: 'c',
+    path: 'xNoSuchLspServer'})
+  assert_equal([{key: 'path', action: 'skip', missing: true,
+    text: '"path" is not executable: xNoSuchLspServer'}], missing)
+
+  assert_equal([
+    ['"args" is a String, expected a List', 'skip'],
+    ['"filetype" is a Number, expected a String or a List', 'skip'],
+    ['"omnicompl" is a Number, expected a Boolean', 'skip'],
+    ['"path" is a List, expected a String', 'skip'],
+    ['"processDiagHandler" is a String, expected a Funcref', 'skip'],
+  ], Problems({filetype: 1, path: ['sh'], args: '-c', omnicompl: 1,
+    processDiagHandler: 'Handler'}))
+
+  assert_equal([
+    ['"customNotificationHandlers" is a List, expected a Dict', 'reset'],
+    ['"customRequestHandlers" is a List, expected a Dict', 'reset'],
+    ['"debug" is a Number, expected a Boolean', 'reset'],
+    ['"features" is a List, expected a Dict', 'reset'],
+    ['"forceOffsetEncoding" is "utf-7", expected one of "utf-8", "utf-16", "utf-32"', 'reset'],
+    ['"initializationOptions" is a List, expected a Dict', 'reset'],
+    ['"languageId" is a String, expected a Funcref', 'reset'],
+    ['"name" is empty', 'reset'],
+    ['"rootSearch" is a String, expected a List', 'reset'],
+    ['"runIfSearch" is a String, expected a List', 'reset'],
+    ['"runUnlessSearch" is a String, expected a List', 'reset'],
+    ['"traceLevel" is "debug", expected one of "off", "messages", "verbose"', 'reset'],
+    ['"workspaceConfig" is a List, expected a Dict', 'reset'],
+  ], Problems({
+    filetype: 'c',
+    path: 'sh',
+    customNotificationHandlers: [],
+    customRequestHandlers: [],
+    debug: 1,
+    features: [],
+    forceOffsetEncoding: 'utf-7',
+    initializationOptions: [],
+    languageId: 'c',
+    name: '',
+    rootSearch: '.git/',
+    runIfSearch: 'a',
+    runUnlessSearch: 'b',
+    traceLevel: 'debug',
+    workspaceConfig: [],
+  }))
+
+  assert_equal([
+    ['"arg" is not a known key', 'report'],
+    ['"args[1]" is a List, expected a String or a Number', 'report'],
+    ['"customNotificationHandlers.x/y" is a String, expected a Funcref', 'report'],
+    ['"customRequestHandlers.x/z" is a Number, expected a Funcref', 'report'],
+    ['"features.codeActions" is not a known feature', 'report'],
+    ['"features.hover" is a Number, expected a Boolean', 'report'],
+    ['"filetype[0]" is empty', 'report'],
+    ['"filetype[1]" is a Number, expected a String', 'skip'],
+    ['"rootSearch[0]" is a Number, expected a String', 'report'],
+    ['"runIfSearch[0]" is a Number, expected a String', 'report'],
+    ['"runUnlessSearch[0]" is a Number, expected a String', 'report'],
+    ['"syncInit" is a Number, expected a Boolean', 'report'],
+  ], Problems({
+    filetype: ['', 1],
+    path: 'sh',
+    arg: [],
+    args: ['-c', []],
+    customNotificationHandlers: {'x/y': 'Handler'},
+    customRequestHandlers: {'x/z': 1},
+    features: {codeActions: true, hover: 1},
+    rootSearch: [1],
+    runIfSearch: [1],
+    runUnlessSearch: [1],
+    syncInit: 1,
+  }))
+
+  assert_equal([['"filetype" is empty', 'report']],
+    Problems({filetype: [], path: 'sh'}))
+  assert_equal([['"filetype" is empty', 'report']],
+    Problems({filetype: '', path: 'sh'}))
+enddef
+
+def g:Test_ConfigCheck_ServerNormalize()
+  var server: dict<any> = {filetype: 'c', path: 'sh', traceLevel: 'verbose',
+    syncInit: 1, features: {hover: false, codeActions: true}}
+  configcheck.ServerNormalize(server, configcheck.ServerProblems(server))
+  assert_equal({
+    filetype: 'c',
+    path: 'sh',
+    name: 'sh',
+    args: [],
+    customNotificationHandlers: {},
+    customRequestHandlers: {},
+    debug: false,
+    features: {hover: false, codeActions: true},
+    forceOffsetEncoding: '',
+    initializationOptions: {},
+    languageId: v:none,
+    processDiagHandler: null_function,
+    rootSearch: [],
+    runIfSearch: [],
+    runUnlessSearch: [],
+    syncInit: 1,
+    traceLevel: 'verbose',
+    workspaceConfig: {},
+  }, server)
+
+  server = {filetype: 'c', path: 'sh', name: 1, debug: 'on',
+    traceLevel: 'debug', forceOffsetEncoding: 'utf-7', features: [],
+    rootSearch: '.git/'}
+  configcheck.ServerNormalize(server, configcheck.ServerProblems(server))
+  assert_equal('sh', server.name)
+  assert_equal(false, server.debug)
+  assert_equal('off', server.traceLevel)
+  assert_equal('', server.forceOffsetEncoding)
+  assert_equal({}, server.features)
+  assert_equal([], server.rootSearch)
+enddef
+
+def g:Test_ConfigCheck_ConfigProblems()
+  var defaults = opt.lspOptionDefaults
+  var servers = [
+    {name: 'named', filetype: 'c', path: 'xNoSuchLspServer', bogus: 1},
+    {filetype: 'c', path: '/usr/bin/xNoSuchLspServer.exe'},
+    {filetype: 'c'},
+  ]
+  assert_equal([
+    'option "bogus" is not a known option',
+    'server "named": "bogus" is not a known key',
+    'server "named": "path" is not executable: xNoSuchLspServer',
+    'server "xNoSuchLspServer": "path" is not executable: /usr/bin/xNoSuchLspServer.exe',
+    'server #3: "path" is missing',
+  ], configcheck.ConfigProblems({bogus: 1}, defaults, servers))
+
+  assert_equal([
+    'server "named": "bogus" is not a known key',
+    'server #3: "path" is missing',
+  ], configcheck.ConfigProblems({ignoreMissingServer: true}, defaults,
+    servers))
+enddef
+
+def g:Test_ConfigCheck_DocTags()
+  var doc = readfile('../doc/lsp.txt')->join("\n")
+  var Tags = (prefix: string): list<string> => {
+    var names: list<string> = []
+    doc->substitute($'\*{prefix}-\(\w\+\)\*',
+      (m) => string(names->add(m[1])), 'g')
+    return names->sort()
+  }
+  assert_equal(configcheck.featureNames->copy()->sort(), Tags('lsp-features'))
+  assert_equal(configcheck.serverKeys->keys()->sort(), Tags('lsp-cfg'))
+enddef
+
+def g:Test_ConfigCheck_Command()
+  var bad = {name: 'xcheck', filetype: 'xconfigcheck', path: 'sh', args: '-c',
+    featurs: {}}
+  var entries = [bad]
+  :messages clear
+  g:LspAddServer(entries)
+  assert_equal('Error: LSP server "xcheck": "args" is a String, expected a List',
+    execute('messages')->split("\n")[-1])
+  assert_equal([bad], entries)
+  assert_equal({name: 'xcheck', filetype: 'xconfigcheck', path: 'sh',
+    args: '-c', featurs: {}}, bad)
+  assert_false(g:LspServerRunning('xconfigcheck'))
+
+  g:LspOptionsSet({xConfigCheckOption: 1})
+  var expected = [
+    'option "xConfigCheckOption" is not a known option',
+    'server "xcheck": "args" is a String, expected a List',
+    'server "xcheck": "featurs" is not a known key',
+  ]
+  try
+    for _ in range(2)
+      :LspConfigCheck
+      assert_equal('LSP-Config-Check', bufname())
+      assert_equal(expected, getline(1, '$'))
+      assert_false(&modifiable)
+    endfor
+    assert_equal(1, getbufinfo()
+      ->filter((_, b) => b.name =~ 'LSP-Config-Check$')->len())
+
+    opt.lspOptions->remove('xConfigCheckOption')
+    g:LspAddServer([{name: 'xcheck', filetype: 'xconfigcheck', path: 'sh',
+      args: ['-c', 'exit'], traceLevel: 'verbose'}])
+    :wincmd p
+    :messages clear
+    :LspConfigCheck
+    assert_equal('Info: The LSP configuration is good',
+      execute('messages')->split("\n")[-1])
+    assert_equal('LSP-Config-Check', bufname())
+    assert_equal(['The LSP configuration is good'], getline(1, '$'))
+  finally
+    opt.lspOptions->filter((k, _) => k != 'xConfigCheckOption')
+    :%bw!
+  endtry
+
+  :messages clear
+  :LspConfigCheck
+  assert_equal('Info: The LSP configuration is good',
+    execute('messages')->split("\n")[-1])
+  assert_equal(1, winnr('$'))
 enddef
 
 # vim: tabstop=8 shiftwidth=2 softtabstop=2 noexpandtab

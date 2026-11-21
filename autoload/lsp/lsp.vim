@@ -31,9 +31,12 @@ import './folding.vim'
 import './linkedediting.vim'
 import './snippet.vim'
 import './fileoperations.vim'
+import './configcheck.vim'
 
 # filetype to LSP server map
 var ftypeServerMap: dict<list<dict<any>>> = {}
+
+var serverEntries: list<dict<any>> = []
 
 var lspInitializedOnce = false
 var lspUserSetupOnce = false
@@ -1165,13 +1168,41 @@ def AddServerForFiltype(lspserver: dict<any>, ftype: string, omnicompl: bool)
   AddBuffersToLsp(ftype)
 enddef
 
+def RememberServerEntry(entry: dict<any>)
+  var id: string = configcheck.ServerId(entry)
+  var idx: number = serverEntries->indexof((_, v) =>
+    configcheck.ServerId(v) == id)
+  if idx == -1
+    serverEntries->add(entry)
+  else
+    serverEntries[idx] = entry
+  endif
+enddef
+
 # Register a LSP server for one or more file types
 export def AddServer(serverList: list<dict<any>>)
-  for server in serverList
-    if !server->has_key('filetype') || !server->has_key('path')
-      util.ErrMsg('LSP server information is missing filetype or path')
+  for i in range(serverList->len())
+    RememberServerEntry(serverList[i]->deepcopy())
+
+    var server: dict<any> = serverList[i]->deepcopy()
+    var problems: list<dict<any>> = configcheck.ServerProblems(server)
+    var skip: bool = false
+    for problem in problems
+      if problem.action == 'skip'
+	skip = true
+	# Skip missing executables unless user opted into silent ignore.
+	if !problem.missing || !opt.lspOptions.ignoreMissingServer
+	  var label: string = configcheck.ServerLabel(server, i + 1)
+	  util.ErrMsg($'LSP server {label}: {problem.text}')
+	endif
+      endif
+    endfor
+    if skip
       continue
     endif
+
+    configcheck.ServerNormalize(server, problems)
+
     # Enable omni-completion by default when auto-complete is disabled, unless
     # the user explicitly overrides this per server.
     var omnicompl_def: bool = false
@@ -1182,127 +1213,37 @@ export def AddServer(serverList: list<dict<any>>)
     endif
     server.omnicompl = server->get('omnicompl', omnicompl_def)
 
-    server.path = expandcmd(server.path)
-
-    # Skip missing executables unless user opted into silent ignore.
-    if !server.path->executable()
-      if !opt.lspOptions.ignoreMissingServer
-        util.ErrMsg($'LSP server {server.path} is not found')
-      endif
-      continue
-    endif
-    if server->has_key('args')
-      if server.args->type() != v:t_list
-        util.ErrMsg($'Arguments for LSP server {server.args} is not a List')
-        continue
-      endif
-    else
-      server.args = []
-    endif
-
-    # Normalize optional fields to canonical types expected by NewLspServer().
-    if !server->has_key('initializationOptions')
-	|| server.initializationOptions->type() != v:t_dict
-      server.initializationOptions = {}
-    endif
-
-    if !server->has_key('forceOffsetEncoding')
-	|| server.forceOffsetEncoding->type() != v:t_string
-	|| (server.forceOffsetEncoding != 'utf-8'
-	    && server.forceOffsetEncoding != 'utf-16'
-	    && server.forceOffsetEncoding != 'utf-32')
-      server.forceOffsetEncoding = ''
-    endif
-
-    if !server->has_key('customNotificationHandlers')
-	|| server.customNotificationHandlers->type() != v:t_dict
-      server.customNotificationHandlers = {}
-    endif
-
-    if server->has_key('processDiagHandler')
-      if server.processDiagHandler->type() != v:t_func
-        util.ErrMsg($'Setting of processDiagHandler {server.processDiagHandler} is not a Funcref nor lambda')
-        continue
-      endif
-    else
-      server.processDiagHandler = null_function
-    endif
-
-    if !server->has_key('customRequestHandlers')
-	|| server.customRequestHandlers->type() != v:t_dict
-      server.customRequestHandlers = {}
-    endif
-
-    if !server->has_key('features') || server.features->type() != v:t_dict
-      server.features = {}
-    endif
-
-    if server.omnicompl->type() != v:t_bool
-      util.ErrMsg($'Setting of omnicompl {server.omnicompl} is not a Boolean')
-      continue
-    endif
-
-    if !server->has_key('syncInit')
-      server.syncInit = false
-    endif
-
-    if !server->has_key('name') || server.name->type() != v:t_string
-	|| server.name->empty()
-      # Use the executable name (without the extension) as the language server
-      # name.
-      server.name = server.path->fnamemodify(':t:r')
-    endif
-
-    if !server->has_key('debug') || server.debug->type() != v:t_bool
-      server.debug = false
-    endif
-
-    if !server->has_key('traceLevel')
-	|| server->type() != v:t_string
-	|| (server.traceLevel != 'off' && server.traceLevel != 'debug'
-	    && server.traceLevel != 'verbose')
-      server.traceLevel = 'off'
-    endif
-
-    if !server->has_key('workspaceConfig')
-	|| server.workspaceConfig->type() != v:t_dict
-      server.workspaceConfig = {}
-    endif
-
-    if !server->has_key('rootSearch') || server.rootSearch->type() != v:t_list
-      server.rootSearch = []
-    endif
-
-    if !server->has_key('runIfSearch') ||
-	server.runIfSearch->type() != v:t_list
-      server.runIfSearch = []
-    endif
-
-    if !server->has_key('runUnlessSearch') ||
-	server.runUnlessSearch->type() != v:t_list
-      server.runUnlessSearch = []
-    endif
-
-    if !server->has_key('languageId') ||
-	server.languageId->type() != v:t_func
-      server.languageId = v:none
-    endif
-
     # Freeze normalized config into a concrete server instance.
     var lspserver: dict<any> = lserver.NewLspServer(server)
 
-    var ftypes = server.filetype
+    var ftypes: any = server.filetype
     if ftypes->type() == v:t_string
       AddServerForFiltype(lspserver, ftypes, server.omnicompl)
-    elseif ftypes->type() == v:t_list
+    else
       for ftype in ftypes
 	AddServerForFiltype(lspserver, ftype, server.omnicompl)
       endfor
-    else
-      util.ErrMsg($'Unsupported file type information "{ftypes->string()}" in LSP server registration')
-      continue
     endif
   endfor
+enddef
+
+export def ConfigCheck()
+  var lines: list<string> = configcheck.ConfigProblems(opt.lspOptions,
+    opt.lspOptionDefaults, serverEntries)
+  var bname: string = 'LSP-Config-Check'
+  if lines->empty()
+    var good: string = 'The LSP configuration is good'
+    util.InfoMsg(good)
+    if scratchBufnrs->get(bname, -1)->bufwinid() == -1
+      return
+    endif
+    lines = [good]
+  endif
+
+  OpenScratchWindow(bname)
+  setline(1, lines)
+  :setlocal nomodified
+  :setlocal nomodifiable
 enddef
 
 # The LSP server is considered ready when the server capabilities are
