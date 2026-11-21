@@ -550,6 +550,50 @@ def g:Test_ServerExit_ReportsHow()
   endtry
 enddef
 
+def ConfigNotification(settings: dict<any>): dict<any>
+  return {method: 'workspace/didChangeConfiguration',
+	  params: {settings: settings}}
+enddef
+
+def g:Test_LspServerReconfigure_TellsReadyServersOfBuffer()
+  silent! edit XReconfigure.txt
+  var bnr = bufnr()
+  var readyNotifs: list<dict<any>> = []
+  var startingNotifs: list<dict<any>> = []
+  var readyServer = MakeTestLspServer(readyNotifs)
+  readyServer.running = true
+  readyServer.ready = true
+  readyServer.workspaceConfig = {stub: {level: 1}}
+  var startingServer = MakeTestLspServer(startingNotifs)
+  startingServer.running = true
+  buf.BufLspServerSet(bnr, readyServer)
+  buf.BufLspServerSet(bnr, startingServer)
+  try
+    :LspServer reconfigure
+    assert_equal([ConfigNotification({stub: {level: 1}})], readyNotifs)
+    assert_equal([], startingNotifs)
+    assert_equal('Info: Sent the workspace configuration to 1 language server',
+		 LastMessage())
+
+    startingServer.ready = true
+    :LspServer reconfigure
+    assert_equal(2, readyNotifs->len())
+    assert_equal([ConfigNotification({})], startingNotifs)
+    assert_equal('Info: Sent the workspace configuration to 2 language servers',
+		 LastMessage())
+
+    assert_equal(['reconfigure', 'restart'],
+		 getcompletion('LspServer re', 'cmdline'))
+  finally
+    buf.BufLspServerRemove(bnr, readyServer)
+    buf.BufLspServerRemove(bnr, startingServer)
+    :%bw!
+  endtry
+
+  :LspServer reconfigure
+  assert_match('^Warn: No Lsp servers found for ', LastMessage())
+enddef
+
 # Test that a message from the server isn't kept in the server dict once it is
 # processed, as Vim may go through all of it on every server method call.
 def g:Test_ProcessMessage_DoesNotKeepMessage()

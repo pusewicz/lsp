@@ -50,6 +50,7 @@ The following language server protocol (LSP) features are supported:
 * Linked editing (e.g. renaming an HTML tag also renames its closing tag)
 * Visually select symbol block/region
 * Semantic Highlight
+* Workspace configuration, which can be changed and sent again without a restart of the language server
 * Notify the language servers of changes to the files that they watch, also the changes made outside Vim (with [fswatch](https://github.com/emcrisostomo/fswatch)); a server can be left to watch its own files
 
 ## Configuration
@@ -248,7 +249,7 @@ Command|Description
 `:LspSelectionExpand`|Expand the current symbol range visual selection.
 `:LspSelectionShrink`|Shrink the current symbol range visual selection.
 `:LspShowAllServers`|Display information about all the registered language servers.
-`:LspServer`|Display the capabilities or messages or status of the language server for the current buffer or restart the server.
+`:LspServer`|Display the capabilities or messages or status of the language server for the current buffer, restart the server or send it the workspace configuration again (`:LspServer reconfigure`). `g:LspServerConfigSet()` changes the workspace configuration of a running server.
 `:LspShowReferences`|Display the list of references to the keyword under cursor in a new location list.
 `:LspShowSignature`|Display the signature of the keyword under cursor.
 `:LspSubTypeHierarchy`|Display the sub type hierarchy in a popup window.
