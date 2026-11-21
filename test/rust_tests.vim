@@ -114,7 +114,7 @@ def g:Test_LspCodeAction_RenameFile()
     cursor(1, 5)
     :LspRename foobaz
     g:WaitForReplies()
-    g:WaitForServerFileLoad(0)
+    assert_false(filereadable('foobar.rs'))
     assert_true(filereadable('foobaz.rs'))
     :%bw!
     delete('foobaz.rs')
