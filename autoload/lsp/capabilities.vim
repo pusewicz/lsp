@@ -475,11 +475,15 @@ export def ProcessServerCaps(lspserver: dict<any>, caps: dict<any>)
   if lspserver.caps->has_key('diagnosticProvider')
     if lspserver.caps.diagnosticProvider->type() == v:t_bool
       lspserver.isDiagnosticsProvider = lspserver.caps.diagnosticProvider
+      lspserver.isWorkspaceDiagnosticsProvider = false
     else
       lspserver.isDiagnosticsProvider = true
+      lspserver.isWorkspaceDiagnosticsProvider =
+	lspserver.caps.diagnosticProvider->get('workspaceDiagnostics', false)
     endif
   else
     lspserver.isDiagnosticsProvider = false
+    lspserver.isWorkspaceDiagnosticsProvider = false
   endif
 
   # workspaceSymbolProvider

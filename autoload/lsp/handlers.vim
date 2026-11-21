@@ -98,6 +98,8 @@ if !exists('g:LspProgress')
   g:LspProgress = {}
 endif
 
+# TODO-UPDATE-COMMENT: the value is a WorkspaceDiagnosticReportPartialResult when the token is the partial result token of the "workspace/diagnostic" request
+# ---
 # process the $/progress notification
 # Notification: $/progress
 # Param: ProgressParams { token, value: WorkDoneProgressBegin | Report | End }
@@ -106,6 +108,14 @@ def ProcessProgressNotif(lspserver: dict<any>, reply: dict<any>)
   var token = params.token
   var tokenKey = token->string()
   var value = params.value
+
+  if token->type() == v:t_string
+      && token->stridx(diag.WORKSPACE_DIAG_TOKEN_PREFIX) == 0
+    if token == lspserver.workspaceDiagToken
+      diag.WorkspaceDiagReports(lspserver, value)
+    endif
+    return
+  endif
 
   lspserver.supportsWorkDoneProgress = true
 
@@ -472,11 +482,16 @@ def ProcessRefreshReq(Refresh: func(dict<any>), lspserver: dict<any>,
   Refresh(lspserver)
 enddef
 
+# TODO-UPDATE-COMMENT: also asks for the workspace diagnostics again when they are wanted
+# ---
 # Pull the diagnostics of every document open on "lspserver".
 def PullAllDiagnostics(lspserver: dict<any>)
   for bnr in lspserver.docBufnrs->values()
     lspserver.pullDiagnostics(bnr)
   endfor
+  if lspserver.workspaceDiagWanted
+    lspserver.pullWorkspaceDiagnostics()
+  endif
 enddef
 
 # process the client/registerCapability LSP server request

@@ -865,16 +865,20 @@ enddef
 # plugin escapes it.  Only a document that isn't open on the server is looked
 # up by its file name, which takes time proportional to the number of buffers.
 def DiagBufnr(docBufnrs: dict<number>, uri: string): number
+  var bnr: number = OpenDocBufnr(docBufnrs, uri)
+  if bnr != -1
+    return bnr
+  endif
+  return util.BufnrExact(util.LspUriToFile(uri))
+enddef
+
+def OpenDocBufnr(docBufnrs: dict<number>, uri: string): number
   var bnr: number = docBufnrs->get(uri, -1)
   if bnr->bufexists()
     return bnr
   endif
-  var fname: string = util.LspUriToFile(uri)
-  bnr = docBufnrs->get(util.LspFileToUri(fname), -1)
-  if bnr->bufexists()
-    return bnr
-  endif
-  return util.BufnrExact(fname)
+  bnr = docBufnrs->get(util.LspFileToUri(util.LspUriToFile(uri)), -1)
+  return bnr->bufexists() ? bnr : -1
 enddef
 
 # process a diagnostic notification message from the LSP server
@@ -1067,8 +1071,12 @@ def DiagsLocListItems(bnr: number): list<dict<any>>
   if !diagsMap->has_key(bnr)
     return []
   endif
+  return BufDiagsListItems(bnr, ListedDiags(diagsMap[bnr].sortedDiagnostics))
+enddef
+
+def BufDiagsListItems(bnr: number, diags: list<dict<any>>): list<dict<any>>
   var items: list<dict<any>> = []
-  for diag in ListedDiags(diagsMap[bnr].sortedDiagnostics)
+  for diag in diags
     items->add(DiagLocListItem(bnr, diag))
     for related in DiagRelatedInfo(diag)
       items->add(RelatedInfoLocListItem(diag, related))
@@ -1146,6 +1154,226 @@ export def ShowAllDiags(): void
   # make the diagnostics error list the active one and open it
   execute($':{getloclist(save_winid, {id: id, nr: 0}).nr} lhistory', 'silent')
   :lopen
+  if !opt.lspOptions.keepFocusInDiags
+    save_winid->win_gotoid()
+  endif
+enddef
+
+var workspaceDiags: dict<dict<dict<any>>> = {}
+
+export const WORKSPACE_DIAG_TOKEN_PREFIX: string = 'lsp-workspace-diagnostic-'
+
+const workspaceDiagsQfTitle: string = 'Language Server Workspace Diagnostics'
+
+const WORKSPACE_QF_UPDATE_DELAY = 100
+var workspaceQfServers: list<dict<any>> = []
+var workspaceQfTimer: number = -1
+
+def StringItem(d: dict<any>, key: string): string
+  var value: any = d->get(key, '')
+  return value->type() == v:t_string ? value : ''
+enddef
+
+def WorkspaceDiagReport(lspserver: dict<any>, report: any): bool
+  if report->type() != v:t_dict
+    return false
+  endif
+  var uri: string = StringItem(report, 'uri')
+  var kind: string = StringItem(report, 'kind')
+  if uri->empty() || (kind != 'full' && kind != 'unchanged')
+    return false
+  endif
+
+  var serverId: string = lspserver.id->string()
+  if !workspaceDiags->has_key(serverId)
+    workspaceDiags[serverId] = {}
+  endif
+  var docs: dict<dict<any>> = workspaceDiags[serverId]
+  var resultId: string = StringItem(report, 'resultId')
+
+  if kind == 'unchanged'
+    if docs->has_key(uri) && !resultId->empty()
+      docs[uri].resultId = resultId
+    endif
+    return false
+  endif
+
+  var diags: any = report->get('items', [])
+  if diags->type() != v:t_list
+    return false
+  endif
+  if docs->has_key(uri) && docs[uri].diags == diags
+    docs[uri].resultId = resultId
+    return false
+  endif
+  docs[uri] = {resultId: resultId, diags: diags}
+
+  if OpenDocBufnr(lspserver.docBufnrs, uri) == -1
+    var bnr: number = util.BufnrExact(util.LspUriToFile(uri))
+    if bnr != -1 && bnr->bufloaded()
+      DiagNotification(lspserver, uri, diags->deepcopy(), 'pull')
+    endif
+  endif
+  return true
+enddef
+
+export def WorkspaceDiagReports(lspserver: dict<any>, result: any)
+  if result->type() != v:t_dict
+    return
+  endif
+  var reports: any = result->get('items', [])
+  if reports->type() != v:t_list
+    return
+  endif
+  var changed: bool = false
+  for report in reports
+    if WorkspaceDiagReport(lspserver, report)
+      changed = true
+    endif
+  endfor
+  if changed && !workspaceQfServers->empty() && workspaceQfTimer == -1
+    workspaceQfTimer = timer_start(WORKSPACE_QF_UPDATE_DELAY,
+				   WorkspaceDiagsQfUpdate)
+  endif
+enddef
+
+export def WorkspaceDiagResultIds(lspserver: dict<any>): list<dict<string>>
+  var ids: list<dict<string>> = []
+  for [uri, doc] in workspaceDiags->get(lspserver.id->string(), {})->items()
+    if !doc.resultId->empty()
+      ids->add({uri: uri, value: doc.resultId})
+    endif
+  endfor
+  return ids
+enddef
+
+export def WorkspaceDiagsClear(lspserver: dict<any>)
+  var serverId: string = lspserver.id->string()
+  if workspaceDiags->has_key(serverId)
+    workspaceDiags->remove(serverId)
+  endif
+enddef
+
+def ServerDiagsQfItems(bnr: number, serverId: string): list<dict<any>>
+  if !diagsMap->has_key(bnr)
+    return []
+  endif
+  var diags: list<dict<any>> = []
+  for kindDiags in diagsMap[bnr].serverDiagnostics->get(serverId, {})->values()
+    diags->extend(kindDiags)
+  endfor
+  return BufDiagsListItems(bnr,
+			   ListedDiags(SortDiags(DeduplicateDiags(diags))))
+enddef
+
+def FileLines(fname: string, count: number): list<string>
+  var bnr: number = util.BufnrExact(fname)
+  if bnr != -1 && bnr->bufloaded()
+    return bnr->getbufline(1, count)
+  endif
+  return fname->filereadable() ? fname->readfile('', count) : []
+enddef
+
+def DecodeFilePos(lspserver: dict<any>, lines: list<string>,
+		  pos: dict<number>): number
+  if pos.line < 0 || pos.line >= lines->len()
+    return pos.character + 1
+  endif
+  var text: string = lines[pos.line]
+  pos.character = offset.DecodeCharacter(lspserver, text, pos.character)
+  return LineByteFromCharIdx([text], pos.character) + 1
+enddef
+
+def FileDiagsQfItems(lspserver: dict<any>, fname: string,
+		     doc: dict<any>): list<dict<any>>
+  if doc->has_key('qfItems')
+    return doc.qfItems
+  endif
+  var diags: list<dict<any>> = SortDiags(ListedDiags(doc.diags->deepcopy()))
+  var lines: list<string> = diags->empty() ? []
+    : FileLines(fname, diags->mapnew((_, d) => d.range.end.line)->max() + 1)
+  var items: list<dict<any>> = []
+  for diag in diags
+    var range: dict<dict<number>> = diag.range
+    var col: number = DecodeFilePos(lspserver, lines, range.start)
+    var endCol: number = DecodeFilePos(lspserver, lines, range.end)
+    offset.DecodeRelatedInfo(lspserver, diag)
+    items->add({
+      filename: fname,
+      lnum: range.start.line + 1,
+      col: col,
+      end_lnum: range.end.line + 1,
+      end_col: endCol,
+      text: diag.message->substitute("\n\\+", "\n", 'g'),
+      type: DiagSevToQfType(diag->get('severity', 1)),
+      user_data: {diagnostic: diag}
+    })
+    for related in DiagRelatedInfo(diag)
+      items->add(RelatedInfoLocListItem(diag, related))
+    endfor
+  endfor
+  doc.qfItems = items
+  return items
+enddef
+
+def WorkspaceDiagsQfItems(lspservers: list<dict<any>>): list<dict<any>>
+  var files: list<list<any>> = []
+  for lspserver in lspservers
+    var serverId: string = lspserver.id->string()
+    for bnr in lspserver.docBufnrs->values()
+      if bnr->bufexists()
+	files->add([bnr->bufname()->fnamemodify(':p'),
+		    ServerDiagsQfItems(bnr, serverId)])
+      endif
+    endfor
+    for [uri, doc] in workspaceDiags->get(serverId, {})->items()
+      if doc.diags->empty() || OpenDocBufnr(lspserver.docBufnrs, uri) != -1
+	continue
+      endif
+      var fname: string = util.LspUriToFile(uri)
+      files->add([fname, FileDiagsQfItems(lspserver, fname, doc)])
+    endfor
+  endfor
+  files->sort((a, b) => a[0] ==# b[0] ? 0 : a[0] ># b[0] ? 1 : -1)
+
+  var items: list<dict<any>> = []
+  for file in files
+    items->extend(file[1])
+  endfor
+  return items
+enddef
+
+def WorkspaceDiagsQfId(): number
+  for nr in range(getqflist({nr: '$'}).nr, 1, -1)
+    var qfl: dict<any> = getqflist({nr: nr, id: 0, title: 0})
+    if qfl.title == workspaceDiagsQfTitle
+      return qfl.id
+    endif
+  endfor
+  return 0
+enddef
+
+def WorkspaceDiagsQfUpdate(_timerid: number)
+  workspaceQfTimer = -1
+  var id: number = WorkspaceDiagsQfId()
+  if id != 0
+    setqflist([], 'u',
+	      {id: id, items: WorkspaceDiagsQfItems(workspaceQfServers)})
+  endif
+enddef
+
+export def ShowWorkspaceDiags(lspservers: list<dict<any>>)
+  workspaceQfServers = lspservers
+  var save_winid: number = win_getid()
+  var items: list<dict<any>> = WorkspaceDiagsQfItems(lspservers)
+  var id: number = WorkspaceDiagsQfId()
+  if id == 0
+    setqflist([], ' ', {nr: '$', title: workspaceDiagsQfTitle, items: items})
+  else
+    setqflist([], 'u', {id: id, items: items})
+    execute($':{getqflist({id: id, nr: 0}).nr} chistory', 'silent')
+  endif
+  :copen
   if !opt.lspOptions.keepFocusInDiags
     save_winid->win_gotoid()
   endif

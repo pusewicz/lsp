@@ -624,6 +624,8 @@ when no keys are pending.
 			messages are found.
 :LspDiag show		Display the diagnostics messages from the language
 			server for the current buffer in a location list.
+:LspDiag workspace	Display the diagnostics messages from the language
+			servers for the whole workspace in a quickfix list.
 :LspDocumentLink	Display the links in the current file in a location
 			list.
 :LspDocumentLinkOpen	Open the target of the link under cursor.
@@ -1819,6 +1821,14 @@ hints displayed only by the highlight for their tag (|lsp-diags-tags|).
 			window.  See |lsp-diags-loclist|.  You can use the
 			Vim location list commands to browse the list.
 
+						*:LspDiag-workspace*
+:LspDiag workspace	Ask the language servers for the diagnostics of the
+			whole workspace, put the ones reported so far in a
+			quickfix list, also for the files that are not in a
+			buffer, and open the quickfix window.  The list is
+			updated when the servers report more.  See
+			|lsp-workspace-diagnostics|.
+
 ------------------------------------------------------------------------------
 							*lsp-server-cmds*
 5.8 Server & Workspace Management~
@@ -2235,7 +2245,8 @@ ignoreMissingServer	|Boolean| option.  Do not print a missing language
 
 						*lsp-opt-keepFocusInDiags*
 keepFocusInDiags     	|Boolean| option.  Focus on the location list window
-			after ":LspDiag show".
+			after ":LspDiag show", and on the quickfix window
+			after ":LspDiag workspace".
 			By default this is set to true.
 
 					*lsp-opt-keepFocusInReferences*
@@ -2729,6 +2740,17 @@ watchFiles		|Boolean| option.  Send the language servers the
 			"watchFiles" feature (|lsp-features-watchFiles|).
 
 			Default: |true|
+
+						*lsp-opt-workspaceDiagnostics*
+workspaceDiagnostics	|Boolean| option.  Ask a language server that can
+			report the diagnostics of the whole workspace for
+			them as soon as it is ready.  Otherwise the server is
+			asked only by the ":LspDiag workspace" command.  A
+			server then examines every file of the project, not
+			only the ones that are open.  See
+			|lsp-workspace-diagnostics|.
+
+			Default: |false|
 
 						*lsp-opt-workspaceIgnoredPaths*
 workspaceIgnoredPaths	|List| option.  Directory paths that are never
@@ -3338,6 +3360,38 @@ diagnostics list in place, without making it the current list again.  A
 location list stack holds at most ten lists: when ten newer lists push the
 diagnostics list out of the stack, a new one is added at the end of the stack
 when it is needed again.
+
+						*lsp-workspace-diagnostics*
+A language server can also report the diagnostics of the whole workspace,
+with the files that are not open in Vim ("workspace/diagnostic" request).  A
+server that can do this has "workspaceDiagnostics" in its "diagnosticProvider"
+capability (see ":LspServer show capabilities"); some servers need a setting
+of their own for this.  The ":LspDiag workspace" command asks all such running
+servers.  To ask a server as soon as it is ready, set the
+"workspaceDiagnostics" option to |v:true|.  By default this option is set to
+|v:false|, because the server then examines every file of the project.
+
+A server can send its reports in parts and can keep the request open for as
+long as it likes.  Each part is used when it arrives.  When the server
+completes the request, it is sent again two seconds later, and also when the
+server asks for a refresh ("workspace/diagnostic/refresh").  The request has
+the result identifier of each report, thus the server reports only the files
+whose diagnostics changed.
+
+":LspDiag workspace" puts the diagnostics reported so far in a quickfix list
+titled "Language Server Workspace Diagnostics", sorted by file name, and opens
+the quickfix window.  The command uses the same list again when it is still in
+the quickfix stack.  The list is updated in place when a server reports more,
+and the selected item stays selected.  The "keepFocusInDiags" option also
+applies to this window.
+
+A report for a document that is open on the server is not used for its
+buffer: the diagnostics that the server reports for the document itself come
+first, and the quickfix list shows those.  A report for a file that is loaded
+in a buffer but not open on the server is displayed in that buffer like any
+other diagnostics.  A file that is not loaded in a buffer is not loaded for
+this.  When you open it from the list, it is opened on the server and gets
+its signs and highlights as usual.
 
 In GUI Vim or terminal Vim with the 'balloonevalterm' option enabled, a
 helpful feature allows you to view diagnostic messages in a popup balloon when

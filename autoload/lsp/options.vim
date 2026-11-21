@@ -103,6 +103,8 @@ export var lspOptions: dict<any> = {
   # Don't print message when a configured language server is missing.
   ignoreMissingServer: false,
 
+  # TODO-UPDATE-COMMENT: also the quickfix window after ":LspDiag workspace"
+  # ---
   # Focus on the location list window after ":LspDiag show"
   keepFocusInDiags: true,
 
@@ -298,6 +300,8 @@ export var lspOptions: dict<any> = {
   # Send the language servers the changes to the files that they watch, made
   # in Vim and by other programs.  Needs the fswatch program.
   watchFiles: true,
+
+  workspaceDiagnostics: false,
 
   # list of directories that should never be used as workspace root
   workspaceIgnoredPaths: ['/', $"{$HOME}", $"{$HOME}/.cargo", $"{$HOME}/.cargo/**", $"{$HOME}/.rustup", $"{$HOME}/.rustup/**", $"{$HOME}/pkg/mod", $"{$HOME}/pkg/mod/**"]

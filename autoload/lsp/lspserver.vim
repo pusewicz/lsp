@@ -39,6 +39,8 @@ import './fileoperations.vim'
 
 const DIAG_PULL_DEBOUNCE_MSEC = 200
 
+const WORKSPACE_DIAG_REPULL_MSEC = 2000
+
 # The time in milliseconds that the changes to a document are collected for
 # before they are sent to a server that gets the whole text on each change:
 # while typing, that sends the text once for several keys.  The changes are
@@ -81,6 +83,7 @@ def Exit_cb(lspserver: dict<any>, job: job, status: number): void
     lspserver.diagnosticPullTimer = -1
   endif
   ClearMap(lspserver.pendingPullBufnrs)
+  StopWorkspaceDiagnostics(lspserver)
   StopDocChangeTimer(lspserver)
   ClearMap(lspserver.pendingRequests)
   ClearMap(lspserver.awaitedReplies)
@@ -128,6 +131,8 @@ def StartServer(lspserver: dict<any>, bnr: number): number
   ClearMap(lspserver.workDoneProgressTokens)
   ClearMap(lspserver.pendingPullBufnrs)
   lspserver.diagnosticPullTimer = -1
+  StopWorkspaceDiagnostics(lspserver)
+  diag.WorkspaceDiagsClear(lspserver)
   StopDocChangeTimer(lspserver)
   ClearMap(lspserver.pendingRequests)
   ClearMap(lspserver.awaitedReplies)
@@ -203,6 +208,10 @@ def ServerInitReply(lspserver: dict<any>, initResult: any,
   # set the server debug trace level
   if lspserver.traceLevel != 'off'
     lspserver.setTrace(lspserver.traceLevel)
+  endif
+
+  if opt.lspOptions.workspaceDiagnostics || lspserver.workspaceDiagWanted
+    lspserver.pullWorkspaceDiagnostics()
   endif
 
   # if the outline window is opened, then request the symbols for the current
@@ -343,6 +352,7 @@ def StopServer(lspserver: dict<any>): number
     lspserver.diagnosticPullTimer = -1
   endif
   ClearMap(lspserver.pendingPullBufnrs)
+  StopWorkspaceDiagnostics(lspserver)
   StopDocChangeTimer(lspserver)
   ClearMap(lspserver.pendingRequests)
   ClearMap(lspserver.awaitedReplies)
@@ -1532,6 +1542,80 @@ def PullDiagnosticsReply(lspserver: dict<any>, bnr: number, uri: string,
   elseif reportKind == 'full' && lspserver.diagnosticResultIds->has_key(bnr)
     lspserver.diagnosticResultIds->remove(bnr)
   endif
+enddef
+
+def StopWorkspaceDiagnostics(lspserver: dict<any>)
+  if lspserver.workspaceDiagTimer != -1
+    timer_stop(lspserver.workspaceDiagTimer)
+    lspserver.workspaceDiagTimer = -1
+  endif
+  lspserver.workspaceDiagToken = ''
+enddef
+
+def QueuePullWorkspaceDiagnostics(lspserver: dict<any>)
+  if lspserver.workspaceDiagTimer != -1
+    timer_stop(lspserver.workspaceDiagTimer)
+  endif
+  lspserver.workspaceDiagTimer = timer_start(WORKSPACE_DIAG_REPULL_MSEC,
+					     (_) => {
+    lspserver.workspaceDiagTimer = -1
+    lspserver.pullWorkspaceDiagnostics()
+  })
+enddef
+
+def PullWorkspaceDiagnostics(lspserver: dict<any>)
+  StopWorkspaceDiagnostics(lspserver)
+  if !lspserver.running || !lspserver.ready
+      || !lspserver.isWorkspaceDiagnosticsProvider
+      || !lspserver.featureEnabled('diagnostics')
+    return
+  endif
+
+  lspserver.workspaceDiagWanted = true
+  lspserver.workspaceDiagRequests += 1
+  var token: string =
+    $'{diag.WORKSPACE_DIAG_TOKEN_PREFIX}{lspserver.workspaceDiagRequests}'
+  var params: dict<any> = {
+    previousResultIds: diag.WorkspaceDiagResultIds(lspserver),
+    partialResultToken: token
+  }
+  var identifier: any = lspserver.caps->get('diagnosticProvider', {})
+    ->get('identifier', '')
+  if identifier->type() == v:t_string && !identifier->empty()
+    params.identifier = identifier
+  endif
+
+  lspserver.workspaceDiagToken = token
+  var id = AsyncRpcSupersede(lspserver, 'workspace/diagnostic',
+			     'workspace/diagnostic', params,
+			     (_: dict<any>, result: any, error: dict<any>) => {
+    PullWorkspaceDiagnosticsReply(lspserver, result, error)
+  }, {handleError: false})
+  if id == -1
+    lspserver.workspaceDiagToken = ''
+  endif
+enddef
+
+def PullWorkspaceDiagnosticsReply(lspserver: dict<any>, result: any,
+				  error: dict<any>)
+  lspserver.workspaceDiagToken = ''
+
+  if !error->empty()
+    var errorCode = error->get('code', 0)
+    var errorData = error->get('data', {})
+    if errorCode == LSP_ERROR_CONTENT_MODIFIED
+        || (errorCode == LSP_ERROR_SERVER_CANCELLED
+          && (errorData->type() != v:t_dict
+            || errorData->get('retriggerRequest', true)))
+      QueuePullWorkspaceDiagnostics(lspserver)
+    else
+      ProcessLspServerError('workspace/diagnostic', error)
+    endif
+    return
+  endif
+
+  diag.WorkspaceDiagReports(lspserver, result)
+  QueuePullWorkspaceDiagnostics(lspserver)
 enddef
 
 # Send a file/document change notification to the language server.
@@ -4115,6 +4199,11 @@ export def NewLspServer(serverParams: dict<any>): dict<any>
     typeHierFilePopup: -1,
     typeHierPopup: -1,
     workspaceConfig: serverParams.workspaceConfig->deepcopy(),
+    isWorkspaceDiagnosticsProvider: false,
+    workspaceDiagWanted: false,
+    workspaceDiagRequests: 0,
+    workspaceDiagToken: '',
+    workspaceDiagTimer: -1,
     workspaceSymbolPopup: -1,
     workspaceSymbolQuery: ''
   }
@@ -4197,6 +4286,7 @@ export def NewLspServer(serverParams: dict<any>): dict<any>
     pullDiagnostics: function(PullDiagnostics, [lspserver]),
     queuePullDiagnostics: function(QueuePullDiagnostics, [lspserver]),
     queuePullDiagnosticsAllBuffers: function(QueuePullDiagnosticsAllBuffers, [lspserver]),
+    pullWorkspaceDiagnostics: function(PullWorkspaceDiagnostics, [lspserver]),
     codeLens: function(CodeLens, [lspserver]),
     codeLensShow: function(CodeLensShow, [lspserver]),
     codeLensResolveVisible: function(CodeLensResolveVisible, [lspserver]),
