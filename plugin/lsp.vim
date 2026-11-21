@@ -135,6 +135,7 @@ command! -nargs=0 -bar -count LspPeekImpl lsp.GotoImplementation(v:true, <q-mods
 command! -nargs=0 -bar LspPeekReferences lsp.ShowReferences(v:true)
 command! -nargs=0 -bar -count LspPeekTypeDef lsp.GotoTypedef(v:true, <q-mods>, <count>)
 command! -nargs=? -bar LspRename lsp.Rename(<q-args>)
+command! -nargs=? -bar -complete=file LspRenameFile lsp.RenameFile(<q-args>)
 command! -nargs=0 -bar LspSelectionExpand lsp.SelectionExpand()
 command! -nargs=0 -bar LspSelectionShrink lsp.SelectionShrink()
 command! -nargs=+ -bar -complete=customlist,lsp.LspServerComplete LspServer lsp.LspServerCmd(<q-args>)

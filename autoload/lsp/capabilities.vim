@@ -5,6 +5,7 @@ vim9script
 import './options.vim' as opt
 import './protocol.vim'
 import './watchedfiles.vim'
+import './fileoperations.vim'
 
 # PrepareSupportDefaultBehavior.Identifier: the client selects the identifier
 # at the position according to the language's syntax rule.
@@ -44,6 +45,8 @@ export const RETRY_ON_CONTENT_MODIFIED: list<string> = [
 # Process the server capabilities
 #   interface ServerCapabilities
 export def ProcessServerCaps(lspserver: dict<any>, caps: dict<any>)
+  fileoperations.ProcessServerCaps(lspserver, caps)
+
   # positionEncoding
   var serverEncoding = 'utf-16'
   if lspserver.caps->has_key('positionEncoding')
@@ -735,6 +738,13 @@ export def GetClientCaps(watchFiles: bool = true): dict<any>
 	documentChanges: true,
 	resourceOperations: ['rename', 'create', 'delete'],
 	failureHandling: 'abort'
+      },
+      fileOperations: {
+	dynamicRegistration: true,
+	didCreate: true,
+	willCreate: true,
+	didRename: true,
+	willRename: true
       },
       configuration: true,
       codeLens: {

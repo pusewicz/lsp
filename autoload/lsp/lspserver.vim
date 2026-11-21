@@ -35,6 +35,7 @@ import './linkedediting.vim'
 import './semantichighlight.vim'
 import './buffer.vim' as buf
 import './watchedfiles.vim'
+import './fileoperations.vim'
 
 const DIAG_PULL_DEBOUNCE_MSEC = 200
 
@@ -86,6 +87,7 @@ def Exit_cb(lspserver: dict<any>, job: job, status: number): void
   lspserver.running = false
   lspserver.ready = false
   watchedfiles.RemoveServer(lspserver)
+  fileoperations.RemoveServer(lspserver)
 enddef
 
 # Remove all the items of "map", one of the typed maps of the server dict (see
@@ -347,6 +349,7 @@ def StopServer(lspserver: dict<any>): number
   lspserver.running = false
   lspserver.ready = false
   watchedfiles.RemoveServer(lspserver)
+  fileoperations.RemoveServer(lspserver)
   return 0
 enddef
 

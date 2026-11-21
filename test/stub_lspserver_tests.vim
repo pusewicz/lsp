@@ -23,6 +23,7 @@ import '../autoload/lsp/capabilities.vim' as capabilities
 import '../autoload/lsp/hover.vim' as hover
 import '../autoload/lsp/options.vim' as opt
 import '../autoload/lsp/watchedfiles.vim'
+import '../autoload/lsp/fileoperations.vim'
 
 def CaptureNotification(notifications: list<dict<any>>, method: string,
 			params: any = {}): void
@@ -12995,6 +12996,408 @@ def g:Test_Completion_AcceptWaitsForResolve()
     completion.OmniComplSet('c', false)
     StopAsyncReplyingLspServer(lspserver, bnr)
     :%bw!
+  endtry
+enddef
+
+def FileOpsRpc(messages: list<dict<any>>, replies: dict<dict<any>>,
+	       method: string, params: any, opts: dict<any> = {}): dict<any>
+  messages->add({method: method, params: params->deepcopy(),
+		 timeout: opts->get('timeout', -1)})
+  return replies->get(method, {})->deepcopy()
+enddef
+
+def MakeFileOpsServer(fileOps: dict<any>, replies: dict<dict<any>>,
+		      messages: list<dict<any>>,
+		      caps: dict<any> = {}): dict<any>
+  var lspserver = MakeCapsServer(
+    {workspace: {fileOperations: fileOps}}->extend(caps), messages)
+  lspserver.rpc = function(FileOpsRpc, [messages, replies])
+  return lspserver
+enddef
+
+def FileOpsFilters(glob: string, pattern: dict<any> = {}): dict<any>
+  return {filters: [{pattern: {glob: glob}->extend(pattern)}]}
+enddef
+
+def FileOpsUris(messages: list<dict<any>>, method: string): list<string>
+  return messages->copy()->filter((_, msg) => msg.method == method)
+    ->mapnew((_, msg) => msg.params.files)->flattennew()
+    ->mapnew((_, file) => file.uri)
+enddef
+
+def g:Test_FileOperations_ClientCapabilities()
+  assert_equal({dynamicRegistration: true, didCreate: true, willCreate: true,
+		didRename: true, willRename: true},
+	       capabilities.GetClientCaps().workspace.fileOperations)
+enddef
+
+def g:Test_FileOperations_RenameFile()
+  var dir = 'XFileOpsRename'
+  mkdir(dir)
+  var from = $'{dir}/a.c'
+  var to = $'{dir}/b.c'
+  var user = $'{dir}/user.c'
+  writefile(['#include "a.c"'], user)
+  var messages: list<dict<any>> = []
+  var filters = {filters: [{scheme: 'file',
+			    pattern: {glob: '**/*.c', matches: 'file'}}]}
+    var edit = {documentChanges: [
+    MakeInsertEdit(util.LspFileToUri(user), "// moved\n"),
+    MakeInsertEdit(util.LspFileToUri(from), "// self\n")]}
+  var lspserver = MakeFileOpsServer({willRename: filters, didRename: filters},
+    {'workspace/willRenameFiles': {result: edit}}, messages,
+    {textDocumentSync: {openClose: true, change: 1}})
+  var bnr = SaveTestEdit(from, ['int a;'], [lspserver], [messages])
+  try
+    var files = [{oldUri: util.LspFileToUri(from),
+		  newUri: util.LspFileToUri(to)}]
+    exe $'LspRenameFile {to}'
+    assert_false(filereadable(from))
+    assert_equal(['// self', 'int a;'], readfile(to))
+    assert_equal(bnr, bufnr())
+    assert_equal(fnamemodify(to, ':p'), expand('%:p'))
+    assert_false(&modified)
+    assert_equal(['// moved', '#include "a.c"'],
+		 getbufline(bufnr(user), 1, '$'))
+    assert_true(getbufvar(bufnr(user), '&modified'))
+    assert_equal(['#include "a.c"'], readfile(user))
+
+    messages->filter((_, msg) => msg.method != 'textDocument/didChange')
+    assert_equal(['workspace/willRenameFiles', 'textDocument/didClose',
+		  'workspace/didRenameFiles'], Methods(messages))
+    assert_equal({method: 'workspace/willRenameFiles', params: {files: files},
+		  timeout: 10000}, messages[0])
+    assert_equal({textDocument: {uri: files[0].oldUri}}, messages[1].params)
+    assert_equal({method: 'workspace/didRenameFiles', params: {files: files}},
+		 messages[2])
+    assert_equal({}, lspserver.docBufnrs)
+  finally
+    fileoperations.RemoveServer(lspserver)
+    :%bw!
+    delete(dir, 'rf')
+  endtry
+  assert_false(exists('#LspFileOperations'))
+enddef
+
+def g:Test_FileOperations_RenameFileWithoutInterestedServer()
+  var dir = 'XFileOpsRenameOther'
+  mkdir($'{dir}/sub', 'p')
+  var from = $'{dir}/a.txt'
+  var messages: list<dict<any>> = []
+  var filters = FileOpsFilters('**/*.c')
+  var lspserver = MakeFileOpsServer({willRename: filters, didRename: filters},
+				    {}, messages)
+  writefile(['text'], from)
+  try
+    exe $'silent edit {from}'
+    var bnr = bufnr()
+    exe $'LspRenameFile {dir}/sub'
+    assert_false(filereadable(from))
+    assert_equal(['text'], readfile($'{dir}/sub/a.txt'))
+    assert_equal(fnamemodify($'{dir}/sub/a.txt', ':p'), expand('%:p'))
+
+    exe $'LspRenameFile {dir}/new/'
+    assert_equal(['text'], readfile($'{dir}/new/a.txt'))
+    assert_equal(bnr, bufnr())
+    assert_equal(fnamemodify($'{dir}/new/a.txt', ':p'), expand('%:p'))
+
+    feedkeys($":LspRenameFile\<CR>\<C-U>{dir}/prompted.txt\<CR>", 'xt')
+    assert_equal(['text'], readfile($'{dir}/prompted.txt'))
+    assert_equal(fnamemodify($'{dir}/prompted.txt', ':p'), expand('%:p'))
+
+    feedkeys(":LspRenameFile\<CR>\<C-U>\<CR>", 'xt')
+    assert_equal(fnamemodify($'{dir}/prompted.txt', ':p'), expand('%:p'))
+    assert_equal([], messages)
+  finally
+    fileoperations.RemoveServer(lspserver)
+    :%bw!
+    delete(dir, 'rf')
+  endtry
+enddef
+
+def g:Test_FileOperations_RenameFileErrors()
+  var dir = 'XFileOpsRenameErrors'
+  var locked = $'{dir}/locked'
+  mkdir(locked, 'p')
+  var from = $'{dir}/a.c'
+  var taken = $'{dir}/taken.c'
+  var inLocked = $'{locked}/l.c'
+  writefile(['int a;'], from)
+  writefile(['int t;'], taken)
+  writefile(['int l;'], inLocked)
+  var messages: list<dict<any>> = []
+  var filters = FileOpsFilters('**/*.c')
+  var lspserver = MakeFileOpsServer({willRename: filters, didRename: filters},
+				    {}, messages)
+  try
+    new
+    LspRenameFile XFileOpsUnnamed.c
+    assert_equal('Error: File rename failed, the current buffer is not a file',
+		 LastMessage())
+    bwipe!
+
+    exe $'silent edit {dir}/missing.c'
+    exe $'LspRenameFile {dir}/other.c'
+    assert_match('Error: File rename failed, .*/missing.c does not exist',
+		 LastMessage())
+
+    exe $'silent edit {from}'
+    exe $'LspRenameFile {taken}'
+    assert_match('Error: File rename failed, .*/taken.c already exists',
+		 LastMessage())
+    assert_equal(['int t;'], readfile(taken))
+
+    setfperm(locked, 'r-xr-xr-x')
+    exe $'LspRenameFile {locked}/sub/b.c'
+    assert_match('Error: File rename failed, .*/locked is not writable',
+		 LastMessage())
+    exe $'silent edit {inLocked}'
+    exe $'LspRenameFile {dir}/moved.c'
+    assert_match('Error: File rename failed, .*/locked is not writable',
+		 LastMessage())
+    assert_true(filereadable(inLocked))
+
+    exe $'silent edit {from}'
+    setline(1, 'int changed;')
+    exe $'LspRenameFile {dir}/b.c'
+    assert_match('Error: File rename failed, .*/a.c has unsaved changes',
+		 LastMessage())
+    assert_equal(['int a;'], readfile(from))
+    assert_false(filereadable($'{dir}/b.c'))
+    assert_equal(fnamemodify(from, ':p'), expand('%:p'))
+    assert_equal([], messages)
+  finally
+    setfperm(locked, 'rwxr-xr-x')
+    fileoperations.RemoveServer(lspserver)
+    :%bw!
+    delete(dir, 'rf')
+  endtry
+enddef
+
+def g:Test_FileOperations_RenameFileStopsWhenEditFails()
+  var dir = 'XFileOpsRenameEditFails'
+  mkdir(dir)
+  var from = $'{dir}/a.c'
+  var to = $'{dir}/b.c'
+  var messages1: list<dict<any>> = []
+  var messages2: list<dict<any>> = []
+  var filters = FileOpsFilters('**/*.c')
+  var srv1 = MakeFileOpsServer({willRename: filters, didRename: filters},
+    {'workspace/willRenameFiles': {result: {documentChanges: [{kind: 'move'}]}}},
+    messages1)
+  var srv2 = MakeFileOpsServer({willRename: filters, didRename: filters},
+				{}, messages2)
+  writefile(['int a;'], from)
+  try
+    exe $'silent edit {from}'
+    exe $'LspRenameFile {to}'
+    assert_equal('Error: Unsupported change in workspace edit [move]',
+		 LastMessage())
+    assert_true(filereadable(from))
+    assert_false(filereadable(to))
+    assert_equal(fnamemodify(from, ':p'), expand('%:p'))
+    assert_equal(['workspace/willRenameFiles'], Methods(messages1))
+    assert_equal([], messages2)
+  finally
+    fileoperations.RemoveServer(srv1)
+    fileoperations.RemoveServer(srv2)
+    :%bw!
+    delete(dir, 'rf')
+  endtry
+enddef
+
+def g:Test_FileOperations_FilterMatching()
+  var dir = 'XFileOpsFilters'
+  mkdir($'{dir}/sub', 'p')
+  var messages: list<dict<any>> = []
+  var lspserver = MakeFileOpsServer({didCreate: {filters: [
+      {pattern: {glob: '**/*.{c,h}'}},
+      {pattern: {glob: '**/sub/*.txt', matches: 'file'}},
+      {pattern: {glob: '**/*.MD', options: {ignoreCase: true}}},
+      {scheme: 'file', pattern: {glob: '**/s?heme.yes'}},
+      {scheme: 'untitled', pattern: {glob: '**/*.scheme'}},
+      {pattern: {glob: '**/*.folder', matches: 'folder'}},
+      {pattern: {glob: '**/*.CASE'}},
+      {pattern: {glob: '*.rel'}},
+      {pattern: {glob: 7}},
+      'invalid'
+    ]}}, {}, messages)
+  var matched = ['a.c', 'sub/b.h', 'sub/c.txt', 'readme.md', 'scheme.yes']
+  var unmatched = ['d.txt', 'e.scheme', 'f.folder', 'g.case', 'h.rel', 'i.cpp']
+  try
+    new
+    setline(1, 'text')
+    for fname in unmatched + matched
+      exe $'silent write {dir}/{fname}'
+    endfor
+    assert_equal(matched->mapnew((_, fname) => util.LspFileToUri($'{dir}/{fname}')),
+		 FileOpsUris(messages, 'workspace/didCreateFiles'))
+    assert_equal(['workspace/didCreateFiles'], Methods(messages)->uniq())
+  finally
+    fileoperations.RemoveServer(lspserver)
+    :%bw!
+    delete(dir, 'rf')
+  endtry
+enddef
+
+def g:Test_FileOperations_CreateFile()
+  var dir = 'XFileOpsCreate'
+  mkdir(dir)
+  var fname = $'{dir}/new.c'
+  var copy = $'{dir}/copy.c'
+  var part = $'{dir}/part.c'
+  var existing = $'{dir}/existing.c'
+  writefile(['int e;'], existing)
+  var uri = util.LspFileToUri(fname)
+  var messages: list<dict<any>> = []
+  var filters = FileOpsFilters('**/*.c')
+  var edit = {documentChanges: [MakeInsertEdit(uri, "// header\n")]}
+  var lspserver = MakeFileOpsServer({willCreate: filters, didCreate: filters},
+    {'workspace/willCreateFiles': {result: edit}}, messages)
+  try
+    exe $'silent edit {fname}'
+    setline(1, 'int n;')
+    silent write
+    assert_equal(['// header', 'int n;'], readfile(fname))
+    assert_false(&modified)
+    assert_equal([
+      {method: 'workspace/willCreateFiles', params: {files: [{uri: uri}]},
+       timeout: 1000},
+      {method: 'workspace/didCreateFiles', params: {files: [{uri: uri}]}}],
+      messages)
+
+    messages->filter('0')
+    setline(1, '// changed')
+    silent write
+    exe $'silent write! {existing}'
+    exe $'silent write >> {existing}'
+    assert_equal([], messages)
+
+    exe $'silent write {copy}'
+    exe $'silent :1write {part}'
+    for created in [copy, part]
+      var createdUri = util.LspFileToUri(created)
+      assert_equal([createdUri],
+		   FileOpsUris(messages, 'workspace/willCreateFiles')
+		     ->filter((_, u) => u == createdUri))
+      assert_equal([createdUri],
+		   FileOpsUris(messages, 'workspace/didCreateFiles')
+		     ->filter((_, u) => u == createdUri))
+    endfor
+
+    messages->filter('0')
+    lspserver.features = {fileOperations: false}
+    exe $'silent write {dir}/off.c'
+    lspserver.features = {}
+    lspserver.ready = false
+    exe $'silent write {dir}/notready.c'
+    assert_equal([], messages)
+  finally
+    fileoperations.RemoveServer(lspserver)
+    :%bw!
+    delete(dir, 'rf')
+  endtry
+enddef
+
+def g:Test_FileOperations_CreateFileNoReply()
+  var dir = 'XFileOpsCreateNoReply'
+  mkdir(dir)
+  var fname = $'{dir}/new.c'
+  var uri = util.LspFileToUri(fname)
+  var messages: list<dict<any>> = []
+  var filters = FileOpsFilters('**/*.c')
+  var lspserver = MakeCapsServer(
+    {workspace: {fileOperations: {willCreate: filters, didCreate: filters}}},
+    messages)
+  lspserver.job = StartStubServerJob([])
+  try
+    var id = lspserver.nextSyncRpcId
+    exe $'silent edit {fname}'
+    setline(1, 'int n;')
+    var start = reltime()
+    :write
+    var elapsed = start->reltime()->reltimefloat()
+    assert_inrange(1.0, 5.0, elapsed)
+    assert_match('Warn: No reply to workspace/willCreateFiles from language server "test"',
+		 execute('messages'))
+    assert_equal(['int n;'], readfile(fname))
+    assert_equal([
+      {method: '$/cancelRequest', params: {id: id}},
+      {method: 'workspace/didCreateFiles', params: {files: [{uri: uri}]}}],
+      messages)
+  finally
+    job_stop(lspserver.job)
+    fileoperations.RemoveServer(lspserver)
+    :%bw!
+    delete(dir, 'rf')
+  endtry
+enddef
+
+def g:Test_FileOperations_DynamicRegistration()
+  var dir = 'XFileOpsDynamic'
+  mkdir(dir)
+  var messages: list<dict<any>> = []
+  var responses: list<dict<any>> = []
+  var lspserver = MakeFileOpsServer({}, {}, messages)
+  lspserver.sendResponse = function(CaptureResponse, [responses])
+  var registerOptions = FileOpsFilters('**/*.c')
+  try
+    assert_false(exists('#LspFileOperations'))
+    for registration in [
+	{method: 'workspace/didCreateFiles', registerOptions: registerOptions},
+	{id: 'r', method: 'workspace/didCreateFiles'},
+	{id: 'r', method: 'workspace/didCreateFiles',
+	 registerOptions: {filters: {}}},
+	{id: 'r', method: 'workspace/didCreateFiles',
+	 registerOptions: {filters: [{pattern: {glob: '**/*.c'}}, {}]}},
+	{id: 'r', method: 'workspace/willRenameFiles',
+	 registerOptions: {filters: [{pattern: {glob: '*', matches: 'any'}}]}},
+	{id: 'r', method: 'workspace/willCreateFiles',
+	 registerOptions: {filters: [{scheme: 1, pattern: {glob: '*'}}]}}]
+      var watchers = {id: 'w', method: 'workspace/didChangeWatchedFiles',
+		      registerOptions: {watchers: [{globPattern: '**/*.c'}]}}
+      AssertRequestError(lspserver, responses,
+	{id: 1, method: 'client/registerCapability',
+	 params: {registrations: [watchers, registration]}}, -32602)
+    endfor
+    assert_false(exists('#LspFileOperations'))
+    assert_false(exists('#LspWatchedFiles'))
+
+    responses->filter('0')
+    lspserver.processRequest({id: 2, method: 'client/registerCapability',
+      params: {registrations: [
+	{id: 'create', method: 'workspace/didCreateFiles',
+	 registerOptions: registerOptions},
+	{id: 'create', method: 'workspace/willCreateFiles',
+	 registerOptions: registerOptions}]}})
+    assert_equal([{id: 2, result: null, error: {}}], responses)
+    assert_true(exists('#LspFileOperations#BufWritePre'))
+
+    new
+    setline(1, 'text')
+    exe $'silent write {dir}/a.c'
+    assert_equal(['workspace/willCreateFiles', 'workspace/didCreateFiles'],
+		 Methods(messages))
+
+    messages->filter('0')
+    responses->filter('0')
+    lspserver.processRequest({id: 3, method: 'client/unregisterCapability',
+      params: {unregisterations: [
+	{id: 'create', method: 'workspace/willCreateFiles'},
+	{id: 'other', method: 'workspace/didCreateFiles'}]}})
+    assert_equal([{id: 3, result: null, error: {}}], responses)
+    exe $'silent write {dir}/b.c'
+    assert_equal(['workspace/didCreateFiles'], Methods(messages))
+
+    lspserver.processRequest({id: 4, method: 'client/unregisterCapability',
+      params: {unregisterations: [
+	{id: 'create', method: 'workspace/didCreateFiles'}]}})
+    assert_false(exists('#LspFileOperations'))
+  finally
+    fileoperations.RemoveServer(lspserver)
+    watchedfiles.RemoveServer(lspserver)
+    :%bw!
+    delete(dir, 'rf')
   endtry
 enddef
 

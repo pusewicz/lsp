@@ -13,6 +13,7 @@ import './semantichighlight.vim'
 import './textedit.vim'
 import './protocol.vim'
 import './watchedfiles.vim'
+import './fileoperations.vim'
 
 # process a diagnostic notification message from the LSP server
 # Notification: textDocument/publishDiagnostics
@@ -497,12 +498,20 @@ def ProcessClientRegisterCap(lspserver: dict<any>, request: dict<any>)
     return
   endif
 
+  var fileOperationRegs: dict<any> =
+    fileoperations.ParseRegistrations(request.params.registrations)
+  if !fileOperationRegs.error->empty()
+    SendInvalidParamsError(lspserver, request, fileOperationRegs.error)
+    return
+  endif
+
   var errmsg: string = watchedfiles.Register(lspserver,
 					      request.params.registrations)
   if !errmsg->empty()
     SendInvalidParamsError(lspserver, request, errmsg)
     return
   endif
+  fileoperations.Register(lspserver, fileOperationRegs.regs)
 
   lspserver.sendResponse(request, null, {})
 enddef
@@ -527,6 +536,7 @@ def ProcessClientUnregisterCap(lspserver: dict<any>, request: dict<any>)
   endif
 
   watchedfiles.Unregister(lspserver, request.params.unregisterations)
+  fileoperations.Unregister(lspserver, request.params.unregisterations)
   lspserver.sendResponse(request, null, {})
 enddef
 

@@ -662,6 +662,7 @@ when no keys are pending.
 :LspPeekTypeDef		Open the type definition of the symbol under cursor in
 			a popup window.
 :LspRename		Rename the current symbol.
+:LspRenameFile		Rename the file of the current buffer.
 :LspSelectionExpand	Expand the current symbol range visual selection
 :LspSelectionShrink	Shrink the current symbol range visual selection
 :LspServer		Command to display the status and messages from a
@@ -1474,6 +1475,63 @@ Commands to modify, rename, or format your code using the language server.
 			This command requires a server that supports
 			|lsp-features-rename|.  If rename is unsupported,
 			an error is displayed and no request is sent.
+
+							*:LspRenameFile*
+:LspRenameFile [name]	Rename the file of the current buffer to [name], and
+			the buffer with it.  When [name] is a directory, the
+			file is moved into it.  The directories of [name]
+			that do not exist are created.
+
+			When [name] is not given, then you will be prompted
+			to enter the new name, with file name completion.
+			The prompt is pre-filled with the current name of the
+			file.  You can press <Esc> or enter an empty string
+			in the prompt to cancel the operation.
+
+			Before the file is renamed, each language server that
+			registered for it (see below) is asked for the changes
+			that the rename needs, e.g. to the imports and the
+			includes that name the file
+			("workspace/willRenameFiles").  The changes are made
+			to the buffers of the files and are not written,
+			except the changes to the renamed file, which are
+			written to it.  The reply is waited for, at most 10
+			seconds: a warning then tells that the file is
+			renamed without the changes of that language server.
+			CTRL-C stops the wait and the rename.  After the
+			rename, the
+			language servers that registered for it are told
+			about it ("workspace/didRenameFiles").  The language
+			servers attached to the buffer get the document
+			closed under its old name and opened under its new
+			one.
+
+			Nothing is renamed and no language server is asked
+			when the buffer has no file or has unsaved changes,
+			when a file with the new name exists already, or when
+			a directory cannot be written to.  The file is not
+			renamed either when the changes of a language server
+			cannot be made.
+
+			A language server registers the files that it wants
+			to be asked and told about with glob patterns, in its
+			capabilities ("workspace.fileOperations") or with the
+			"client/registerCapability" request.  The file is
+			renamed also when no language server registered for
+			it.  To leave a language server out, set its
+			|lsp-features-fileOperations| feature to |false|.
+
+							*lsp-file-operations*
+			In the same way, the language servers that registered
+			for it are asked for changes before Vim writes a file
+			that does not exist yet ("workspace/willCreateFiles"),
+			and are told about the new file after the write
+			("workspace/didCreateFiles").  The reply is waited
+			for, at most one second, and the changes are written
+			with the file.  The language servers are not asked or
+			told about the files that a workspace edit creates,
+			renames or deletes, and Vim has no command to delete
+			a file.
 
 							*:LspSelectionExpand*
 :LspSelectionExpand	Start a character-wise visual selection using the
@@ -4368,6 +4426,12 @@ documentLink			Used by the |:LspDocumentLink| and the
 					*lsp-features-documentSymbol*
 documentSymbol			Used by the |:LspDocumentSymbol| and the
 				|:LspOutline| commands.
+						*lsp-features-fileOperations*
+fileOperations			Used by the |:LspRenameFile| command, and when
+				Vim writes a new file, to ask the language
+				server for changes before a file is renamed or
+				created and to tell it afterwards.  See
+				|lsp-file-operations|.
 						*lsp-features-foldingRange*
 foldingRange			Used by the |:LspFold| command, and the
 				|lsp#lsp#FoldExpr()| and |lsp#lsp#FoldText()|
