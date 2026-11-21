@@ -1762,6 +1762,7 @@ enddef
 # Regression test for documentOnTypeFormattingProvider trigger char capture.
 def g:Test_OnTypeFormattingCapability()
   var lspserver = {
+    id: 1,
     caps: {
       documentOnTypeFormattingProvider: {
         firstTriggerCharacter: '}',
@@ -1861,7 +1862,7 @@ enddef
 # Test for the documentLinkProvider server capability and the documentLink
 # client capability
 def g:Test_DocumentLinkCapability()
-  var lspserver: dict<any> = {caps: {}, forceOffsetEncoding: ''}
+  var lspserver: dict<any> = {id: 1, caps: {}, forceOffsetEncoding: ''}
   capabilities.ProcessServerCaps(lspserver, lspserver.caps)
   assert_false(lspserver.isDocumentLinkProvider)
   assert_false(lspserver.isDocumentLinkResolveProvider)
@@ -1902,7 +1903,7 @@ enddef
 # Test for the "willSave" and "willSaveWaitUntil" text document sync server
 # capabilities and the synchronization client capability
 def g:Test_WillSaveCapability()
-  var lspserver: dict<any> = {forceOffsetEncoding: ''}
+  var lspserver: dict<any> = {id: 1, forceOffsetEncoding: ''}
   for [sync, expected] in [
       [{willSave: true, willSaveWaitUntil: true}, [true, true]],
       [{willSave: true}, [true, false]],
@@ -1938,7 +1939,7 @@ enddef
 # capability, which leaves the name to rename to the client when the server
 # replies to "textDocument/prepareRename" with "defaultBehavior".
 def g:Test_RenameCapability()
-  var lspserver: dict<any> = {forceOffsetEncoding: ''}
+  var lspserver: dict<any> = {id: 1, forceOffsetEncoding: ''}
   for [caps, expected] in [
       [{}, [false, false]],
       [{renameProvider: false}, [false, false]],

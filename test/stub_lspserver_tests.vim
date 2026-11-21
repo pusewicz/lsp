@@ -1566,7 +1566,7 @@ def g:Test_WorkspaceSymbolResolve_Capabilities()
       [{workspaceSymbolProvider: {}}, true, false],
       [{workspaceSymbolProvider: {resolveProvider: false}}, true, false],
       [{workspaceSymbolProvider: {resolveProvider: true}}, true, true]]
-    var lspserver: dict<any> = {caps: caps, forceOffsetEncoding: ''}
+    var lspserver: dict<any> = {id: 1, caps: caps, forceOffsetEncoding: ''}
     capabilities.ProcessServerCaps(lspserver, caps)
     assert_equal(provider, lspserver.isWorkspaceSymbolProvider, caps->string())
     assert_equal(resolveProvider, lspserver.isWorkspaceSymbolResolveProvider,
@@ -13398,6 +13398,311 @@ def g:Test_FileOperations_DynamicRegistration()
     watchedfiles.RemoveServer(lspserver)
     :%bw!
     delete(dir, 'rf')
+  endtry
+enddef
+
+const CMDLINE_COMPLETION_REPLY: dict<any> =
+  {isIncomplete: false, items: [], cmdlineCompletion: true}
+
+def g:LspTestCmdlineComplete(arglead: string, cmdline: string,
+			     cursorPos: number): list<string>
+  return ['src/main.c', 'src/make.c', 'other']
+enddef
+
+def g:LspTestCmdlineShellComplete(arglead: string, cmdline: string,
+				  cursorPos: number): list<string>
+  return [system('echo shelled')->trim()]
+enddef
+
+def MakeCmdlineCompletionServer(): dict<any>
+  var lspserver = MakeTestLspServer([])
+  lspserver->extend({
+    running: true,
+    ready: true,
+    isCompletionProvider: true,
+    isCompletionResolveProvider: true,
+    completionLazyDoc: false,
+    completionTriggerChars: [' ', '=', ','],
+    featureEnabled: (_) => true,
+  })
+  buf.BufLspServerSet(bufnr(), lspserver)
+  command! -nargs=1 -complete=customlist,g:LspTestCmdlineComplete
+	\ XLspCmdline echo
+  command! -nargs=1 -complete=customlist,g:LspTestCmdlineShellComplete
+	\ XLspCmdlineShell echo
+  return lspserver
+enddef
+
+def StopCmdlineCompletionServer(lspserver: dict<any>)
+  if lspserver.job->type() == v:t_job
+    job_stop(lspserver.job)
+  endif
+  buf.BufLspServerRemove(bufnr(), lspserver)
+  delcommand XLspCmdline
+  delcommand XLspCmdlineShell
+  :%bw!
+enddef
+
+def PutCursorAfter(text: string)
+  setline(1, text .. '|')
+  cursor(1, text->len() + 1)
+enddef
+
+def CmdlineCompletionItems(lspserver: dict<any>, text: string): list<dict<any>>
+  PutCursorAfter(text)
+  lspserver.omniCompletePending = true
+  completion.CompletionReply(lspserver, CMDLINE_COMPLETION_REPLY->deepcopy(),
+			     {})
+  assert_false(lspserver.omniCompletePending)
+  return lspserver.completeItems
+enddef
+
+def CmdlineCompletionWords(lspserver: dict<any>, text: string): list<string>
+  return CmdlineCompletionItems(lspserver, text)
+    ->mapnew((_, v: dict<any>): string => v.word)
+enddef
+
+def g:Test_CmdlineCompletion_Capability()
+  assert_equal({cmdlineCompletion: true},
+	       capabilities.GetClientCaps().experimental)
+
+  silent! edit XCmdlineCompletionCaps.vim
+  var lspserver = MakeTestLspServer([])
+  lspserver.job = StartStubServerJob([])
+  try
+    lspserver.initServer(bufnr())
+    assert_equal({cmdlineCompletion: true},
+		 lspserver.rpcInitializeRequest.capabilities.experimental)
+  finally
+    job_stop(lspserver.job)
+    :%bw!
+  endtry
+enddef
+
+def g:Test_CmdlineCompletion_MenuItems()
+  silent! edit XCmdlineCompletionItems.vim
+  var lspserver = MakeCmdlineCompletionServer()
+  try
+    assert_equal([
+      {word: 'main.c', abbr: 'src/main.c', kind: 'V',
+       kind_hlgroup: 'LspCompletionKindValue', dup: 1},
+      {word: 'make.c', abbr: 'src/make.c', kind: 'V',
+       kind_hlgroup: 'LspCompletionKindValue', dup: 1},
+    ], CmdlineCompletionItems(lspserver, 'XLspCmdline src/ma'))
+    assert_equal(['src/main.c', 'src/make.c', 'other'],
+		 CmdlineCompletionWords(lspserver, 'XLspCmdline '))
+    assert_equal(['other'], CmdlineCompletionWords(lspserver, 'XLspCmdline o'))
+    assert_equal([], CmdlineCompletionWords(lspserver, 'XLspCmdline SRC/MA'))
+
+    var formats = getcompletion('set fileformat=', 'cmdline')
+    assert_equal(&fileformat, formats[0])
+    assert_equal(formats,
+		 CmdlineCompletionWords(lspserver, '  set fileformat='))
+    assert_equal(['dos'], CmdlineCompletionWords(lspserver, 'set fileformat=d'))
+    assert_equal(['fileformat', 'fileformats'],
+		 CmdlineCompletionWords(lspserver, 'set fileform'))
+
+    lspserver.completeItemsIsIncomplete = true
+    lspserver.completionResolved = [[{}, {}]]
+    CmdlineCompletionItems(lspserver, 'XLspCmdline o')
+    assert_false(lspserver.completeItemsIsIncomplete)
+    assert_equal([], lspserver.completionResolved)
+
+    lspserver.omniCompletePending = true
+    completion.CompletionReply(
+      lspserver, {isIncomplete: false, items: [], cmdlineCompletion: 1}, {})
+    assert_equal([], lspserver.completeItems)
+  finally
+    StopCmdlineCompletionServer(lspserver)
+  endtry
+enddef
+
+def g:Test_CmdlineCompletion_Options()
+  silent! edit XCmdlineCompletionOptions.vim
+  var lspserver = MakeCmdlineCompletionServer()
+  var saveWildOptions = &wildoptions
+  try
+    g:LspOptionsSet({completionMatcher: 'icase'})
+    assert_equal([
+      {word: 'main.c', abbr: 'src/main.c', kind: 'V',
+       kind_hlgroup: 'LspCompletionKindValue', dup: 1, icase: 1},
+      {word: 'make.c', abbr: 'src/make.c', kind: 'V',
+       kind_hlgroup: 'LspCompletionKindValue', dup: 1, icase: 1},
+    ], CmdlineCompletionItems(lspserver, 'XLspCmdline SRC/MA'))
+
+    g:LspOptionsSet({completionMatcher: 'fuzzy'})
+    assert_equal(['main.c', 'make.c'],
+		 CmdlineCompletionWords(lspserver, 'XLspCmdline src/ma'))
+    assert_equal([], CmdlineCompletionWords(lspserver, 'XLspCmdline SRC/MA'))
+    g:LspOptionsSet({completionMatcher: 'case'})
+
+    g:LspOptionsSet({customCompletionKinds: true,
+		     completionKinds: {Value: 'val'}})
+    assert_equal(['val'], CmdlineCompletionItems(lspserver, 'XLspCmdline o')
+      ->mapnew((_, v: dict<any>): string => v.kind))
+    g:LspOptionsSet({customCompletionKinds: false, completionKinds: {}})
+
+    g:LspOptionsSet({condensedCompletionMenu: true})
+    assert_equal([{word: 'main.c', abbr: 'main.c', kind: 'V',
+		   kind_hlgroup: 'LspCompletionKindValue', dup: 1,
+		   info: '    src/main.c'}],
+		 CmdlineCompletionItems(lspserver, 'XLspCmdline src/mai'))
+    g:LspOptionsSet({condensedCompletionMenu: false})
+
+    g:LspOptionsSet({completionLabelMaxWidth: 6})
+    assert_equal([{word: 'main.c', abbr: 'src/m…', kind: 'V',
+		   kind_hlgroup: 'LspCompletionKindValue', dup: 1,
+		   info: '    src/main.c'}],
+		 CmdlineCompletionItems(lspserver, 'XLspCmdline src/mai'))
+    g:LspOptionsSet({completionLabelMaxWidth: 0})
+
+    set wildoptions=fuzzy,pum
+    assert_equal(['fileformat', 'fileformats'],
+		 CmdlineCompletionWords(lspserver, 'set fileform'))
+    assert_equal('fuzzy,pum', &wildoptions)
+  finally
+    &wildoptions = saveWildOptions
+    g:LspOptionsSet({completionMatcher: 'case', customCompletionKinds: false,
+		     completionKinds: {}, condensedCompletionMenu: false,
+		     completionLabelMaxWidth: 0})
+    StopCmdlineCompletionServer(lspserver)
+  endtry
+enddef
+
+def g:Test_CmdlineCompletion_FileNames()
+  silent! edit XCmdlineCompletionFiles.vim
+  var lspserver = MakeCmdlineCompletionServer()
+  mkdir('XCmdlineDir/sub', 'pR')
+  writefile([], 'XCmdlineDir/my file.txt')
+  writefile([], 'XCmdlineDir/plain.txt')
+  try
+    assert_equal([{word: 'plain.txt', abbr: 'XCmdlineDir/plain.txt', kind: 'V',
+		   kind_hlgroup: 'LspCompletionKindValue', dup: 1}],
+		 CmdlineCompletionItems(lspserver, 'edit XCmdlineDir/pl'))
+    assert_equal(['my\ file.txt', 'plain.txt', 'sub/'],
+		 CmdlineCompletionWords(lspserver, 'edit XCmdlineDir/'))
+    assert_equal([{word: 'file.txt', abbr: 'XCmdlineDir/my\ file.txt',
+		   kind: 'V', kind_hlgroup: 'LspCompletionKindValue', dup: 1}],
+		 CmdlineCompletionItems(lspserver, 'edit XCmdlineDir/my\ fi'))
+    assert_equal(['sub/'], CmdlineCompletionWords(lspserver, 'cd XCmdlineDir/s'))
+
+    $XLSP_CMDLINE_DIR = 'XCmdlineDir'->fnamemodify(':p')
+    assert_notequal([], getcompletion('edit $XLSP_CMDLINE_DIR/pl', 'cmdline'))
+    assert_equal([],
+		 CmdlineCompletionWords(lspserver, 'edit $XLSP_CMDLINE_DIR/pl'))
+  finally
+    unlet $XLSP_CMDLINE_DIR
+    StopCmdlineCompletionServer(lspserver)
+  endtry
+enddef
+
+def g:Test_CmdlineCompletion_RunsNoShellCommand()
+  silent! edit XCmdlineCompletionShell.vim
+  var lspserver = MakeCmdlineCompletionServer()
+  try
+    assert_equal(['shelled'], getcompletion('XLspCmdlineShell ', 'cmdline'))
+    assert_equal([], CmdlineCompletionWords(lspserver, 'XLspCmdlineShell '))
+
+    assert_equal([], CmdlineCompletionWords(
+      lspserver, 'edit `touch XCmdlineBacktick`'))
+    assert_equal([], CmdlineCompletionWords(
+      lspserver, 'edit $(touch XCmdlineBacktick)'))
+    assert_false(filereadable('XCmdlineBacktick'))
+
+    assert_notequal([], getcompletion('!', 'cmdline'))
+    assert_equal([], CmdlineCompletionWords(lspserver, '!'))
+    assert_equal([], CmdlineCompletionWords(lspserver, 'terminal '))
+    assert_true(CmdlineCompletionWords(lspserver, '!l')->index('ls') >= 0)
+    assert_true(CmdlineCompletionWords(lspserver, 'terminal l')
+      ->index('ls') >= 0)
+  finally
+    delete('XCmdlineBacktick')
+    StopCmdlineCompletionServer(lspserver)
+  endtry
+enddef
+
+def g:Test_CmdlineCompletion_OmniFuncAndCompleteSource()
+  silent! edit XCmdlineCompletionOmni.vim
+  var lspserver = MakeCmdlineCompletionServer()
+  var ProcessMessage = (_, msg) => {
+    lspserver.data = msg
+    lspserver.processMessage()
+  }
+  try
+    for CompleteFunc in [g:LspOmniFunc, g:LspCompleteSource]
+      PutCursorAfter('XLspCmdline src/ma')
+      lspserver.completeItemsIsIncomplete = true
+      lspserver.job = StartStubServerJob(
+	[{jsonrpc: '2.0', id: lspserver.nextSyncRpcId,
+	  result: CMDLINE_COMPLETION_REPLY}],
+	{out_cb: ProcessMessage})
+      assert_equal(16, CompleteFunc(1, ''))
+      var matches: any = CompleteFunc(0, 'ma')
+      assert_equal(v:t_list, matches->type())
+      assert_equal(['main.c', 'make.c'],
+		   matches->mapnew((_, v: dict<any>): string => v.word))
+      job_stop(lspserver.job)
+    endfor
+  finally
+    StopCmdlineCompletionServer(lspserver)
+  endtry
+enddef
+
+def g:Test_CmdlineCompletion_OmniAcceptSendsNoResolve()
+  silent! edit XCmdlineCompletionAccept.vim
+  var bnr = bufnr()
+  var lspserver = MakeCmdlineCompletionServer()
+  lspserver.completionLazyDoc = true
+  var syncId = lspserver.nextSyncRpcId
+  lspserver.job = StartStubServerJob(
+    [{jsonrpc: '2.0', id: syncId, result: CMDLINE_COMPLETION_REPLY}])
+  try
+    completion.OmniComplSet('vim', true)
+    completion.BufferInit(lspserver, bnr, 'vim')
+    setlocal completeopt=menuone,noinsert,noselect
+    setline(1, 'XLspCmdline src/mak')
+    g:FeedOmniCompleteKeys("A\<C-X>\<C-O>\<C-N>\<C-Y> x\<Esc>")
+    assert_equal(['XLspCmdline src/make.c x'], getline(1, '$'))
+    assert_equal(syncId + 1, lspserver.nextSyncRpcId)
+    assert_equal({}, lspserver.pendingRequests)
+  finally
+    completion.OmniComplSet('vim', false)
+    StopCmdlineCompletionServer(lspserver)
+  endtry
+enddef
+
+def g:Test_CmdlineCompletion_AutoComplete()
+  silent! edit XCmdlineCompletionAuto.vim
+  var lspserver = MakeCmdlineCompletionServer()
+  lspserver.getCompletion = (_, _) => {
+    lspserver.completionRequestPos = completion.CompletionRequestPos()
+  }
+  g:LspCmdlineCompletionServer = lspserver
+  g:LspCmdlineCompletionReply = CMDLINE_COMPLETION_REPLY
+  var saveAutoComplete = g:LspOptionsGet().autoComplete
+  g:LspOptionsSet({autoComplete: true})
+  try
+    setlocal completeopt=menuone,noinsert,noselect
+    inoremap <buffer> <F5> <ScriptCmd>completion.LspComplete()<CR>
+    inoremap <buffer> <F6> <ScriptCmd>completion.CompletionReply(g:LspCmdlineCompletionServer, g:LspCmdlineCompletionReply, {})<CR>
+    inoremap <buffer> <F2> <ScriptCmd>b:matches = complete_info(['items']).items->mapnew((_, v) => v.word)<CR>
+
+    b:matches = ['not set']
+    setline(1, 'XLspCmdline src/ma')
+    feedkeys("A\<F5>\<F6>\<F2>\<C-N>\<C-N>\<C-Y>\<Esc>", 'xt')
+    assert_equal(['main.c', 'make.c'], b:matches)
+    assert_equal(['XLspCmdline src/make.c'], getline(1, '$'))
+
+    b:matches = ['not set']
+    setline(1, 'XLspCmdline')
+    feedkeys("A \<F5>\<F6>\<F2>\<C-N>\<C-Y>\<Esc>", 'xt')
+    assert_equal(['src/main.c', 'src/make.c', 'other'], b:matches)
+    assert_equal(['XLspCmdline src/main.c'], getline(1, '$'))
+  finally
+    g:LspOptionsSet({autoComplete: saveAutoComplete})
+    unlet g:LspCmdlineCompletionServer
+    unlet g:LspCmdlineCompletionReply
+    StopCmdlineCompletionServer(lspserver)
   endtry
 enddef
 

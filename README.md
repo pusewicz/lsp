@@ -27,6 +27,7 @@ You will also need to download and install one or more language servers correspo
 The following language server protocol (LSP) features are supported:
 
 * Code completion, with the expansion of snippets
+* Completion of Vim command arguments (option values, file names, user-command arguments) from this Vim, for a Vim script language server that asks for it (the `cmdlineCompletion` extension of [vim9ls](https://github.com/h-east/vim9ls))
 * Jump to definition, declaration, implementation, type definition
 * Peek definition, declaration, implementation, type definition and references
 * Display warning and error diagnostics, with their related information and
