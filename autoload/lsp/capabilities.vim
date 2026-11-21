@@ -476,11 +476,16 @@ export def ProcessServerCaps(lspserver: dict<any>, caps: dict<any>)
     if lspserver.caps.workspaceSymbolProvider->type() == v:t_bool
       lspserver.isWorkspaceSymbolProvider =
 				lspserver.caps.workspaceSymbolProvider
+      lspserver.isWorkspaceSymbolResolveProvider = false
     else
       lspserver.isWorkspaceSymbolProvider = true
+      lspserver.isWorkspaceSymbolResolveProvider =
+		lspserver.caps.workspaceSymbolProvider->get('resolveProvider',
+							    false)
     endif
   else
     lspserver.isWorkspaceSymbolProvider = false
+    lspserver.isWorkspaceSymbolResolveProvider = false
   endif
 
   # clangdInlayHintsProvider
@@ -742,7 +747,10 @@ export def GetClientCaps(watchFiles: bool = true): dict<any>
 	refreshSupport: true
       },
       symbol: {
-	dynamicRegistration: false
+	dynamicRegistration: false,
+	resolveSupport: {
+	  properties: ['location.range']
+	}
       }
     },
     # This is the way clangd expects to be informated about supported encodings:

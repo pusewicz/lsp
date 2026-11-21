@@ -1026,6 +1026,13 @@ entire workspace.
 			You can enter a new search pattern to do a workspace
 			wide symbol search.
 
+			A language server can send a symbol with its file but
+			without its position in the file.  The position is
+			then requested ("workspaceSymbol/resolve") only for
+			the symbol that you jump to.  If the language server
+			cannot supply the position, then the file is opened
+			with the cursor on the first line.
+
 			This command accepts |:command-modifiers| which can be
 			used to jump to a symbol in a horizontally or
 			vertically split window or a new tab page: >
@@ -3249,6 +3256,13 @@ and later).  The tag function then keeps the symbols whose name the regexp
 matches, with 'ignorecase' applying as for any pattern match.  As the server
 can't take a regexp, it is asked for the word the regexp starts with.  The
 language server is asked on each completion, and Vim waits for its reply.
+
+A language server can send a symbol with its file but without its position in
+the file.  For a lookup of a symbol name the tag function requests the position
+of each matching symbol ("workspaceSymbol/resolve").  For a regexp the
+positions are not requested, as each one needs a request that Vim waits for:
+such a tag is on the first line of its file.  It is also there when the
+language server cannot supply the position.
 
 Note that most of the language servers return only one symbol location even if
 the symbol is defined in multiple places in the code.
