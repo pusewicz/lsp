@@ -206,6 +206,9 @@ export def ProcessServerCaps(lspserver: dict<any>, caps: dict<any>)
       endif
     endfor
   endif
+  if staticFilters->empty() && !servers->has_key(lspserver->get('id', -1))
+    return
+  endif
   var entry: dict<any> = ServerEntry(lspserver)
   entry.static = staticFilters
   DropEmptyEntry(lspserver)
