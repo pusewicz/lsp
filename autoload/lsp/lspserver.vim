@@ -1547,8 +1547,8 @@ def PullWorkspaceDiagnosticsReply(lspserver: dict<any>, result: any,
     var errorData = error->get('data', {})
     if errorCode == LSP_ERROR_CONTENT_MODIFIED
         || (errorCode == LSP_ERROR_SERVER_CANCELLED
-          && errorData->type() == v:t_dict
-          && errorData->get('retriggerRequest', false))
+          && (errorData->type() != v:t_dict
+            || errorData->get('retriggerRequest', true)))
       QueuePullWorkspaceDiagnostics(lspserver)
     else
       ProcessLspServerError('workspace/diagnostic', error)

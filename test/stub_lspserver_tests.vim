@@ -12480,13 +12480,14 @@ def g:Test_WorkspaceDiagnostics_AsksAgain()
     for error in [
 	{code: -32802, message: 'server cancelled',
 	 data: {retriggerRequest: true}},
+	{code: -32802, message: 'server cancelled'},
 	{code: -32801, message: 'content modified'}]
       ReplyToRequest(lspserver, requests[-1], v:null, error)
       assert_notequal(-1, lspserver.workspaceDiagTimer)
       lspserver.pullWorkspaceDiagnostics()
       assert_equal(-1, lspserver.workspaceDiagTimer)
     endfor
-    assert_equal(4, requests->len())
+    assert_equal(5, requests->len())
 
     var beforeMessages = execute('messages')
     ReplyToRequest(lspserver, requests[-1], v:null, {code: -32802,
@@ -12501,7 +12502,7 @@ def g:Test_WorkspaceDiagnostics_AsksAgain()
     assert_equal(
       'Error: request workspace/diagnostic failed (failed, error = InternalError)',
       LastMessage())
-    assert_equal(5, requests->len())
+    assert_equal(6, requests->len())
   finally
     StopWorkspaceDiagServer(lspserver)
   endtry
