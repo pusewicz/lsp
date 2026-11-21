@@ -30,6 +30,7 @@ import './ontypeformat.vim'
 import './folding.vim'
 import './linkedediting.vim'
 import './snippet.vim'
+import './fileoperations.vim'
 
 # filetype to LSP server map
 var ftypeServerMap: dict<list<dict<any>>> = {}
@@ -1676,6 +1677,10 @@ export def Rename(a_newName: string)
 
     lspserver.renameSymbol(bnr, pos, newName)
   })
+enddef
+
+export def RenameFile(name: string)
+  fileoperations.RenameFile(name)
 enddef
 
 # Perform a code action

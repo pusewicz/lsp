@@ -536,7 +536,7 @@ enddef
 # existing file is replaced only when "overwrite" is set, and then not when
 # its buffer has unsaved changes.  The buffers of the renamed files follow
 # them.  Returns why the operation failed, or an empty string when it did not.
-def FileRename(renameFile: dict<any>): string
+export def FileRename(renameFile: dict<any>): string
   var oldPath: string = UriToPath(renameFile.oldUri)
   var newPath: string = UriToPath(renameFile.newUri)
 

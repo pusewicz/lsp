@@ -96,7 +96,7 @@ enddef
 # segment, and "**" as a path segment any number of path segments, also none.
 # "{a,b}" matches either alternative, "[a-z]" one of the characters and
 # "[!a-z]" a character that is not one of them.
-def GlobToRegex(chars: list<string>, inGroup: bool = false): string
+export def GlobToRegex(chars: list<string>, inGroup: bool = false): string
   var regex: string = ''
   # The character before the next one, empty at the start of the pattern or
   # of the alternative

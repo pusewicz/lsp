@@ -35,6 +35,7 @@ The following language server protocol (LSP) features are supported:
 * Document and Workspace symbol search
 * Display code outline
 * Rename symbol
+* Rename a file with the language servers updating the references to it (e.g. imports and includes), and tell them about the new files that Vim writes (file operations)
 * Display type and documentation on hover
 * Signature help
 * Code action
@@ -248,6 +249,7 @@ Command|Description
 `:LspPeekReferences`|Display the list of references to the keyword under cursor in a location list associated with the preview window.
 `:LspPeekTypeDef`|Open the type definition of the symbol under cursor in the preview window.
 `:LspRename`|Rename the current symbol.
+`:LspRenameFile`|Rename the file of the current buffer; the language servers update the imports and includes that name it.
 `:LspSelectionExpand`|Expand the current symbol range visual selection.
 `:LspSelectionShrink`|Shrink the current symbol range visual selection.
 `:LspShowAllServers`|Display information about all the registered language servers.
