@@ -114,11 +114,45 @@ def g:Test_LspCodeAction_RenameFile()
     cursor(1, 5)
     :LspRename foobaz
     g:WaitForReplies()
-    g:WaitForServerFileLoad(0)
+    assert_false(filereadable('foobar.rs'))
     assert_true(filereadable('foobaz.rs'))
     :%bw!
     delete('foobaz.rs')
   finally
+    :cd ../..
+  endtry
+enddef
+
+def g:Test_LspRenameFile()
+  :cd xrust_tests/src
+  try
+    writefile(['pub fn renamed() {}'], 'renameold.rs')
+    silent! edit ./main.rs
+    deletebufline('%', 1, '$')
+    g:WaitForServerFileLoad(0)
+    var lines: list<string> =<< trim END
+      mod renameold;
+      fn main() {
+      }
+    END
+    setline(1, lines)
+    g:WaitForServerFileLoad(0)
+    var mainBnr = bufnr()
+    split renameold.rs
+    var bnr = bufnr()
+    g:WaitForServerFileLoad(0)
+    silent write
+    :LspRenameFile renamenew.rs
+    assert_false(filereadable('renameold.rs'))
+    assert_true(filereadable('renamenew.rs'))
+    assert_equal(bnr, bufnr())
+    assert_equal('renamenew.rs', expand('%:t'))
+    assert_equal('mod renamenew;', getbufline(mainBnr, 1)[0])
+    g:WaitForServerFileLoad(0)
+  finally
+    :%bw!
+    delete('renameold.rs')
+    delete('renamenew.rs')
     :cd ../..
   endtry
 enddef

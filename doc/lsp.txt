@@ -275,7 +275,9 @@ To add a language server, the following information is needed:
 			documentation for the values that will be accepted in
 			this notification.  This configuration is also used to
 			respond to the "workspace/configuration" request
-			message from the language server.
+			message from the language server.  To change it
+			for a registered language server, use
+			|g:LspServerConfigSet()|.
 						*lsp-cfg-rootSearch*
 	rootSearch	(Optional) a List of file and directory names used to
 			locate the root path or uri of the workspace.  The
@@ -484,7 +486,7 @@ Additionally the following configurations can be made:
 
 						*lsp-cfg-traceLevel*
 	traceLevel	(Optional) set the debug trace level for this language
-			server.  Supported values are: "off", "debug" and
+			server.  Supported values are: "off", "messages" and
 			"verbose".  By default this is set to "off".
 
 The language servers are added using the LspAddServer() function. This
@@ -520,6 +522,23 @@ initializing.
 				    *LspServerRunning()* *g:LspServerRunning()*
 The g:LspServerRunning({filetype}) function returns |v:true| if one or more
 language servers registered for {filetype} are currently running.
+
+			    *LspServerConfigSet()* *g:LspServerConfigSet()*
+The g:LspServerConfigSet({name}, {config}) function replaces the
+"workspaceConfig" (|lsp-cfg-workspaceConfig|) of all the registered language
+servers with the name {name} with a copy of the |Dict| {config}.  It returns
+the number of these servers, which is 0 when no server has this name.  A
+server that is running and ready gets {config} immediately as the "settings"
+in a "workspace/didChangeConfiguration" notification, also when {config} is
+empty, and its subsequent "workspace/configuration" requests are answered
+from {config}.  A server that is not running, or that is not ready yet, gets
+{config} when it starts.  The new value stays in effect when the server is
+restarted with |:LspServer| restart.  The settings that a language server
+reads from "initializationOptions" cannot be changed with this function:
+change them where the server is registered and restart Vim.  Example: >
+
+    g:LspServerConfigSet('gopls', {gopls: {staticcheck: true}})
+<
 
 ==============================================================================
 							*lsp-commands*
@@ -573,6 +592,8 @@ when no keys are pending.
 :LspColorPresentation [N]
 			Write the color under the cursor another way, chosen
 			from the ones the language server offers.
+:LspConfigCheck		Report the problems in the plugin options and in the
+			language server entries.
 :LspDiag current	Display the diagnostic message for the current line.
 :LspDiag first		Jump to the first diagnostic message for the current
 			buffer.
@@ -610,6 +631,9 @@ when no keys are pending.
 :LspDocumentLinkOpen	Open the target of the link under cursor.
 :LspDocumentSymbol	Display the symbols in the current file in a popup
 			menu and jump to the location of a selected symbol.
+:LspExecuteCommand {command} [{arguments}]
+			Have a language server of the current buffer run one
+			of the commands that it offers.
 :LspFold		Create folds for the current buffer using
 			language-server folding ranges.
 :LspFormat		Format a range of lines in the current file using the
@@ -625,7 +649,8 @@ when no keys are pending.
 			in a popup window.
 :LspIncomingCalls	Display the incoming call hierarchy for the current
 			symbol in a window.
-:LspInlayHints		Enable or disable or toggle inlay hints.
+:LspInlayHints		Enable, disable or toggle inlay hints, show the
+			information of an inlay hint or apply its text edits.
 :LspOutgoingCalls	Display the outgoing call hierarchy for the current
 			symbol in a window.
 :LspOutline		Show the list of symbols defined in the current file
@@ -641,10 +666,12 @@ when no keys are pending.
 :LspPeekTypeDef		Open the type definition of the symbol under cursor in
 			a popup window.
 :LspRename		Rename the current symbol.
+:LspRenameFile		Rename the file of the current buffer.
 :LspSelectionExpand	Expand the current symbol range visual selection
 :LspSelectionShrink	Shrink the current symbol range visual selection
 :LspServer		Command to display the status and messages from a
-			language server and to restart the language server.
+			language server, to restart the language server and
+			to send it the workspace configuration again.
 :LspShowAllServers	Display the status of all the registered language
 			servers.
 :LspShowReferences	Display the list of references to the keyword under
@@ -1005,6 +1032,13 @@ entire workspace.
 			You can enter a new search pattern to do a workspace
 			wide symbol search.
 
+			A language server can send a symbol with its file but
+			without its position in the file.  The position is
+			then requested ("workspaceSymbol/resolve") only for
+			the symbol that you jump to.  If the language server
+			cannot supply the position, then the file is opened
+			with the cursor on the first line.
+
 			This command accepts |:command-modifiers| which can be
 			used to jump to a symbol in a horizontally or
 			vertically split window or a new tab page: >
@@ -1096,10 +1130,10 @@ the symbol under the cursor.
 			|lsp-opt-popup-Hover| and the global popup options.
 
 							*:LspInlayHints*
-:LspInlayHints {enable | disable | toggle}
-			Enable, disable, or toggle inlay hints globally.
-			Supports the "enable", "disable", and "toggle"
-			arguments.  The argument is required.
+:LspInlayHints {enable | disable | toggle | info | apply}
+			Enable, disable, or toggle inlay hints globally, or
+			act on the inlay hint nearest to the cursor on the
+			cursor line.  The argument is required.
 			When "enable" is specified, sets
 			|lsp-opt-showInlayHints| to true and activates inlay
 			hints for all open buffers whose attached language
@@ -1109,6 +1143,23 @@ the symbol under the cursor.
 			removes all inlay hints from every open buffer.
 			When "toggle" is specified, enables or disables inlay
 			hints depending on the current state.
+			When "info" is specified, shows the tooltip of the
+			inlay hint nearest to the cursor on the cursor line,
+			and the tooltips of the parts of its label, in the
+			same popup or preview window as |:LspHover| (see
+			|lsp-opt-hoverInPreview|); Markdown text is rendered.
+			When "apply" is specified, applies the text edits of
+			that inlay hint to the buffer as one undo step, e.g.
+			to insert an inferred type into the file.  The text
+			properties of the changed lines stay.  When the buffer
+			changed after the inlay hints were received, nothing
+			is applied: the inlay hints are requested again, and
+			the command can be repeated once they are updated.
+			Both send an "inlayHint/resolve" request first when
+			the language server supports it and the inlay hint
+			does not have the tooltips or the text edits yet.  A
+			message is shown when the cursor line has no inlay
+			hint, or the inlay hint has nothing to show or apply.
 
 							*:LspShowSignature*
 :LspShowSignature	Displays the signature of the symbol (e.g. a function
@@ -1324,6 +1375,78 @@ Commands to modify, rename, or format your code using the language server.
 			"textDocument/colorPresentation" requests, also when
 			|lsp-opt-showDocumentColors| is not set.
 
+						*:LspConfigCheck*
+:LspConfigCheck		Check the plugin options (|lsp-options|) and the
+			language server entries given to LspAddServer()
+			(|lsp-server-add|), as they are now.  When there are
+			no problems, a message says that the configuration is
+			good, and an open "LSP-Config-Check" window shows the
+			same.  If not, each problem is shown on one line of a
+			scratch buffer named "LSP-Config-Check", with the name
+			of the option, or the name of the server and the key: >
+
+		option "autoComplet" is not a known option
+		option "outlineWinSize" is a String, expected a Number
+		server "clangd": "args" is a String, expected a List
+		server "clangd": "features.hovr" is not a known feature
+<
+			The command reports:
+			- an option or a server key that the plugin does not
+			  know, e.g. a misspelled name
+			- a value of the wrong type, also in a |List| or a
+			  |Dict| value
+			- a value that is not one of the permitted values,
+			  e.g. for |lsp-opt-completionMatcher|,
+			  |lsp-cfg-traceLevel| or |lsp-cfg-forceOffsetEncoding|
+			- a server entry without "filetype" or "path"
+			- a "path" that is not executable, unless
+			  |lsp-opt-ignoreMissingServer| is set
+			- a name in "features" that is not in |lsp-features|
+
+			LspAddServer() uses the same rules.  It shows only the
+			problems that prevent the registration of a server.
+			For the other problems it ignores the key or uses the
+			default value, and shows nothing.
+
+			A server without a name is shown with the name of its
+			executable, or with its position ("#3") when it has no
+			path.  An entry that is given again with the same name
+			and file types replaces the earlier one in the check.
+
+						*:LspExecuteCommand*
+:LspExecuteCommand {command} [{arguments}]
+			Have a language server run {command}, one of the
+			commands that it lists in the "commands" of its
+			"executeCommandProvider" capability
+			(see |:LspServer| show capabilities).  What a command
+			does is up to the language server; refer to its
+			documentation.  Command-line completion offers the
+			commands of the language servers of the current
+			buffer.  When several language servers serve the
+			buffer, the first one that offers {command} runs it.
+
+			{arguments} are the arguments of the command: JSON
+			values separated by commas.  Each value is one
+			argument, so a JSON array is one argument that is an
+			array.  For example: >
+
+			    :LspExecuteCommand server.restart
+			    :LspExecuteCommand build.target "all", {"jobs": 4}
+<
+			This command cannot be followed by another command
+			with "|", and a '"' does not start a comment: both
+			are part of {arguments}.
+
+			A result that is not null is displayed: a short one
+			as a message, and a multi-line text, a list or a
+			dict in a scratch window.  The changes that the
+			language server makes with a "workspace/applyEdit"
+			request while it runs the command are applied.  Uses
+			the "workspace/executeCommand" request.
+
+			This command does not use the handlers registered
+			with |LspRegisterCmdHandler()|.
+
 							*:LspFold*
 :LspFold		Create folds for the current buffer.
 
@@ -1394,6 +1517,63 @@ Commands to modify, rename, or format your code using the language server.
 			This command requires a server that supports
 			|lsp-features-rename|.  If rename is unsupported,
 			an error is displayed and no request is sent.
+
+							*:LspRenameFile*
+:LspRenameFile [name]	Rename the file of the current buffer to [name], and
+			the buffer with it.  When [name] is a directory, the
+			file is moved into it.  The directories of [name]
+			that do not exist are created.
+
+			When [name] is not given, then you will be prompted
+			to enter the new name, with file name completion.
+			The prompt is pre-filled with the current name of the
+			file.  You can press <Esc> or enter an empty string
+			in the prompt to cancel the operation.
+
+			Before the file is renamed, each language server that
+			registered for it (see below) is asked for the changes
+			that the rename needs, e.g. to the imports and the
+			includes that name the file
+			("workspace/willRenameFiles").  The changes are made
+			to the buffers of the files and are not written,
+			except the changes to the renamed file, which are
+			written to it.  The reply is waited for, at most 10
+			seconds: a warning then tells that the file is
+			renamed without the changes of that language server.
+			CTRL-C stops the wait and the rename.  After the
+			rename, the
+			language servers that registered for it are told
+			about it ("workspace/didRenameFiles").  The language
+			servers attached to the buffer get the document
+			closed under its old name and opened under its new
+			one.
+
+			Nothing is renamed and no language server is asked
+			when the buffer has no file or has unsaved changes,
+			when a file with the new name exists already, or when
+			a directory cannot be written to.  The file is not
+			renamed either when the changes of a language server
+			cannot be made.
+
+			A language server registers the files that it wants
+			to be asked and told about with glob patterns, in its
+			capabilities ("workspace.fileOperations") or with the
+			"client/registerCapability" request.  The file is
+			renamed also when no language server registered for
+			it.  To leave a language server out, set its
+			|lsp-features-fileOperations| feature to |false|.
+
+							*lsp-file-operations*
+			In the same way, the language servers that registered
+			for it are asked for changes before Vim writes a file
+			that does not exist yet ("workspace/willCreateFiles"),
+			and are told about the new file after the write
+			("workspace/didCreateFiles").  The reply is waited
+			for, at most one second, and the changes are written
+			with the file.  The language servers are not asked or
+			told about the files that a workspace edit creates,
+			renames or deletes, and Vim has no command to delete
+			a file.
 
 							*:LspSelectionExpand*
 :LspSelectionExpand	Start a character-wise visual selection using the
@@ -1657,7 +1837,7 @@ Commands to control language server processes, monitor their status, and
 manage workspace folder scope.
 
 						*:LspServer*
-:LspServer { debug | restart | show | start | stop | trace }
+:LspServer { debug | reconfigure | restart | show | start | stop | trace }
 			Command to display and control the language server for
 			the current buffer.  Each argument has additional
 			sub-commands which are described below.
@@ -1685,6 +1865,25 @@ manage workspace folder scope.
 			    MS-Windows, the %TEMP%/lsp-<server-name>.log and
 			    %TEMP%/lsp-<server-name>.err% files are used. See
 			    |lsp-debug| for more information.
+
+			reconfigure
+			    Send the workspace configuration
+			    (|lsp-cfg-workspaceConfig|) again to the language
+			    servers of the current buffer that are running and
+			    ready, as the "settings" in a
+			    "workspace/didChangeConfiguration" notification,
+			    and show the number of language servers it was
+			    sent to.  A language server that gets its settings
+			    with the "workspace/configuration" request sends
+			    that request again when it receives this
+			    notification.  To change the workspace
+			    configuration of a language server, use
+			    |g:LspServerConfigSet()|, which also sends this
+			    notification.  A language server that reads its
+			    settings only from "initializationOptions" at
+			    startup ignores this notification: change these
+			    options where the language server is registered
+			    and restart Vim.
 
 			restart
 			    Restart (stop and then start) the language server
@@ -2361,7 +2560,8 @@ showInlayHints		|Boolean| option.  Show inlay hints from the language
 			when a window shows them.
 			Use |:LspInlayHints| to enable, disable, or toggle
 			hints for the current session without permanently
-			changing this option.
+			changing this option, to show the tooltip of an inlay
+			hint and to apply its text edits.
 
 						*lsp-opt-showSignature*
 showSignature		|Boolean| option.  In insert mode, automatically show
@@ -2730,6 +2930,31 @@ until the next list of completion items arrives.  The text edits that the
 reply adds, such as an import, are applied when the item is accepted.  When
 the reply has not arrived yet, Vim waits for it, as long as for the reply to
 any other request, counted from when the request was sent.
+
+						*lsp-cmdline-completion*
+A language server for Vim script cannot know the option values, file names,
+buffer names and user-command arguments of this Vim.  As an extension to the
+protocol, the plugin sets "cmdlineCompletion" to |true| in its "experimental"
+client capabilities, and a language server (vim9ls) can then reply to a
+completion request with "cmdlineCompletion" set to |true| in the completion
+list.  The plugin then completes the text of the line before the cursor as
+Vim does on the command line (|i_CTRL-X_CTRL-V|, |getcompletion()| with
+"cmdline").  This applies to the plugin's auto-completion, to omni completion
+and to |g:LspCompleteSource()|.
+
+The matches keep the order Vim gives them, with the "Value" kind (see
+|lsp-opt-customCompletionKinds|).  A match can start before the keyword
+before the cursor: for "src/ma" the menu shows "src/main.c" and "main.c" is
+inserted.  A match that does not start with the text typed is not shown; the
+"completionMatcher" option set to "icase" ignores case in this comparison.
+Special characters in a file name are escaped with a backslash.
+
+Vim's completion runs in the |sandbox|, because it runs for text as it is
+typed: a shell command in backticks is not executed, and a user command whose
+completion function calls |system()| gets no matches.  The names of all the
+shell commands (after ":!" or ":terminal" with nothing typed) are not listed,
+because Vim takes more than 100 milliseconds to collect them; they are
+completed after the first character.
 
 						       *g:LspCompleteSource()*
 Vim's own auto-completion ('autocomplete', |ins-autocompletion|) and
@@ -3227,6 +3452,13 @@ and later).  The tag function then keeps the symbols whose name the regexp
 matches, with 'ignorecase' applying as for any pattern match.  As the server
 can't take a regexp, it is asked for the word the regexp starts with.  The
 language server is asked on each completion, and Vim waits for its reply.
+
+A language server can send a symbol with its file but without its position in
+the file.  For a lookup of a symbol name the tag function requests the position
+of each matching symbol ("workspaceSymbol/resolve").  For a regexp the
+positions are not requested, as each one needs a request that Vim waits for:
+such a tag is on the first line of its file.  It is also there when the
+language server cannot supply the position.
 
 Note that most of the language servers return only one symbol location even if
 the symbol is defined in multiple places in the code.
@@ -3832,7 +4064,10 @@ contains the LSP Command interface fields.  Refer to the LSP specification for
 more information about the "Command" interface.
 
 If no custom handler is registered for a command, then the command is sent
-to the server using the standard |workspace/executeCommand| request.
+to the server using the standard "workspace/executeCommand" request.  A
+language server without the "executeCommandProvider" capability cannot run
+a command: then a warning names the command, which needs a custom handler.
+To run a command of a language server yourself, use |:LspExecuteCommand|.
 If a registered handler throws an exception, the plugin reports an error
 message and continues running.
 
@@ -4301,6 +4536,12 @@ documentColor			Used to show the colors in a buffer when
 					*lsp-features-documentFormatting*
 documentFormatting		Used by the |:LspFormat| command, and
 				'formatexpr'
+				*lsp-features-documentOnTypeFormatting*
+documentOnTypeFormatting	Used to format the text while you type when
+				|lsp-opt-onTypeFormatting| is set.
+				*lsp-features-documentRangeFormatting*
+documentRangeFormatting		Used by the |:LspFormat| command with a range,
+				and 'formatexpr'
 					*lsp-features-documentHighlight*
 documentHighlight		Used by the |:LspHighlight| and the
 				|:LspHighlightClear| commands.
@@ -4310,6 +4551,12 @@ documentLink			Used by the |:LspDocumentLink| and the
 					*lsp-features-documentSymbol*
 documentSymbol			Used by the |:LspDocumentSymbol| and the
 				|:LspOutline| commands.
+						*lsp-features-fileOperations*
+fileOperations			Used by the |:LspRenameFile| command, and when
+				Vim writes a new file, to ask the language
+				server for changes before a file is renamed or
+				created and to tell it afterwards.  See
+				|lsp-file-operations|.
 						*lsp-features-foldingRange*
 foldingRange			Used by the |:LspFold| command, and the
 				|lsp#lsp#FoldExpr()| and |lsp#lsp#FoldText()|
@@ -4322,8 +4569,10 @@ implementation			Used by the |:LspGotoImpl| and the
 						*lsp-features-inlayHint*
 inlayHint			Used to show inlay hints: inferred type
 				annotations and parameter name labels displayed
-				as virtual text in the buffer.  Controlled by
-				|lsp-opt-showInlayHints| and |:LspInlayHints|.
+				as virtual text in the buffer, to show their
+				tooltips and to apply their text edits.
+				Controlled by |lsp-opt-showInlayHints| and
+				|:LspInlayHints|.
 					*lsp-features-inlineCompletion*
 inlineCompletion		Used to show inline completions as ghost text
 				in insert mode.  See |lsp-inline-completion|.
@@ -4364,6 +4613,7 @@ watchFiles			Used to send the language server the changes
 				files itself, like rust-analyzer, then does
 				that, while the other language servers still
 				use the client's file watching.
+					*lsp-features-workspaceSymbol*
 workspaceSymbol			Used by the |:LspSymbolSearch| command.
 
 ==============================================================================

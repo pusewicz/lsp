@@ -30,9 +30,13 @@ import './ontypeformat.vim'
 import './folding.vim'
 import './linkedediting.vim'
 import './snippet.vim'
+import './fileoperations.vim'
+import './configcheck.vim'
 
 # filetype to LSP server map
 var ftypeServerMap: dict<list<dict<any>>> = {}
+
+var serverEntries: list<dict<any>> = []
 
 var lspInitializedOnce = false
 var lspUserSetupOnce = false
@@ -1120,6 +1124,40 @@ def RestartServer()
   AddBuffersToLsp(ftype)
 enddef
 
+def ServerReconfigure()
+  var lspservers: list<dict<any>> = buf.CurbufGetServers()
+  if lspservers->empty()
+    util.WarnMsg($'No Lsp servers found for "{@%}"')
+    return
+  endif
+
+  var told: number = 0
+  for lspserver in lspservers
+    if lspserver.running && lspserver.ready
+      lspserver.sendWorkspaceConfig()
+      told += 1
+    endif
+  endfor
+  util.InfoMsg($'Sent the workspace configuration to {told} language server{told == 1 ? '' : 's'}')
+enddef
+
+export def ServerConfigSet(name: string, config: dict<any>): number
+  var seen: dict<bool> = {}
+  for lspservers in ftypeServerMap->values()
+    for lspserver in lspservers
+      if lspserver.name != name || seen->has_key(lspserver.id)
+	continue
+      endif
+      seen[lspserver.id] = true
+      lspserver.workspaceConfig = config->deepcopy()
+      if lspserver.running && lspserver.ready
+	lspserver.sendWorkspaceConfig()
+      endif
+    endfor
+  endfor
+  return seen->len()
+enddef
+
 # Add the LSP server for files with 'filetype' as "ftype".
 def AddServerForFiltype(lspserver: dict<any>, ftype: string, omnicompl: bool)
   LspAddServer(ftype, lspserver)
@@ -1130,13 +1168,41 @@ def AddServerForFiltype(lspserver: dict<any>, ftype: string, omnicompl: bool)
   AddBuffersToLsp(ftype)
 enddef
 
+def RememberServerEntry(entry: dict<any>)
+  var id: string = configcheck.ServerId(entry)
+  var idx: number = serverEntries->indexof((_, v) =>
+    configcheck.ServerId(v) == id)
+  if idx == -1
+    serverEntries->add(entry)
+  else
+    serverEntries[idx] = entry
+  endif
+enddef
+
 # Register a LSP server for one or more file types
 export def AddServer(serverList: list<dict<any>>)
-  for server in serverList
-    if !server->has_key('filetype') || !server->has_key('path')
-      util.ErrMsg('LSP server information is missing filetype or path')
+  for i in range(serverList->len())
+    RememberServerEntry(serverList[i]->deepcopy())
+
+    var server: dict<any> = serverList[i]->deepcopy()
+    var problems: list<dict<any>> = configcheck.ServerProblems(server)
+    var skip: bool = false
+    for problem in problems
+      if problem.action == 'skip'
+	skip = true
+	# Skip missing executables unless user opted into silent ignore.
+	if !problem.missing || !opt.lspOptions.ignoreMissingServer
+	  var label: string = configcheck.ServerLabel(server, i + 1)
+	  util.ErrMsg($'LSP server {label}: {problem.text}')
+	endif
+      endif
+    endfor
+    if skip
       continue
     endif
+
+    configcheck.ServerNormalize(server, problems)
+
     # Enable omni-completion by default when auto-complete is disabled, unless
     # the user explicitly overrides this per server.
     var omnicompl_def: bool = false
@@ -1147,127 +1213,37 @@ export def AddServer(serverList: list<dict<any>>)
     endif
     server.omnicompl = server->get('omnicompl', omnicompl_def)
 
-    server.path = expandcmd(server.path)
-
-    # Skip missing executables unless user opted into silent ignore.
-    if !server.path->executable()
-      if !opt.lspOptions.ignoreMissingServer
-        util.ErrMsg($'LSP server {server.path} is not found')
-      endif
-      continue
-    endif
-    if server->has_key('args')
-      if server.args->type() != v:t_list
-        util.ErrMsg($'Arguments for LSP server {server.args} is not a List')
-        continue
-      endif
-    else
-      server.args = []
-    endif
-
-    # Normalize optional fields to canonical types expected by NewLspServer().
-    if !server->has_key('initializationOptions')
-	|| server.initializationOptions->type() != v:t_dict
-      server.initializationOptions = {}
-    endif
-
-    if !server->has_key('forceOffsetEncoding')
-	|| server.forceOffsetEncoding->type() != v:t_string
-	|| (server.forceOffsetEncoding != 'utf-8'
-	    && server.forceOffsetEncoding != 'utf-16'
-	    && server.forceOffsetEncoding != 'utf-32')
-      server.forceOffsetEncoding = ''
-    endif
-
-    if !server->has_key('customNotificationHandlers')
-	|| server.customNotificationHandlers->type() != v:t_dict
-      server.customNotificationHandlers = {}
-    endif
-
-    if server->has_key('processDiagHandler')
-      if server.processDiagHandler->type() != v:t_func
-        util.ErrMsg($'Setting of processDiagHandler {server.processDiagHandler} is not a Funcref nor lambda')
-        continue
-      endif
-    else
-      server.processDiagHandler = null_function
-    endif
-
-    if !server->has_key('customRequestHandlers')
-	|| server.customRequestHandlers->type() != v:t_dict
-      server.customRequestHandlers = {}
-    endif
-
-    if !server->has_key('features') || server.features->type() != v:t_dict
-      server.features = {}
-    endif
-
-    if server.omnicompl->type() != v:t_bool
-      util.ErrMsg($'Setting of omnicompl {server.omnicompl} is not a Boolean')
-      continue
-    endif
-
-    if !server->has_key('syncInit')
-      server.syncInit = false
-    endif
-
-    if !server->has_key('name') || server.name->type() != v:t_string
-	|| server.name->empty()
-      # Use the executable name (without the extension) as the language server
-      # name.
-      server.name = server.path->fnamemodify(':t:r')
-    endif
-
-    if !server->has_key('debug') || server.debug->type() != v:t_bool
-      server.debug = false
-    endif
-
-    if !server->has_key('traceLevel')
-	|| server->type() != v:t_string
-	|| (server.traceLevel != 'off' && server.traceLevel != 'debug'
-	    && server.traceLevel != 'verbose')
-      server.traceLevel = 'off'
-    endif
-
-    if !server->has_key('workspaceConfig')
-	|| server.workspaceConfig->type() != v:t_dict
-      server.workspaceConfig = {}
-    endif
-
-    if !server->has_key('rootSearch') || server.rootSearch->type() != v:t_list
-      server.rootSearch = []
-    endif
-
-    if !server->has_key('runIfSearch') ||
-	server.runIfSearch->type() != v:t_list
-      server.runIfSearch = []
-    endif
-
-    if !server->has_key('runUnlessSearch') ||
-	server.runUnlessSearch->type() != v:t_list
-      server.runUnlessSearch = []
-    endif
-
-    if !server->has_key('languageId') ||
-	server.languageId->type() != v:t_func
-      server.languageId = v:none
-    endif
-
     # Freeze normalized config into a concrete server instance.
     var lspserver: dict<any> = lserver.NewLspServer(server)
 
-    var ftypes = server.filetype
+    var ftypes: any = server.filetype
     if ftypes->type() == v:t_string
       AddServerForFiltype(lspserver, ftypes, server.omnicompl)
-    elseif ftypes->type() == v:t_list
+    else
       for ftype in ftypes
 	AddServerForFiltype(lspserver, ftype, server.omnicompl)
       endfor
-    else
-      util.ErrMsg($'Unsupported file type information "{ftypes->string()}" in LSP server registration')
-      continue
     endif
   endfor
+enddef
+
+export def ConfigCheck()
+  var lines: list<string> = configcheck.ConfigProblems(opt.lspOptions,
+    opt.lspOptionDefaults, serverEntries)
+  var bname: string = 'LSP-Config-Check'
+  if lines->empty()
+    var good: string = 'The LSP configuration is good'
+    util.InfoMsg(good)
+    if scratchBufnrs->get(bname, -1)->bufwinid() == -1
+      return
+    endif
+    lines = [good]
+  endif
+
+  OpenScratchWindow(bname)
+  setline(1, lines)
+  :setlocal nomodified
+  :setlocal nomodifiable
 enddef
 
 # The LSP server is considered ready when the server capabilities are
@@ -1388,14 +1364,20 @@ export def Hover(cmdmods: string)
   lspserver.hover(cmdmods)
 enddef
 
+# TODO-UPDATE-COMMENT: also shows the information of an inlay hint and applies its text edits
+# ---
 # Enable or disable inlay hints
-export def InlayHints(ctl: string)
+export def InlayHints(ctl: string, cmdmods: string = '')
   if ctl == 'enable'
     inlayhints.InlayHintsEnable()
   elseif ctl == 'disable'
     inlayhints.InlayHintsDisable()
   elseif ctl == 'toggle'
     inlayhints.InlayHintsToggle()
+  elseif ctl == 'info'
+    inlayhints.InlayHintInfo(cmdmods)
+  elseif ctl == 'apply'
+    inlayhints.InlayHintApply()
   else
     util.ErrMsg($'LspInlayHints - Unsupported argument "{ctl}"')
   endif
@@ -1403,7 +1385,7 @@ enddef
 
 # Command-line completion for the ":LspInlayHints" command
 export def LspInlayHintsComplete(arglead: string, cmdline: string, cursorPos: number): list<string>
-  var l = ['enable', 'disable', 'toggle']
+  var l = ['enable', 'disable', 'toggle', 'info', 'apply']
   return filter(l, (_, val) => val =~ $'^{arglead}')
 enddef
 
@@ -1674,6 +1656,10 @@ export def Rename(a_newName: string)
   })
 enddef
 
+export def RenameFile(name: string)
+  fileoperations.RenameFile(name)
+enddef
+
 # Perform a code action
 # Uses LSP "textDocument/codeAction" request
 def CurbufGetCodeActionServersChecked(): list<dict<any>>
@@ -1816,6 +1802,94 @@ export def ColorPresentation(choice: number)
   endif
 
   lspserver.colorPresentation(choice)
+enddef
+
+def JsonLines(value: any, indent: string): list<string>
+  var isList: bool = value->type() == v:t_list
+  if (!isList && value->type() != v:t_dict) || value->empty()
+    return [indent .. value->json_encode()]
+  endif
+
+  var lines: list<string> = [indent .. (isList ? '[' : '{')]
+  var keys: list<any> = isList ? range(value->len()) : value->keys()->sort()
+  var itemIndent: string = indent .. '  '
+  for key in keys
+    var itemLines: list<string> = JsonLines(value[key], itemIndent)
+    if !isList
+      itemLines[0] = $'{itemIndent}{key->json_encode()}: {itemLines[0]->strpart(itemIndent->len())}'
+    endif
+    if key != keys[-1]
+      itemLines[-1] ..= ','
+    endif
+    lines->extend(itemLines)
+  endfor
+  lines->add(indent .. (isList ? ']' : '}'))
+  return lines
+enddef
+
+def ShowCommandResult(command: string, result: any)
+  var lines: list<string> = result->type() == v:t_string
+    ? result->split("\n") : JsonLines(result, '')
+  if lines->len() <= 1
+    util.InfoMsg($'{command}: {lines->join()}')
+    return
+  endif
+
+  OpenScratchWindow('LSP-Command-Result')
+  setline(1, lines)
+  :setlocal nomodified
+  :setlocal nomodifiable
+enddef
+
+def ExecutableCommands(): dict<dict<any>>
+  var commands: dict<dict<any>> = {}
+  for lspserver in buf.CurbufGetServers()
+    if !lspserver.running || !lspserver.ready
+      continue
+    endif
+    for command in lspserver.executeCommands
+      if !commands->has_key(command)
+	commands[command] = lspserver
+      endif
+    endfor
+  endfor
+  return commands
+enddef
+
+export def ExecuteCommand(args: string)
+  var command: string = args->matchstr('^\S\+')
+  if command->empty()
+    util.ErrMsg('No command to execute is given')
+    return
+  endif
+
+  var cmd: dict<any> = {command: command}
+  var arguments: string = args->strpart(command->len())->trim()
+  if !arguments->empty()
+    try
+      cmd.arguments = json_decode($'[{arguments}]')
+    catch
+      util.ErrMsg($'The arguments of "{command}" are not JSON values ({v:exception})')
+      return
+    endtry
+  endif
+
+  var commands: dict<dict<any>> = ExecutableCommands()
+  if !commands->has_key(command)
+    util.ErrMsg($'No language server of the current buffer offers the command "{command}"')
+    return
+  endif
+
+  commands[command].executeCommand(cmd, function(ShowCommandResult, [command]))
+enddef
+
+export def LspExecuteCommandComplete(arglead: string, cmdline: string, cursorPos: number): list<string>
+  var before: string = cmdline->strpart(0, cursorPos - arglead->len())
+  if before !~# '\<LspE\a*\s\+$'
+    return []
+  endif
+  return ExecutableCommands()->keys()->sort()
+    ->filter((_, command) => command->stridx(arglead) == 0)
 enddef
 
 # Perform a workspace wide symbol lookup
@@ -2103,7 +2177,7 @@ enddef
 export def LspServerComplete(arglead: string, cmdline: string, cursorPos: number): list<string>
   var wordBegin = -1
   var wordEnd = -1
-  var l = ['debug', 'restart', 'show', 'trace', 'stop', 'start']
+  var l = ['debug', 'reconfigure', 'restart', 'show', 'trace', 'stop', 'start']
 
   # Skip the command name
   var i = cmdline->stridx(' ', 0)
@@ -2138,6 +2212,8 @@ export def LspServerCmd(args: string)
     else
       util.ErrMsg('Argument required for ":LspServer debug"')
     endif
+  elseif args == 'reconfigure'
+    ServerReconfigure()
   elseif args == 'restart'
     RestartServer()
   elseif args->stridx('show') == 0

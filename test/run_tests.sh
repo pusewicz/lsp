@@ -61,6 +61,7 @@ OTHER_TESTS=(
   "gopls_tests.vim"
   "rust_tests.vim"
   "stub_lspserver_tests.vim"
+  "registered_server_tests.vim"
   "not_lspserver_related_tests.vim"
   "markdown_tests.vim"
 )

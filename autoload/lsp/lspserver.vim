@@ -35,6 +35,7 @@ import './linkedediting.vim'
 import './semantichighlight.vim'
 import './buffer.vim' as buf
 import './watchedfiles.vim'
+import './fileoperations.vim'
 
 const DIAG_PULL_DEBOUNCE_MSEC = 200
 
@@ -89,6 +90,7 @@ def Exit_cb(lspserver: dict<any>, job: job, status: number): void
   lspserver.running = false
   lspserver.ready = false
   watchedfiles.RemoveServer(lspserver)
+  fileoperations.RemoveServer(lspserver)
 enddef
 
 # Remove all the items of "map", one of the typed maps of the server dict (see
@@ -357,6 +359,7 @@ def StopServer(lspserver: dict<any>): number
   lspserver.running = false
   lspserver.ready = false
   watchedfiles.RemoveServer(lspserver)
+  fileoperations.RemoveServer(lspserver)
   return 0
 enddef
 
@@ -1344,6 +1347,9 @@ def TextdocDidClose(lspserver: dict<any>, bnr: number): void
   if lspserver.pendingDocChanges->has_key(bnr)
     lspserver.pendingDocChanges->remove(bnr)
   endif
+  if lspserver.heldDocChanges->has_key(bnr)
+    lspserver.heldDocChanges->remove(bnr)
+  endif
 enddef
 
 def RestartDiagnosticPullTimer(lspserver: dict<any>)
@@ -1573,6 +1579,11 @@ def TextdocDidChange(lspserver: dict<any>, bnr: number,
     return
   endif
 
+  if lspserver.heldDocChanges->has_key(bnr)
+    lspserver.pendingDocChanges[bnr] = true
+    return
+  endif
+
   # A change queued for a full sync is sent now.  The changes the listener
   # passes along don't fit the document of the server then: it is older than
   # the one they were made to, when 'incrementalSync' was set since.
@@ -1681,6 +1692,8 @@ def StopDocChangeTimer(lspserver: dict<any>): void
   ClearMap(lspserver.pendingDocChanges)
 enddef
 
+# TODO-UPDATE-COMMENT: the changes stay queued while HoldDocChanges() holds them back
+# ---
 # Send the changes to the document of buffer "bnr" that the server doesn't
 # have yet: the ones that Vim hasn't passed to the listener of the buffer, and
 # the ones queued by QueueDocChange().  Then the version of the document is
@@ -1690,6 +1703,28 @@ def FlushDocChanges(lspserver: dict<any>, bnr: number): void
   if lspserver.pendingDocChanges->has_key(bnr)
     TextdocDidChange(lspserver, bnr)
   endif
+enddef
+
+def HoldDocChanges(lspserver: dict<any>, bnr: number): void
+  lspserver.heldDocChanges[bnr] = true
+enddef
+
+def ReleaseDocChanges(lspserver: dict<any>, bnr: number): void
+  if !lspserver.heldDocChanges->has_key(bnr)
+    return
+  endif
+  if bnr->bufloaded()
+    bnr->listener_flush()
+  endif
+  lspserver.heldDocChanges->remove(bnr)
+  if !lspserver.pendingDocChanges->has_key(bnr)
+    return
+  endif
+  if !bnr->bufloaded() || !lspserver.docVersions->has_key(bnr)
+    lspserver.pendingDocChanges->remove(bnr)
+    return
+  endif
+  TextdocDidChange(lspserver, bnr)
 enddef
 
 # Send a change notification for buffer "bnr" when setting 'endofline',
@@ -2736,6 +2771,7 @@ def InlayHintsShow(lspserver: dict<any>, bnr: number, firstLine: number = 1,
 
   lspserver.encodeRange(bnr, param.range)
 
+  var changedtick: number = bnr->getbufvar('changedtick')
   var msg: string
   if lspserver.isClangdInlayHintsProvider
     # clangd-style inlay hints
@@ -2745,8 +2781,19 @@ def InlayHintsShow(lspserver: dict<any>, bnr: number, firstLine: number = 1,
   endif
   AsyncRpcSupersede(lspserver, $'textDocument/inlayHint {bnr}', msg, param,
 		    (_: dict<any>, reply, error) => {
-    inlayhints.InlayHintsReply(lspserver, reply, error, bnr)
+    inlayhints.InlayHintsReply(lspserver, reply, error, bnr, changedtick)
   })
+enddef
+
+def InlayHintResolve(lspserver: dict<any>, hint: dict<any>, Cbfunc: func)
+  AsyncRpcInContext(lspserver, util.RequestContextGet('cursor'),
+		    'inlayHint/resolve', 'inlayHint/resolve', hint,
+		    (_: dict<any>, reply: any, error: dict<any>) => {
+    if !error->empty()
+      return
+    endif
+    Cbfunc(reply->type() == v:t_dict ? reply : {})
+  }, {beforePendingKeys: true})
 enddef
 
 # Recursively decode the parent/children type hierarchy items.
@@ -3534,18 +3581,81 @@ def WorkspaceQuerySymbolsReply(lspserver: dict<any>, query: string,
 
   if firstCall && symInfo->len() == 1
     # If there is only one symbol, then jump to the symbol location
-    var symLoc: dict<any> = symInfo[0]->get('location', {})
-    if !symLoc->empty()
-      # Decode the position encoding in the symbol location
-      if lspserver.needOffsetEncoding
-	lspserver.decodeLocation(symLoc)
-      endif
-      symbol.GotoSymbol(lspserver, symLoc, false, cmdmods)
+    if symInfo[0]->has_key('location')
+      WorkspaceSymbolLocation(lspserver, symInfo[0], (location: dict<any>) => {
+	symbol.GotoSymbol(lspserver, location, false, cmdmods)
+      })
     endif
   else
     # Note: decoding position encoding delayed until jumping to location
     symbol.WorkspaceSymbolPopup(lspserver, query, symInfo, cmdmods)
   endif
+enddef
+
+def WorkspaceSymbolHasRange(sym: dict<any>): bool
+  var location: any = sym->get('location', {})
+  return location->type() == v:t_dict
+    && location->get('range', 0)->type() == v:t_dict
+enddef
+
+def WorkspaceSymbolFileStart(sym: dict<any>): dict<any>
+  var pos = {line: 0, character: 0}
+  return {uri: sym.location.uri, range: {start: pos, end: pos->copy()}}
+enddef
+
+def WorkspaceSymbolLocation(lspserver: dict<any>, sym: dict<any>,
+			    Cbfunc: func)
+  if WorkspaceSymbolHasRange(sym)
+    var location: dict<any> = sym.location->deepcopy()
+    if lspserver.needOffsetEncoding
+      lspserver.decodeLocation(location)
+    endif
+    Cbfunc(location)
+    return
+  endif
+
+  var fileStart = WorkspaceSymbolFileStart(sym)
+  if !lspserver.isWorkspaceSymbolResolveProvider
+    Cbfunc(fileStart)
+    return
+  endif
+
+  var reqctx = util.RequestContextGet('cursor')
+  var id = lspserver.rpc_a('workspaceSymbol/resolve', sym,
+			   (_: dict<any>, result: any, _) => {
+    if !util.RequestContextMatches(reqctx)
+      return
+    endif
+    if result->type() != v:t_dict || !WorkspaceSymbolHasRange(result)
+      Cbfunc(fileStart)
+      return
+    endif
+
+    var location: dict<any> = result.location
+    if lspserver.needOffsetEncoding
+      lspserver.decodeLocation(location)
+    endif
+    Cbfunc(location)
+  }, {beforePendingKeys: true})
+  if id < 0
+    Cbfunc(fileStart)
+  endif
+enddef
+
+def WorkspaceSymbolLocationSync(lspserver: dict<any>,
+				sym: dict<any>): dict<any>
+  if WorkspaceSymbolHasRange(sym)
+    return sym.location
+  endif
+  if lspserver.isWorkspaceSymbolResolveProvider
+    var reply = lspserver.rpc('workspaceSymbol/resolve', sym,
+			      {handleError: false})
+    var resolved: any = reply->get('result', {})
+    if resolved->type() == v:t_dict && WorkspaceSymbolHasRange(resolved)
+      return resolved.location
+    endif
+  endif
+  return WorkspaceSymbolFileStart(sym)
 enddef
 
 # Return the LSP WorkspaceFolder interface for the directory "dirName"
@@ -3766,9 +3876,11 @@ def FoldingRangesUpdate(lspserver: dict<any>, bnr: number)
   }, {handleError: false})
 enddef
 
+# TODO-UPDATE-COMMENT: takes "ResultCb", which gets a result that is not null
+# ---
 # process the 'workspace/executeCommand' reply from the LSP server
 # Result: any | null
-def WorkspaceExecuteReply(lspserver: dict<any>, execReply: any,
+def WorkspaceExecuteReply(lspserver: dict<any>, ResultCb: func, execReply: any,
                           execError: dict<any> = {})
   # Handle workspace execute command error
   if !execError->empty()
@@ -3776,13 +3888,23 @@ def WorkspaceExecuteReply(lspserver: dict<any>, execReply: any,
     return
   endif
 
+  # TODO-UPDATE-COMMENT: a result that is not null goes to "ResultCb"
+  # ---
   # Nothing to do for the reply
+  if ResultCb != null_function && execReply->type() != v:t_none
+    ResultCb(execReply)
+  endif
 enddef
 
+# TODO-UPDATE-COMMENT: a server that is not an execute command provider gets no request, and "ResultCb" gets a result that is not null
+# ---
 # Request the LSP server to execute a command
 # Request: workspace/executeCommand
 # Params: ExecuteCommandParams
-def ExecuteCommand(lspserver: dict<any>, cmd: dict<any>)
+def ExecuteCommand(lspserver: dict<any>, cmd: dict<any>,
+		   ResultCb: func = null_function)
+  # TODO-UPDATE-COMMENT: answered, the capability is checked below
+  # ---
   # Need to check for lspserver.caps.executeCommandProvider?
   var params: dict<any> = {}
   params.command = cmd->get('command', '')
@@ -3790,12 +3912,16 @@ def ExecuteCommand(lspserver: dict<any>, cmd: dict<any>)
     # No specific command to execute received from the server
     return
   endif
+  if !lspserver.isExecuteCommandProvider
+    util.WarnMsg($'Language server "{lspserver.name}" does not execute commands, "{params.command}" needs a handler (see :help lsp-custom-commands)')
+    return
+  endif
   if cmd->has_key('arguments')
     params.arguments = cmd.arguments
   endif
 
   lspserver.rpc_a('workspace/executeCommand', params,
-		  (_: dict<any>, reply, error) => WorkspaceExecuteReply(lspserver, reply, error),
+		  (_: dict<any>, reply, error) => WorkspaceExecuteReply(lspserver, ResultCb, reply, error),
 		  {beforePendingKeys: true})
 enddef
 
@@ -3886,14 +4012,17 @@ def TagFunc(lspserver: dict<any>, pat: string, flags: string, info: dict<any>): 
     endif
 
     for sym in wsReply.result
-      if !sym->has_key('location') || !sym.location->has_key('range')
+      if !sym->has_key('location')
 	continue
       endif
       var name = sym->get('name', '')
       if isRegexp ? name !~ pat : name != pat
 	continue
       endif
-      taglocations->add(sym.location->extendnew({name: name}))
+      var location: dict<any> = isRegexp && !WorkspaceSymbolHasRange(sym)
+	? WorkspaceSymbolFileStart(sym)
+	: WorkspaceSymbolLocationSync(lspserver, sym)
+      taglocations->add(location->extendnew({name: name}))
     endfor
 
     if taglocations->empty()
@@ -3960,6 +4089,7 @@ export def NewLspServer(serverParams: dict<any>): dict<any>
   var pendingPullBufnrs: dict<bool> = {}
   # The buffers with a change that QueueDocChange() queued
   var pendingDocChanges: dict<bool> = {}
+  var heldDocChanges: dict<bool> = {}
   var workDoneProgressTokens: dict<bool> = {}
   var cachedBufferContent: dict<list<string>> = {}
   var cachedBufferEol: dict<bool> = {}
@@ -3977,6 +4107,8 @@ export def NewLspServer(serverParams: dict<any>): dict<any>
     job: v:none,
     data: '',
     caps: {},
+    isExecuteCommandProvider: false,
+    executeCommands: [],
     callHierarchyType: '',
     completionTriggerChars: [],
     onTypeFormattingTriggers: [],
@@ -4006,6 +4138,7 @@ export def NewLspServer(serverParams: dict<any>): dict<any>
     diagnosticPullTimer: -1,
     pendingPullBufnrs: pendingPullBufnrs,
     pendingDocChanges: pendingDocChanges,
+    heldDocChanges: heldDocChanges,
     docChangeTimer: -1,
     supportsDidOpenClose: false,
     supportsDidSave: false,
@@ -4075,6 +4208,8 @@ export def NewLspServer(serverParams: dict<any>): dict<any>
     textdocEolChanged: function(TextdocEolChanged, [lspserver]),
     queueDocChange: function(QueueDocChange, [lspserver]),
     flushDocChanges: function(FlushDocChanges, [lspserver]),
+    holdDocChanges: function(HoldDocChanges, [lspserver]),
+    releaseDocChanges: function(ReleaseDocChanges, [lspserver]),
     sendInitializedNotif: function(SendInitializedNotif, [lspserver]),
     sendWorkspaceConfig: function(SendWorkspaceConfig, [lspserver]),
     getCompletion: function(GetCompletion, [lspserver]),
@@ -4105,6 +4240,7 @@ export def NewLspServer(serverParams: dict<any>): dict<any>
     outgoingCalls: function(OutgoingCalls, [lspserver]),
     getOutgoingCalls: function(GetOutgoingCalls, [lspserver]),
     inlayHintsShow: function(InlayHintsShow, [lspserver]),
+    inlayHintResolve: function(InlayHintResolve, [lspserver]),
     typeHierarchy: function(TypeHierarchy, [lspserver]),
     prepareRename: function(PrepareRename, [lspserver]),
     renameSymbol: function(RenameSymbol, [lspserver]),
@@ -4124,6 +4260,7 @@ export def NewLspServer(serverParams: dict<any>): dict<any>
     openDocumentLink: function(OpenDocumentLink, [lspserver]),
     resolveDocumentLink: function(ResolveDocumentLink, [lspserver]),
     workspaceQuery: function(WorkspaceQuerySymbols, [lspserver]),
+    workspaceSymbolLocation: function(WorkspaceSymbolLocation, [lspserver]),
     addWorkspaceFolder: function(AddWorkspaceFolder, [lspserver]),
     removeWorkspaceFolder: function(RemoveWorkspaceFolder, [lspserver]),
     linkedEditingRangesUpdate: function(LinkedEditingRangesUpdate, [lspserver]),

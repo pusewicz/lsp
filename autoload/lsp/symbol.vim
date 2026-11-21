@@ -9,7 +9,6 @@ vim9script
 import './options.vim' as opt
 import './util.vim'
 import './outline.vim'
-import './offset.vim'
 
 # Initialize the highlight group and the text property type used for
 # document symbol search
@@ -106,12 +105,18 @@ def JumpToWorkspaceSymbol(lspserver: dict<any>, cmdmods: string,
   if symTbl->empty()
     return
   endif
+  var sym: dict<any> = symTbl[result - 1]
+  lspserver.workspaceSymbolLocation(sym.symbol, (location: dict<any>) => {
+    JumpToSymbolPos(cmdmods, sym.file, location.range.start)
+  })
+enddef
+
+def JumpToSymbolPos(cmdmods: string, fname: string, pos: dict<number>)
   try
     # Save the current location in the tag stack
     util.PushCursorToTagStack()
 
     # if the selected file is already present in a window, then jump to it
-    var fname: string = symTbl[result - 1].file
     var bnr = util.BufnrExact(fname)
     if cmdmods->empty()
       var winList: list<number> = bnr->win_findbuf()
@@ -144,12 +149,8 @@ def JumpToWorkspaceSymbol(lspserver: dict<any>, cmdmods: string,
     # Set the previous cursor location mark. Instead of using setpos(), m' is
     # used so that the current location is added to the jump list.
     :normal! m'
-    if lspserver.needOffsetEncoding
-      offset.DecodePosition(lspserver, bufnr(), symTbl[result - 1].pos)
-    endif
-    setcursorcharpos(symTbl[result - 1].pos.line + 1,
-		     util.GetCharIdxWithoutCompChar(bufnr(),
-						    symTbl[result - 1].pos) + 1)
+    setcursorcharpos(pos.line + 1,
+		     util.GetCharIdxWithoutCompChar(bufnr(), pos) + 1)
     :normal! zv
   catch
     # ignore exceptions
@@ -205,6 +206,8 @@ def MakeMenuName(popupWidth: number, fname: string): string
   return str
 enddef
 
+# TODO-UPDATE-COMMENT: the result can also be WorkspaceSymbol[]
+# ---
 # process the 'workspace/symbol' reply from the LSP server
 # Result: SymbolInformation[] | null
 export def WorkspaceSymbolPopup(lspserver: dict<any>, query: string,
@@ -225,6 +228,8 @@ export def WorkspaceSymbolPopup(lspserver: dict<any>, query: string,
       continue
     endif
 
+    # TODO-UPDATE-COMMENT: or interface WorkspaceSymbol
+    # ---
     # interface SymbolInformation
     fileName = util.LspUriToFile(symbol.location.uri)
 
@@ -239,7 +244,7 @@ export def WorkspaceSymbolPopup(lspserver: dict<any>, query: string,
 
     symbols->add({name: symName,
 			file: fileName,
-			pos: symbol.location.range.start})
+			symbol: symbol})
   endfor
   symbols->setwinvar(lspserver.workspaceSymbolPopup, 'LspSymbolTable')
   lspserver.workspaceSymbolPopup->popup_settext(

@@ -341,6 +341,33 @@ export def ReplaceText(lnum: number, col: number, endLnum: number,
   cursor(curLnum, curCol)
 enddef
 
+export def ApplyTextEditsKeepProps(text_edits: list<dict<any>>)
+  var bnr = bufnr()
+  var lastLine = line('$') - 1
+  if text_edits->indexof((_, e) => e.range.end.line > lastLine) >= 0
+    ApplyTextEdits(bnr, text_edits)
+    return
+  endif
+
+  var edits: list<dict<any>> = []
+  var idx = 0
+  for e in text_edits
+    edits->add({A: [e.range.start.line, e.range.start.character], idx: idx,
+		edit: e})
+    idx += 1
+  endfor
+  edits->sort('Edit_sort_func')
+
+  for e in edits
+    var range: dict<any> = e.edit.range
+    ReplaceText(range.start.line + 1,
+		util.GetLineByteFromPos(bnr, range.start) + 1,
+		range.end.line + 1,
+		util.GetLineByteFromPos(bnr, range.end) + 1,
+		e.edit.newText)
+  endfor
+enddef
+
 # Returns text edits "edits" for buffer "bnr" with their positions decoded
 # from the position encoding of language server "lspserver" for the current
 # text of the buffer.  "edits" is not changed.  Without a language server the
@@ -536,7 +563,7 @@ enddef
 # existing file is replaced only when "overwrite" is set, and then not when
 # its buffer has unsaved changes.  The buffers of the renamed files follow
 # them.  Returns why the operation failed, or an empty string when it did not.
-def FileRename(renameFile: dict<any>): string
+export def FileRename(renameFile: dict<any>): string
   var oldPath: string = UriToPath(renameFile.oldUri)
   var newPath: string = UriToPath(renameFile.newUri)
 

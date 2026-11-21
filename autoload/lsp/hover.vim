@@ -181,10 +181,14 @@ def ShowHover(lspserver: dict<any>, hoverText: list<any>, hoverKind: string,
     return
   endif
 
+  ShowText(hoverText, hoverKind, cmdmods)
+enddef
+
+export def ShowText(text: list<any>, kind: string, cmdmods: string)
   if opt.lspOptions.hoverInPreview
-    HoverShowInPreview(hoverText, hoverKind, cmdmods)
+    HoverShowInPreview(text, kind, cmdmods)
   else
-    HoverShowInPopup(hoverText, hoverKind)
+    HoverShowInPopup(text, kind)
   endif
 enddef
 

@@ -5,6 +5,7 @@ vim9script
 import './options.vim' as opt
 import './protocol.vim'
 import './watchedfiles.vim'
+import './fileoperations.vim'
 
 # PrepareSupportDefaultBehavior.Identifier: the client selects the identifier
 # at the position according to the language's syntax rule.
@@ -44,6 +45,8 @@ export const RETRY_ON_CONTENT_MODIFIED: list<string> = [
 # Process the server capabilities
 #   interface ServerCapabilities
 export def ProcessServerCaps(lspserver: dict<any>, caps: dict<any>)
+  fileoperations.ProcessServerCaps(lspserver, caps)
+
   # positionEncoding
   var serverEncoding = 'utf-16'
   if lspserver.caps->has_key('positionEncoding')
@@ -353,6 +356,13 @@ export def ProcessServerCaps(lspserver: dict<any>, caps: dict<any>)
   else
     lspserver.isExecuteCommandProvider = false
   endif
+  lspserver.executeCommands = []
+  var executeCommandProvider: any = lspserver.caps->get('executeCommandProvider')
+  if executeCommandProvider->type() == v:t_dict
+      && executeCommandProvider->get('commands')->type() == v:t_list
+    lspserver.executeCommands = executeCommandProvider.commands
+      ->copy()->filter((_, command) => command->type() == v:t_string)
+  endif
 
   # selectionRangeProvider
   if lspserver.caps->has_key('selectionRangeProvider')
@@ -452,6 +462,9 @@ export def ProcessServerCaps(lspserver: dict<any>, caps: dict<any>)
   else
     lspserver.isInlayHintProvider = false
   endif
+  lspserver.isInlayHintResolveProvider = lspserver.isInlayHintProvider
+    && lspserver.caps.inlayHintProvider->type() == v:t_dict
+    && lspserver.caps.inlayHintProvider->get('resolveProvider', false)
 
   # diagnosticProvider
   if lspserver.caps->has_key('diagnosticProvider')
@@ -473,11 +486,16 @@ export def ProcessServerCaps(lspserver: dict<any>, caps: dict<any>)
     if lspserver.caps.workspaceSymbolProvider->type() == v:t_bool
       lspserver.isWorkspaceSymbolProvider =
 				lspserver.caps.workspaceSymbolProvider
+      lspserver.isWorkspaceSymbolResolveProvider = false
     else
       lspserver.isWorkspaceSymbolProvider = true
+      lspserver.isWorkspaceSymbolResolveProvider =
+		lspserver.caps.workspaceSymbolProvider->get('resolveProvider',
+							    false)
     endif
   else
     lspserver.isWorkspaceSymbolProvider = false
+    lspserver.isWorkspaceSymbolResolveProvider = false
   endif
 
   # clangdInlayHintsProvider
@@ -620,7 +638,10 @@ export def GetClientCaps(watchFiles: bool = true): dict<any>
 	linkSupport: true
       },
       inlayHint: {
-	dynamicRegistration: false
+	dynamicRegistration: false,
+	resolveSupport: {
+	  properties: ['tooltip', 'textEdits', 'label.tooltip']
+	}
       },
       inlineCompletion: {
 	dynamicRegistration: false
@@ -722,6 +743,13 @@ export def GetClientCaps(watchFiles: bool = true): dict<any>
 	resourceOperations: ['rename', 'create', 'delete'],
 	failureHandling: 'abort'
       },
+      fileOperations: {
+	dynamicRegistration: true,
+	didCreate: true,
+	willCreate: true,
+	didRename: true,
+	willRename: true
+      },
       configuration: true,
       codeLens: {
 	refreshSupport: true
@@ -739,8 +767,14 @@ export def GetClientCaps(watchFiles: bool = true): dict<any>
 	refreshSupport: true
       },
       symbol: {
-	dynamicRegistration: false
+	dynamicRegistration: false,
+	resolveSupport: {
+	  properties: ['location.range']
+	}
       }
+    },
+    experimental: {
+      cmdlineCompletion: true
     },
     # This is the way clangd expects to be informated about supported encodings:
     # https://clangd.llvm.org/extensions#utf-8-offsets

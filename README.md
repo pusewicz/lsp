@@ -27,30 +27,34 @@ You will also need to download and install one or more language servers correspo
 The following language server protocol (LSP) features are supported:
 
 * Code completion, with the expansion of snippets
+* Completion of Vim command arguments (option values, file names, user-command arguments) from this Vim, for a Vim script language server that asks for it (the `cmdlineCompletion` extension of [vim9ls](https://github.com/h-east/vim9ls))
 * Jump to definition, declaration, implementation, type definition
 * Peek definition, declaration, implementation, type definition and references
 * Display warning and error diagnostics, with their related information and
   unnecessary/deprecated code tags
 * Workspace diagnostics: the diagnostics of all the files of a project in a quickfix list
 * Find all symbol references
-* Document and Workspace symbol search
+* Document and Workspace symbol search; the position of a workspace symbol that the server sends without one is resolved when you jump to it
 * Display code outline
 * Rename symbol
+* Rename a file with the language servers updating the references to it (e.g. imports and includes), and tell them about the new files that Vim writes (file operations)
 * Display type and documentation on hover
 * Signature help
 * Code action
 * Code lens
+* Run the commands that a language server offers (`workspace/executeCommand`)
 * Display Call hierarchy
 * Display Type hierarchy
 * Highlight current symbol references
 * Formatting code
 * Folding code
-* Inlay hints
+* Inlay hints, with their tooltips and text edits (e.g. insert an inferred type into the file)
 * Document colors, and writing a color another way (e.g. `#ff0000` as `rgb(255 0 0)`)
 * Inline completion (ghost text)
 * Linked editing (e.g. renaming an HTML tag also renames its closing tag)
 * Visually select symbol block/region
 * Semantic Highlight
+* Workspace configuration, which can be changed and sent again without a restart of the language server
 * Notify the language servers of changes to the files that they watch, also the changes made outside Vim (with [fswatch](https://github.com/emcrisostomo/fswatch)); a server can be left to watch its own files
 
 ## Configuration
@@ -107,7 +111,7 @@ Field|Description
 `filetype`|One or more file types supported by the LSP server.  This can be a String or a List. To specify multiple multiple file types, use a List.
 `path`|complete path to the LSP server executable (without any arguments).
 `args`|a list of command-line arguments passed to the LSP server. Each argument is a separate List item.
-`initializationOptions`|User provided initialization options. May be of any type. For example the *intelephense* PHP language server accept several options here with the License Key among others. 
+`initializationOptions`|User provided initialization options, in a Dict. For example the *intelephense* PHP language server accept several options here with the License Key among others. 
 `customNotificationHandlers`|A dictionary of notifications and functions that can be specified to add support for custom language server notifications.
 `customRequestHandlers`|A dictionary of request handlers and functions that can be specified to add support for custom language server requests replies.
 `features`|A dictionary of booleans that can be specified to toggle what things a given LSP is providing (folding, goto definition, etc) This is useful when running multiple servers in one buffer.
@@ -216,6 +220,7 @@ Command|Description
 `:LspCodeLens`|Display a list of code lens commands and apply a selected code lens command to the current file.
 `:LspCodeLensRun`|Run the code lens command for the current line, or a selected one when the line has several.
 `:LspColorPresentation`|Write the color under the cursor another way (e.g. `#ff0000` as `rgb(255 0 0)`), chosen from the ones the language server offers.
+`:LspConfigCheck`|Report the problems in the plugin options and in the language server entries: unknown or misspelled names, values of the wrong type, language servers that are not executable.
 `:LspDiag current`|Display the diagnostic message for the current line.
 `:LspDiag first`|Jump to the first diagnostic message for the current buffer.
 `:LspDiag here`|Jump to the next diagnostic message in the current line.
@@ -230,6 +235,7 @@ Command|Description
 `:LspDocumentLink`|Display the links (e.g. include files and URLs) in the current file in a new location list.
 `:LspDocumentLinkOpen`|Open the target of the link under cursor: a file in Vim, any other URI with the system handler.
 `:LspDocumentSymbol`|Display the symbols in the current file in a popup menu and jump to the selected symbol.
+`:LspExecuteCommand`|Have a language server of the current file run one of the commands that it offers (`workspace/executeCommand`), with optional JSON arguments.
 `:LspFold`|Fold the current file.
 `:LspFormat`|Format a range of lines in the current file using the language server. The **shiftwidth** and **expandtab** values set for the current buffer are used when format is applied.  The default range is the entire file.
 `:LspGotoDeclaration`|Go to the declaration of the keyword under cursor.
@@ -248,10 +254,11 @@ Command|Description
 `:LspPeekReferences`|Display the list of references to the keyword under cursor in a location list associated with the preview window.
 `:LspPeekTypeDef`|Open the type definition of the symbol under cursor in the preview window.
 `:LspRename`|Rename the current symbol.
+`:LspRenameFile`|Rename the file of the current buffer; the language servers update the imports and includes that name it.
 `:LspSelectionExpand`|Expand the current symbol range visual selection.
 `:LspSelectionShrink`|Shrink the current symbol range visual selection.
 `:LspShowAllServers`|Display information about all the registered language servers.
-`:LspServer`|Display the capabilities or messages or status of the language server for the current buffer or restart the server.
+`:LspServer`|Display the capabilities or messages or status of the language server for the current buffer, restart the server or send it the workspace configuration again (`:LspServer reconfigure`). `g:LspServerConfigSet()` changes the workspace configuration of a running server.
 `:LspShowReferences`|Display the list of references to the keyword under cursor in a new location list.
 `:LspShowSignature`|Display the signature of the keyword under cursor.
 `:LspSubTypeHierarchy`|Display the sub type hierarchy in a popup window.

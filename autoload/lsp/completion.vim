@@ -905,6 +905,97 @@ def DispatchCompletionItems(lspserver: dict<any>,
   lspserver.omniCompletePending = false
 enddef
 
+const CMDLINE_FILE_COMPLETION_TYPES: list<string> =
+  ['file', 'dir', 'file_in_path', 'dir_in_path']
+
+def IsCmdlineCompletionReply(cItems: any): bool
+  if cItems->type() != v:t_dict
+    return false
+  endif
+  var flag = cItems->get('cmdlineCompletion', false)
+  return flag->type() == v:t_bool && flag
+enddef
+
+def CmdlineCompletionMatches(text: string): list<string>
+  var cmplType = getcompletiontype(text)
+  if cmplType == 'shellcmd' && text =~ '[[:space:]!]$'
+    return []
+  endif
+
+  var matches: list<string> = []
+  var savedWildOptions = &wildoptions
+  var wildOptions = savedWildOptions->split(',')
+  var fuzzy = wildOptions->index('fuzzy') >= 0
+  if fuzzy
+    &wildoptions = wildOptions
+      ->filter((_, v: string): bool => v != 'fuzzy')->join(',')
+  endif
+  try
+    sandbox matches = getcompletion(text, 'cmdline')
+  catch
+    matches = []
+  finally
+    if fuzzy
+      &wildoptions = savedWildOptions
+    endif
+  endtry
+
+  if CMDLINE_FILE_COMPLETION_TYPES->index(cmplType) >= 0
+    matches->map((_, m: string): string => m->fnameescape())
+  endif
+  return matches
+enddef
+
+def CmdlineMatchOverlap(candidate: string, text: string, minLen: number,
+			ignoreCase: bool): number
+  var textLen = text->len()
+  var overlap = min([candidate->len(), textLen])
+  while overlap >= minLen
+    var head = candidate->strpart(0, overlap)
+    var tail = text->strpart(textLen - overlap)
+    if ignoreCase ? head ==? tail : head ==# tail
+      return overlap
+    endif
+    overlap -= 1
+  endwhile
+  return -1
+enddef
+
+def CmdlineCompletionMenuItems(starttext: string, kwStart: number,
+			       matcher: number,
+			       condensed: bool): list<dict<any>>
+  var kind = kindNames->index('Value')
+  var kindChar = LspCompleteItemKindChar(kind)
+  var kwLen = starttext->len() - kwStart
+  var ignoreCase = matcher == opt.COMPLETIONMATCHER_ICASE
+
+  var completeItems: list<dict<any>> = []
+  for candidate in CmdlineCompletionMatches(starttext)
+    var overlap = CmdlineMatchOverlap(candidate, starttext, kwLen, ignoreCase)
+    if overlap < 0
+      continue
+    endif
+
+    var d: dict<any> = {
+      word: candidate->strpart(overlap - kwLen),
+      abbr: candidate,
+      kind: kindChar,
+      kind_hlgroup: $'LspCompletionKind{kindNames[kind]}',
+      dup: 1,
+    }
+    if ignoreCase
+      d.icase = 1
+    endif
+    if condensed && d.abbr->len() > d.word->len()
+      PrependCompletionInfo(d, [d.abbr])
+      d.abbr = d.word
+    endif
+    CutCompletionMenuLabel(d, false)
+    completeItems->add(d)
+  endfor
+  return completeItems
+enddef
+
 # process the 'textDocument/completion' reply from the LSP server
 # Result: CompletionItem[] | CompletionList | null
 export def CompletionReply(lspserver: dict<any>, cItems: any,
@@ -946,6 +1037,17 @@ export def CompletionReply(lspserver: dict<any>, cItems: any,
   endif
 
   var start_col = start_idx + 1
+
+  if IsCmdlineCompletionReply(cItems)
+    lspserver.completeItemsIsIncomplete = false
+    DispatchCompletionItems(
+      lspserver,
+      CmdlineCompletionMenuItems(starttext, start_idx,
+				 lspOpts.completionMatcherValue,
+				 lspOpts.condensedCompletionMenu),
+      start_col, lspOpts.autoComplete)
+    return
+  endif
 
   if lspOpts.ultisnipsSupport
     snippet.CompletionUltiSnips(prefix, items)
@@ -1250,18 +1352,13 @@ enddef
 # How long omni completion waits for the reply to its request, in milliseconds
 const OMNI_COMPLETE_TIMEOUT = 2000
 
-# Second invocation of the omni complete handlers: wait for the reply to the
-# request sent by OmniCompleteStart() and return the list of matches.  Returns
-# v:none when interrupted by a typed key or when the server doesn't reply in
-# time; the request is then cancelled.  The reply is read from the channel as
-# soon as it arrives, and typed keys are checked for every 10 ms meanwhile.
-def OmniCompleteMatches(lspserver: dict<any>): any
+def OmniCompleteWait(lspserver: dict<any>): bool
   var start = reltime()
   while lspserver.omniCompletePending
     if complete_check()
 	|| start->reltime()->reltimefloat() * 1000 >= OMNI_COMPLETE_TIMEOUT
       OmniCompleteAbandon(lspserver)
-      return v:none
+      return false
     endif
     var id: number = lspserver.supersedableRequests
       ->get('textDocument/completion', {})->get('id', -1)
@@ -1273,6 +1370,26 @@ def OmniCompleteMatches(lspserver: dict<any>): any
       :sleep 1m
     endif
   endwhile
+  return true
+enddef
+
+# Second invocation of the omni complete handlers: wait for the reply to the
+# request sent by OmniCompleteStart() and return the list of matches.  Returns
+# v:none when interrupted by a typed key or when the server doesn't reply in
+# time; the request is then cancelled.  The reply is read from the channel as
+# soon as it arrives, and typed keys are checked for every 10 ms meanwhile.
+def OmniCompleteMatches(lspserver: dict<any>): any
+  if lspserver.omniCompletePending
+    var bnr = bufnr()
+    lspserver.holdDocChanges(bnr)
+    try
+      if !OmniCompleteWait(lspserver)
+	return v:none
+      endif
+    finally
+      lspserver.releaseDocChanges(bnr)
+    endtry
+  endif
 
   var res: list<dict<any>> = lspserver.completeItems
   var prefix = lspserver.omniCompleteKeyword

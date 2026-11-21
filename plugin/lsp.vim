@@ -46,6 +46,10 @@ def g:LspServerRunning(ftype: string): bool
   return lsp.ServerRunning(ftype)
 enddef
 
+def g:LspServerConfigSet(name: string, config: dict<any>): number
+  return lsp.ServerConfigSet(name, config)
+enddef
+
 def g:LspEnable()
   lsp.LspEnable()
 enddef
@@ -81,10 +85,12 @@ command! -nargs=0 -bar -count=1 LspDiagPrev lsp.JumpToDiag('prev', <count>)
 command! -nargs=0 -bar -count=1 LspDiagPrevWrap lsp.JumpToDiag('prevWrap', <count>)
 command! -nargs=0 -bar LspDiagShow lsp.ShowDiagnostics()
 command! -nargs=0 -bar LspDiagHere lsp.JumpToDiag('here')
+command! -nargs=0 -bar LspConfigCheck lsp.ConfigCheck()
 command! -nargs=? -bar LspColorPresentation lsp.ColorPresentation(<q-args>->str2nr())
 command! -nargs=0 -bar LspDocumentLink lsp.DocumentLink()
 command! -nargs=0 -bar LspDocumentLinkOpen lsp.DocumentLinkOpen(<q-mods>)
 command! -nargs=0 -bar LspDocumentSymbol lsp.ShowDocSymbols()
+command! -nargs=* -complete=customlist,lsp.LspExecuteCommandComplete LspExecuteCommand lsp.ExecuteCommand(<q-args>)
 command! -nargs=0 -bar LspFold lsp.FoldDocument()
 
 command! -nargs=0 -bar -bang -range=% LspFormat lsp.TextDocFormat(<range>, <line1>, <line2>, <bang>false)
@@ -120,7 +126,7 @@ command! -nargs=0 -bar -count LspGotoTypeDef lsp.GotoTypedef(v:false, <q-mods>, 
 command! -nargs=0 -bar LspHighlight call LspDocHighlight(bufnr(), <q-mods>)
 command! -nargs=0 -bar LspHighlightClear call LspDocHighlightClear()
 command! -nargs=? -bar LspHover lsp.Hover(<q-mods>)
-command! -nargs=1 -bar -complete=customlist,lsp.LspInlayHintsComplete LspInlayHints lsp.InlayHints(<q-args>)
+command! -nargs=1 -bar -complete=customlist,lsp.LspInlayHintsComplete LspInlayHints lsp.InlayHints(<q-args>, <q-mods>)
 command! -nargs=0 -bar LspIncomingCalls lsp.IncomingCalls()
 command! -nargs=0 -bar LspOutgoingCalls lsp.OutgoingCalls()
 command! -nargs=? -bar -count -complete=customlist,lsp.LspOutlineComplete LspOutline lsp.Outline(<q-args>, <q-mods>, <count>)
@@ -130,6 +136,7 @@ command! -nargs=0 -bar -count LspPeekImpl lsp.GotoImplementation(v:true, <q-mods
 command! -nargs=0 -bar LspPeekReferences lsp.ShowReferences(v:true)
 command! -nargs=0 -bar -count LspPeekTypeDef lsp.GotoTypedef(v:true, <q-mods>, <count>)
 command! -nargs=? -bar LspRename lsp.Rename(<q-args>)
+command! -nargs=? -bar -complete=file LspRenameFile lsp.RenameFile(<q-args>)
 command! -nargs=0 -bar LspSelectionExpand lsp.SelectionExpand()
 command! -nargs=0 -bar LspSelectionShrink lsp.SelectionShrink()
 command! -nargs=+ -bar -complete=customlist,lsp.LspServerComplete LspServer lsp.LspServerCmd(<q-args>)

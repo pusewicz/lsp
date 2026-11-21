@@ -23,6 +23,7 @@ import '../autoload/lsp/capabilities.vim' as capabilities
 import '../autoload/lsp/hover.vim' as hover
 import '../autoload/lsp/options.vim' as opt
 import '../autoload/lsp/watchedfiles.vim'
+import '../autoload/lsp/fileoperations.vim'
 
 def CaptureNotification(notifications: list<dict<any>>, method: string,
 			params: any = {}): void
@@ -548,6 +549,50 @@ def g:Test_ServerExit_ReportsHow()
   finally
     :%bw!
   endtry
+enddef
+
+def ConfigNotification(settings: dict<any>): dict<any>
+  return {method: 'workspace/didChangeConfiguration',
+	  params: {settings: settings}}
+enddef
+
+def g:Test_LspServerReconfigure_TellsReadyServersOfBuffer()
+  silent! edit XReconfigure.txt
+  var bnr = bufnr()
+  var readyNotifs: list<dict<any>> = []
+  var startingNotifs: list<dict<any>> = []
+  var readyServer = MakeTestLspServer(readyNotifs)
+  readyServer.running = true
+  readyServer.ready = true
+  readyServer.workspaceConfig = {stub: {level: 1}}
+  var startingServer = MakeTestLspServer(startingNotifs)
+  startingServer.running = true
+  buf.BufLspServerSet(bnr, readyServer)
+  buf.BufLspServerSet(bnr, startingServer)
+  try
+    :LspServer reconfigure
+    assert_equal([ConfigNotification({stub: {level: 1}})], readyNotifs)
+    assert_equal([], startingNotifs)
+    assert_equal('Info: Sent the workspace configuration to 1 language server',
+		 LastMessage())
+
+    startingServer.ready = true
+    :LspServer reconfigure
+    assert_equal(2, readyNotifs->len())
+    assert_equal([ConfigNotification({})], startingNotifs)
+    assert_equal('Info: Sent the workspace configuration to 2 language servers',
+		 LastMessage())
+
+    assert_equal(['reconfigure', 'restart'],
+		 getcompletion('LspServer re', 'cmdline'))
+  finally
+    buf.BufLspServerRemove(bnr, readyServer)
+    buf.BufLspServerRemove(bnr, startingServer)
+    :%bw!
+  endtry
+
+  :LspServer reconfigure
+  assert_match('^Warn: No Lsp servers found for ', LastMessage())
 enddef
 
 # Test that a message from the server isn't kept in the server dict once it is
@@ -1482,6 +1527,283 @@ def g:Test_TagFunc_RegexpFlagMatchesSymbolNames()
   endtry
 enddef
 
+def MakeWorkspaceSymbolServer(symbols: list<dict<any>>, resolved: dict<any>,
+			      requests: list<dict<any>>): dict<any>
+  var lspserver = MakeTestLspServer([])
+  lspserver.running = true
+  lspserver.ready = true
+  lspserver.isWorkspaceSymbolProvider = true
+  lspserver.isWorkspaceSymbolResolveProvider = true
+  var Reply = (method: string, params: any): any => {
+    requests->add({method: method, params: params->deepcopy()})
+    if method == 'workspaceSymbol/resolve'
+      return resolved->get(params.name, null)->deepcopy()
+    endif
+    return symbols->deepcopy()
+  }
+  lspserver.rpc_a = (method: string, params: any, Cbfunc: func, _ = {}) => {
+    Cbfunc(lspserver, Reply(method, params), {})
+    return requests->len()
+  }
+  lspserver.rpc = (method: string, params: any, _ = {}) => {
+    return {result: Reply(method, params)}
+  }
+  return lspserver
+enddef
+
+def WorkspaceSymbolTestRange(lnum: number, character: number): dict<any>
+  var pos = {line: lnum - 1, character: character}
+  return {start: pos, end: pos->copy()}
+enddef
+
+def g:Test_WorkspaceSymbolResolve_Capabilities()
+  assert_equal({properties: ['location.range']},
+	       capabilities.GetClientCaps().workspace.symbol.resolveSupport)
+  for [caps, provider, resolveProvider] in [
+      [{}, false, false],
+      [{workspaceSymbolProvider: false}, false, false],
+      [{workspaceSymbolProvider: true}, true, false],
+      [{workspaceSymbolProvider: {}}, true, false],
+      [{workspaceSymbolProvider: {resolveProvider: false}}, true, false],
+      [{workspaceSymbolProvider: {resolveProvider: true}}, true, true]]
+    var lspserver: dict<any> = {id: 1, caps: caps, forceOffsetEncoding: ''}
+    capabilities.ProcessServerCaps(lspserver, caps)
+    assert_equal(provider, lspserver.isWorkspaceSymbolProvider, caps->string())
+    assert_equal(resolveProvider, lspserver.isWorkspaceSymbolResolveProvider,
+		 caps->string())
+  endfor
+enddef
+
+def g:Test_SymbolSearch_ResolvesOnlyThePickedSymbol()
+  var target = 'XWsSymbolTarget.txt'
+  writefile(['one', 'two', '  three', 'four'], target)
+  silent! edit XWsSymbolSource.txt
+  var srcBnr = bufnr()
+  var uri = util.LspFileToUri(target->fnamemodify(':p'))
+  var symbols = [
+    {name: 'SymRanged', kind: 12,
+     location: {uri: uri, range: WorkspaceSymbolTestRange(2, 1)}},
+    {name: 'SymLazy', kind: 12, location: {uri: uri}, data: {id: 7}},
+    {name: 'SymOther', kind: 12, location: {uri: uri}, data: {id: 8}},
+    {name: 'SymNull', kind: 12, location: {uri: uri}},
+    {name: 'SymStillLazy', kind: 12, location: {uri: uri}}
+  ]
+  var resolved = {
+    SymLazy: symbols[1]->extendnew({
+      location: {uri: uri, range: WorkspaceSymbolTestRange(3, 2)}}),
+    SymStillLazy: symbols[4]
+  }
+  var requests: list<dict<any>> = []
+  var srv = MakeWorkspaceSymbolServer(symbols, resolved, requests)
+  buf.BufLspServerSet(srcBnr, srv)
+  try
+    :LspSymbolSearch Sym
+    var popupLines = srv.workspaceSymbolPopup->winbufnr()->getbufline(1, '$')
+    assert_equal(['SymRanged', 'SymLazy', 'SymOther', 'SymNull',
+		  'SymStillLazy'],
+		 popupLines->mapnew((_, line) => line->matchstr('^\S\+')))
+    assert_equal(5, popupLines->filter((_, line) =>
+      line =~ '^\S\+ \[Function\] XWsSymbolTarget.txt')->len())
+    assert_equal(['workspace/symbol'], requests->mapnew((_, r) => r.method))
+
+    feedkeys("\<Down>\<CR>", 'xt')
+    assert_equal(['workspace/symbol', 'workspaceSymbol/resolve'],
+		 requests->mapnew((_, r) => r.method))
+    assert_equal(symbols[1], requests[1].params)
+    assert_equal(target, expand('%:t'))
+    assert_equal([3, 3], [line('.'), col('.')])
+
+    buf.BufLspServerSet(bufnr(), srv)
+    requests->filter((_, _) => false)
+    feedkeys(":LspSymbolSearch Sym\<CR>\<CR>", 'xt')
+    assert_equal(['workspace/symbol'], requests->mapnew((_, r) => r.method))
+    assert_equal(target, expand('%:t'))
+    assert_equal([2, 2], [line('.'), col('.')])
+
+    for keys in ["\<Down>\<Down>\<Down>\<CR>", "\<C-End>\<CR>"]
+      cursor(4, 2)
+      requests->filter((_, _) => false)
+      feedkeys($":LspSymbolSearch Sym\<CR>{keys}", 'xt')
+      assert_equal(['workspace/symbol', 'workspaceSymbol/resolve'],
+		   requests->mapnew((_, r) => r.method), keys)
+      assert_equal(target, expand('%:t'), keys)
+      assert_equal([1, 1], [line('.'), col('.')], keys)
+    endfor
+  finally
+    buf.BufLspServerRemove(srcBnr, srv)
+    :%bw!
+    delete(target)
+  endtry
+enddef
+
+def g:Test_SymbolSearch_ResolvesSingleSymbol()
+  var target = 'XWsSymbolTarget.txt'
+  writefile(['one', "\U1F600\U1F600 two"], target)
+  silent! edit XWsSymbolSource.txt
+  var srcBnr = bufnr()
+  var uri = util.LspFileToUri(target->fnamemodify(':p'))
+  var symbols = [{name: 'SymLazy', kind: 12, location: {uri: uri}}]
+  var resolved = {
+    SymLazy: symbols[0]->extendnew({
+      location: {uri: uri, range: WorkspaceSymbolTestRange(2, 5)}})
+  }
+  var requests: list<dict<any>> = []
+  var srv = MakeWorkspaceSymbolServer(symbols, resolved, requests)
+  srv.posEncoding = 16
+  srv.needOffsetEncoding = true
+  buf.BufLspServerSet(srcBnr, srv)
+  try
+    :LspSymbolSearch SymLazy
+    assert_equal(['workspace/symbol', 'workspaceSymbol/resolve'],
+		 requests->mapnew((_, r) => r.method))
+    assert_equal(symbols[0], requests[1].params)
+    assert_equal(target, expand('%:t'))
+    assert_equal([2, 4], [line('.'), charcol('.')])
+    assert_equal(-1, srv.workspaceSymbolPopup->winbufnr())
+
+    :%bw!
+    silent! edit XWsSymbolSource.txt
+    buf.BufLspServerSet(bufnr(), srv)
+    symbols->add({name: 'SymRanged', kind: 12,
+      location: {uri: uri, range: WorkspaceSymbolTestRange(2, 5)}})
+    requests->filter((_, _) => false)
+    feedkeys(":LspSymbolSearch Sym\<CR>\<Down>\<CR>", 'xt')
+    assert_equal(['workspace/symbol'], requests->mapnew((_, r) => r.method))
+    assert_equal(target, expand('%:t'))
+    assert_equal([2, 4], [line('.'), charcol('.')])
+  finally
+    buf.BufLspServerRemove(srcBnr, srv)
+    :%bw!
+    delete(target)
+  endtry
+enddef
+
+def g:Test_SymbolSearch_NoResolveProviderOpensFileStart()
+  var target = 'XWsSymbolTarget.txt'
+  writefile(['one', 'two', 'three'], target)
+  silent! edit XWsSymbolSource.txt
+  var srcBnr = bufnr()
+  var uri = util.LspFileToUri(target->fnamemodify(':p'))
+  var symbols = [{name: 'SymLazy', kind: 12, location: {uri: uri}}]
+  var requests: list<dict<any>> = []
+  var srv = MakeWorkspaceSymbolServer(symbols, {}, requests)
+  srv.isWorkspaceSymbolResolveProvider = false
+  buf.BufLspServerSet(srcBnr, srv)
+  try
+    :LspSymbolSearch SymLazy
+    assert_equal(['workspace/symbol'], requests->mapnew((_, r) => r.method))
+    assert_equal(target, expand('%:t'))
+    assert_equal([1, 1], [line('.'), col('.')])
+
+    buf.BufLspServerSet(bufnr(), srv)
+    cursor(3, 2)
+    symbols->add({name: 'SymSecond', kind: 12, location: {uri: uri}})
+    requests->filter((_, _) => false)
+    feedkeys(":LspSymbolSearch Sym\<CR>\<Down>\<CR>", 'xt')
+    assert_equal(['workspace/symbol'], requests->mapnew((_, r) => r.method))
+    assert_equal(target, expand('%:t'))
+    assert_equal([1, 1], [line('.'), col('.')])
+  finally
+    buf.BufLspServerRemove(srcBnr, srv)
+    :%bw!
+    delete(target)
+  endtry
+enddef
+
+def g:Test_SymbolSearch_ResolveReplyArrivesLater()
+  var target = 'XWsSymbolTarget.txt'
+  writefile(['one', 'two', '  three'], target)
+  silent! edit XWsSymbolSource.txt
+  var srcBnr = bufnr()
+  var uri = util.LspFileToUri(target->fnamemodify(':p'))
+  var symbols = [
+    {name: 'SymFirst', kind: 12, location: {uri: uri}},
+    {name: 'SymSecond', kind: 12, location: {uri: uri}, data: 2}
+  ]
+  var resolved = symbols[1]->extendnew({
+    location: {uri: uri, range: WorkspaceSymbolTestRange(3, 2)}})
+  var notifications: list<dict<any>> = []
+  var lspserver = MakeAsyncReplyingLspServer([], notifications)
+  lspserver.isWorkspaceSymbolProvider = true
+  lspserver.isWorkspaceSymbolResolveProvider = true
+  job_stop(lspserver.job)
+  try
+    lspserver.job = StartSteppedStubServerJob([
+      [{jsonrpc: '2.0', id: 1, result: symbols}],
+      [{jsonrpc: '2.0', id: 2, result: resolved}]])
+    feedkeys(":LspSymbolSearch Sym\<CR>\<Down>\<CR>", 'xt')
+    assert_equal('XWsSymbolSource.txt', expand('%:t'))
+    assert_equal({'2': 'workspaceSymbol/resolve'}, lspserver.pendingRequests)
+    g:WaitForAssert(() => assert_equal(target, expand('%:t')))
+    assert_equal([3, 3], [line('.'), col('.')])
+    assert_equal({}, lspserver.pendingRequests)
+
+    job_stop(lspserver.job)
+    buf.BufLspServerSet(bufnr(), lspserver)
+    cursor(1, 1)
+    lspserver.job = StartSteppedStubServerJob([
+      [{jsonrpc: '2.0', id: 1, result: [symbols[1]]}],
+      [{jsonrpc: '2.0', id: 2, result: resolved}]])
+    exe "normal :LspSymbolSearch SymSecond\<CR>rX"
+    assert_equal(['one', 'two', '  Xhree'], getline(1, '$'))
+  finally
+    StopAsyncReplyingLspServer(lspserver, srcBnr)
+    :%bw!
+    delete(target)
+  endtry
+enddef
+
+def g:Test_TagFunc_ResolvesSymbolWithoutRange()
+  var fname = 'XTagFuncResolve.txt'
+  writefile(['MyFirst', '  MySecond', 'MyThird'], fname)
+  silent! execute 'edit' fname
+  var uri = util.LspBufnrToUri(bufnr())
+  var symbols = [
+    {name: 'MyFirst', kind: 12,
+     location: {uri: uri, range: WorkspaceSymbolTestRange(1, 0)}},
+    {name: 'MySecond', kind: 12, location: {uri: uri}},
+    {name: 'MyThird', kind: 12, location: {uri: uri}}
+  ]
+  var resolved = {
+    MySecond: symbols[1]->extendnew({
+      location: {uri: uri, range: WorkspaceSymbolTestRange(2, 2)}})
+  }
+  var requests: list<dict<any>> = []
+  var srv = MakeWorkspaceSymbolServer(symbols, resolved, requests)
+  try
+    cursor(3, 1)
+    var tags = srv.tagFunc('MySecond', '', {})
+    assert_equal([['MySecond', '/\%2l\%3c/']],
+		 tags->mapnew((_, tag) => [tag.name, tag.cmd]))
+    assert_equal(['workspace/symbol', 'workspaceSymbol/resolve'],
+		 requests->mapnew((_, r) => r.method))
+    assert_equal(symbols[1], requests[1].params)
+
+    requests->filter((_, _) => false)
+    tags = srv.tagFunc('MyFirst', '', {})
+    assert_equal([['MyFirst', '/\%1l\%1c/']],
+		 tags->mapnew((_, tag) => [tag.name, tag.cmd]))
+    assert_equal(['workspace/symbol'], requests->mapnew((_, r) => r.method))
+
+    requests->filter((_, _) => false)
+    tags = srv.tagFunc('^My', 'r', {})
+    assert_equal([['MyFirst', '/\%1l\%1c/'], ['MySecond', '/\%1l\%1c/'],
+		  ['MyThird', '/\%1l\%1c/']],
+		 tags->mapnew((_, tag) => [tag.name, tag.cmd]))
+    assert_equal(['workspace/symbol'], requests->mapnew((_, r) => r.method))
+
+    requests->filter((_, _) => false)
+    srv.isWorkspaceSymbolResolveProvider = false
+    tags = srv.tagFunc('MySecond', '', {})
+    assert_equal([['MySecond', '/\%1l\%1c/']],
+		 tags->mapnew((_, tag) => [tag.name, tag.cmd]))
+    assert_equal(['workspace/symbol'], requests->mapnew((_, r) => r.method))
+  finally
+    :%bw!
+    delete(fname)
+  endtry
+enddef
+
 # Test that a "$/cancelRequest" notification from the server is accepted
 # quietly.
 def g:Test_ProcessNotif_CancelRequestIsIgnored()
@@ -2097,11 +2419,14 @@ def g:Test_InlayHintsReply_RemovesHintsWhenThereAreNone()
   var hint = {position: {line: 0, character: 10}, label: 'a:', kind: 2}
   var Hints = () => prop_list(1, {types: ['LspInlayHintsParam']})->len()
 
-  inlayhints.InlayHintsReply(lspserver, [hint], {}, bufnr())
+  inlayhints.InlayHintsReply(lspserver, [hint], {}, bufnr(),
+			     b:changedtick)
   assert_equal(1, Hints())
-  inlayhints.InlayHintsReply(lspserver, null, {}, bufnr())
+  inlayhints.InlayHintsReply(lspserver, null, {}, bufnr(),
+			     b:changedtick)
   assert_equal(1, Hints())
-  inlayhints.InlayHintsReply(lspserver, [], {}, bufnr())
+  inlayhints.InlayHintsReply(lspserver, [], {}, bufnr(),
+			     b:changedtick)
   assert_equal(0, Hints())
   :%bw!
 enddef
@@ -2119,14 +2444,16 @@ def g:Test_InlayHintsReply_KeepsHintsInInsertMode()
   var hint = {position: {line: 0, character: 10}, label: 'a:', kind: 2}
   var Hints = () => prop_list(1, {types: ['LspInlayHintsParam']})->len()
 
-  inlayhints.InlayHintsReply(lspserver, [hint], {}, bnr)
+  inlayhints.InlayHintsReply(lspserver, [hint], {}, bnr,
+			     b:changedtick)
   assert_equal(1, Hints())
   setbufvar(bnr, 'LspInlayHintsNeedsUpdate', false)
 
   var modeInReply = ''
   timer_start(10, (_) => {
     modeInReply = mode()
-    inlayhints.InlayHintsReply(lspserver, [], {}, bnr)
+    inlayhints.InlayHintsReply(lspserver, [], {}, bnr,
+			     b:changedtick)
     feedkeys("\<Esc>", 't')
   })
   feedkeys('i', 'xt!')
@@ -2135,6 +2462,209 @@ def g:Test_InlayHintsReply_KeepsHintsInInsertMode()
   assert_equal(1, Hints())
   assert_true(bnr->getbufvar('LspInlayHintsNeedsUpdate', false))
   :%bw!
+enddef
+
+def MakeInlayHintResolveServer(resolved: dict<any>,
+			       requests: list<dict<any>>): dict<any>
+  if prop_type_get('LspInlayHintsType')->empty()
+    inlayhints.InitOnce()
+  endif
+  var lspserver = MakeTestLspServer([])
+  lspserver.running = true
+  lspserver.ready = true
+  lspserver.isInlayHintProvider = true
+  lspserver.isInlayHintResolveProvider = true
+  lspserver.inlayHintsShow = (bnr: number, ..._) => {
+    requests->add({method: 'textDocument/inlayHint', params: bnr})
+  }
+  lspserver.rpc_a = (method: string, params: any, Cb: func, _ = {}) => {
+    requests->add({method: method, params: params->deepcopy()})
+    Cb(lspserver, params->deepcopy()->extend(resolved->deepcopy()), {})
+    return requests->len()
+  }
+  setlocal filetype=text
+  buf.BufLspServerSet(bufnr(), lspserver)
+  return lspserver
+enddef
+
+def InlayHintPopupLines(): list<string>
+  var ids = popup_list()
+  assert_equal(1, ids->len())
+  return ids[0]->winbufnr()->getbufline(1, '$')
+enddef
+
+def g:Test_InlayHintInfo_ResolvesOnceAndShowsTooltips()
+  silent! edit XInlayHintInfo.txt
+  setline(1, ['let x = f(1);', 'let y = 2;'])
+  var requests: list<dict<any>> = []
+  var lspserver = MakeInlayHintResolveServer({
+    tooltip: {kind: 'markdown', value: 'The type of x'},
+    label: [{value: ': '}, {value: 'i32', tooltip: 'A 32-bit integer'}]
+  }, requests)
+  var hint = {position: {line: 0, character: 5}, kind: 1, data: 7,
+	      label: [{value: ': '}, {value: 'i32'}]}
+  try
+    inlayhints.InlayHintsReply(lspserver, [hint], {}, bufnr(), b:changedtick)
+
+    cursor(2, 1)
+    assert_equal('Warn: No inlay hint on the current line',
+		 execute('LspInlayHints info')->trim())
+    assert_equal([], requests)
+
+    cursor(1, 1)
+    :LspInlayHints info
+    assert_equal([{method: 'inlayHint/resolve', params: hint}], requests)
+    assert_equal(['The type of x', '- - -', 'A 32-bit integer'],
+		 InlayHintPopupLines())
+    assert_equal('lspgfm', popup_list()[0]->winbufnr()->getbufvar('&filetype'))
+    popup_clear()
+
+    :LspInlayHints info
+    assert_equal(1, requests->len())
+    assert_equal(1, popup_list()->len())
+  finally
+    popup_clear()
+    buf.BufLspServerRemove(bufnr(), lspserver)
+    :%bw!
+  endtry
+enddef
+
+def g:Test_InlayHintInfo_PlainTextTooltipWithoutResolve()
+  silent! edit XInlayHintInfoPlain.txt
+  setline(1, ['f(1, 2);'])
+  var requests: list<dict<any>> = []
+  var lspserver = MakeInlayHintResolveServer({}, requests)
+  var hints = [
+    {position: {line: 0, character: 2}, kind: 2, label: 'a:',
+     tooltip: "first\nparameter"},
+    {position: {line: 0, character: 5}, kind: 2, label: 'b:'}
+  ]
+  try
+    inlayhints.InlayHintsReply(lspserver, hints, {}, bufnr(), b:changedtick)
+
+    cursor(1, 1)
+    :LspInlayHints info
+    assert_equal([], requests)
+    assert_equal(['first', 'parameter'], InlayHintPopupLines())
+    assert_equal('text', popup_list()[0]->winbufnr()->getbufvar('&filetype'))
+    popup_clear()
+
+    cursor(1, 8)
+    assert_equal('Warn: The inlay hint has no information to show',
+		 execute('LspInlayHints info')->trim())
+    assert_equal([{method: 'inlayHint/resolve', params: hints[1]}], requests)
+    assert_equal([], popup_list())
+
+    lspserver.isInlayHintResolveProvider = false
+    execute "normal! 0iab \<Esc>"
+    cursor(1, 6)
+    :LspInlayHints info
+    assert_equal(1, requests->len())
+    assert_equal(['first', 'parameter'], InlayHintPopupLines())
+  finally
+    popup_clear()
+    buf.BufLspServerRemove(bufnr(), lspserver)
+    :%bw!
+  endtry
+enddef
+
+def g:Test_InlayHintApply_ResolvesAndAppliesTextEditsAsOneUndoStep()
+  silent! edit XInlayHintApply.txt
+  setline(1, ['let x = f(1);', 'let y = 2;'])
+  var requests: list<dict<any>> = []
+  var lspserver = MakeInlayHintResolveServer({textEdits: [
+    {range: {start: {line: 0, character: 5}, end: {line: 0, character: 5}},
+     newText: ': i32'},
+    {range: {start: {line: 0, character: 0}, end: {line: 0, character: 3}},
+     newText: 'const'}
+  ]}, requests)
+  var hints = [
+    {position: {line: 0, character: 5}, kind: 1, label: ': i32'},
+    {position: {line: 0, character: 10}, kind: 2, label: 'a:'}
+  ]
+  var Hints = () => prop_list(1)->map((_, p) => p.text)
+  try
+    inlayhints.InlayHintsReply(lspserver, hints, {}, bufnr(), b:changedtick)
+    setlocal undolevels=100
+    assert_equal([': i32', 'a:'], Hints())
+
+    cursor(1, 7)
+    :LspInlayHints apply
+    assert_equal(['const x: i32 = f(1);', 'let y = 2;'], getline(1, '$'))
+    assert_equal(['a:'], Hints())
+    assert_equal([{method: 'inlayHint/resolve', params: hints[0]},
+		  {method: 'textDocument/inlayHint', params: bufnr()}],
+		 requests)
+
+    assert_equal([1, 14], [line('.'), col('.')])
+
+    silent undo
+    assert_equal(['let x = f(1);', 'let y = 2;'], getline(1, '$'))
+  finally
+    buf.BufLspServerRemove(bufnr(), lspserver)
+    :%bw!
+  endtry
+enddef
+
+def g:Test_InlayHintApply_NothingToApplyOrOutOfDate()
+  silent! edit XInlayHintApplyNone.txt
+  setline(1, ['let x = f(1);'])
+  var requests: list<dict<any>> = []
+  var lspserver = MakeInlayHintResolveServer({}, requests)
+  var hint = {position: {line: 0, character: 5}, kind: 1, label: ': i32',
+	      textEdits: [{range: {start: {line: 0, character: 5},
+				   end: {line: 0, character: 5}},
+			   newText: ': i32'}]}
+  var paramHint = {position: {line: 0, character: 10}, kind: 2, label: 'a:'}
+  try
+    inlayhints.InlayHintsReply(lspserver, [hint, paramHint], {}, bufnr(),
+			       b:changedtick)
+
+    cursor(1, 13)
+    assert_equal('Warn: The inlay hint has no text edits to apply',
+		 execute('LspInlayHints apply')->trim())
+    assert_equal([{method: 'inlayHint/resolve', params: paramHint}], requests)
+    assert_equal(['let x = f(1);'], getline(1, '$'))
+
+    cursor(1, 1)
+    setlocal nomodifiable
+    assert_match('the buffer is not modifiable',
+		 execute('LspInlayHints apply'))
+    setlocal modifiable
+    assert_equal(['let x = f(1);'], getline(1, '$'))
+
+    execute "normal! 0iab \<Esc>"
+    cursor(1, 1)
+    assert_match('The inlay hint is out of date',
+		 execute('LspInlayHints apply'))
+    assert_equal(['ab let x = f(1);'], getline(1, '$'))
+    assert_equal({method: 'textDocument/inlayHint', params: bufnr()},
+		 requests[-1])
+
+    inlayhints.InlayHintsReply(lspserver, [hint, paramHint], {}, bufnr(),
+			       b:changedtick - 1)
+    assert_match('The inlay hint is out of date',
+		 execute('LspInlayHints apply'))
+    assert_equal(['ab let x = f(1);'], getline(1, '$'))
+  finally
+    buf.BufLspServerRemove(bufnr(), lspserver)
+    :%bw!
+  endtry
+enddef
+
+def g:Test_InlayHint_ResolveSupportCapability()
+  assert_equal({dynamicRegistration: false, resolveSupport: {
+    properties: ['tooltip', 'textEdits', 'label.tooltip']}},
+    capabilities.GetClientCaps().textDocument.inlayHint)
+
+  var lspserver = MakeTestLspServer([])
+  for [provider, expected] in [[true, false], [{}, false],
+			       [{resolveProvider: true}, true]]
+    lspserver.caps = {inlayHintProvider: provider}
+    capabilities.ProcessServerCaps(lspserver, lspserver.caps)
+    assert_true(lspserver.isInlayHintProvider)
+    assert_equal(expected, lspserver.isInlayHintResolveProvider)
+  endfor
 enddef
 
 # Test that the inlay hints are requested only for the lines shown in a window
@@ -8548,6 +9078,251 @@ def g:Test_LspColorPresentation()
   endtry
 enddef
 
+def MakeExecuteCommandServer(name: string, commands: list<any>,
+			     requests: list<dict<any>>,
+			     reply: dict<any> = {}): dict<any>
+  var lspserver = MakeTestLspServer([])
+  lspserver.name = name
+  lspserver.running = true
+  lspserver.ready = true
+  lspserver.caps = {executeCommandProvider: {commands: commands}}
+  capabilities.ProcessServerCaps(lspserver, lspserver.caps)
+  lspserver.rpc_a = (method: string, params: any, Cbfunc: func, opts: dict<any> = {}) => {
+    requests->add({server: name, method: method, params: params->deepcopy(),
+		   opts: opts->copy()})
+    Cbfunc(lspserver, reply->get('result', null), reply->get('error', {}))
+    return requests->len()
+  }
+  return lspserver
+enddef
+
+def g:Test_LspExecuteCommand_RoutesToOfferingServer()
+  silent! edit XExecuteCommandRoute.txt
+  var requests: list<dict<any>> = []
+  var srv1 = MakeExecuteCommandServer('one', ['one.build', 'shared.run'],
+				      requests)
+  var srv2 = MakeExecuteCommandServer('two', ['two.build', 'shared.run'],
+				      requests)
+  buf.BufLspServerSet(bufnr(), srv1)
+  buf.BufLspServerSet(bufnr(), srv2)
+  try
+    :LspExecuteCommand two.build
+    assert_equal([{server: 'two', method: 'workspace/executeCommand',
+		   params: {command: 'two.build'},
+		   opts: {beforePendingKeys: true}}], requests)
+
+    requests->filter('0')
+    :LspExecuteCommand shared.run "a | b", 2, [3, null], {"jobs": 4}
+    assert_equal([{server: 'one', method: 'workspace/executeCommand',
+		   params: {command: 'shared.run',
+			    arguments: ['a | b', 2, [3, null], {jobs: 4}]},
+		   opts: {beforePendingKeys: true}}], requests)
+
+    requests->filter('0')
+    srv1.ready = false
+    :LspExecuteCommand shared.run
+    assert_equal(['two'], requests->mapnew((_, r) => r.server))
+  finally
+    buf.BufLspServerRemove(bufnr(), srv1)
+    buf.BufLspServerRemove(bufnr(), srv2)
+    :%bw!
+  endtry
+enddef
+
+def g:Test_LspExecuteCommand_ReportsUsageErrors()
+  silent! edit XExecuteCommandErrors.txt
+  var requests: list<dict<any>> = []
+  var lspserver = MakeExecuteCommandServer('one', ['one.build'], requests)
+  buf.BufLspServerSet(bufnr(), lspserver)
+  try
+    :LspExecuteCommand
+    assert_equal('Error: No command to execute is given', LastMessage())
+
+    :LspExecuteCommand other.build
+    assert_equal('Error: No language server of the current buffer offers the command "other.build"',
+		 LastMessage())
+
+    :LspExecuteCommand one.build {"jobs": 4
+    assert_match('^Error: The arguments of "one.build" are not JSON values (.*E491:',
+		 LastMessage())
+
+    assert_equal([], requests)
+
+    :new
+    :LspExecuteCommand one.build
+    assert_equal('Error: No language server of the current buffer offers the command "one.build"',
+		 LastMessage())
+    :bw!
+    assert_equal([], requests)
+  finally
+    buf.BufLspServerRemove(bufnr(), lspserver)
+    :%bw!
+  endtry
+enddef
+
+def g:Test_LspExecuteCommand_ShowsResult()
+  silent! edit XExecuteCommandResult.txt
+  var requests: list<dict<any>> = []
+  var reply: dict<any> = {}
+  var lspserver = MakeExecuteCommandServer('one', ['one.build'], requests,
+					   reply)
+  buf.BufLspServerSet(bufnr(), lspserver)
+  var bnr = bufnr()
+  try
+    :LspExecuteCommand one.build
+    assert_notmatch('one\.build', execute('messages'))
+    assert_equal(1, requests->len())
+
+    reply.result = 'built 3 targets'
+    :LspExecuteCommand one.build
+    assert_equal('Info: one.build: built 3 targets', LastMessage())
+
+    reply.result = 0
+    :LspExecuteCommand one.build
+    assert_equal('Info: one.build: 0', LastMessage())
+
+    reply.result = []
+    :LspExecuteCommand one.build
+    assert_equal('Info: one.build: []', LastMessage())
+    assert_equal(bnr, bufnr())
+
+    reply.result = {targets: ['a', {name: 'b', ok: true}], count: 2,
+		    empty: {}}
+    :LspExecuteCommand one.build
+    assert_equal('LSP-Command-Result', bufname())
+    assert_equal(['{',
+		  '  "count": 2,',
+		  '  "empty": {},',
+		  '  "targets": [',
+		  '    "a",',
+		  '    {',
+		  '      "name": "b",',
+		  '      "ok": true',
+		  '    }',
+		  '  ]',
+		  '}'], getline(1, '$'))
+    assert_false(&modifiable)
+    :close
+
+    reply.result = "first\nsecond"
+    :LspExecuteCommand one.build
+    assert_equal('LSP-Command-Result', bufname())
+    assert_equal(['first', 'second'], getline(1, '$'))
+    :close
+  finally
+    buf.BufLspServerRemove(bnr, lspserver)
+    :%bw!
+  endtry
+enddef
+
+def g:Test_LspExecuteCommand_ReportsErrorReply()
+  silent! edit XExecuteCommandFails.txt
+  var bnr = bufnr()
+  var lspserver = MakeTestLspServer([])
+  lspserver.running = true
+  lspserver.ready = true
+  lspserver.caps = {executeCommandProvider: {commands: ['one.build']}}
+  capabilities.ProcessServerCaps(lspserver, lspserver.caps)
+  lspserver.job = StartStubServerJob([{jsonrpc: '2.0', id: 1,
+    error: {code: -32603, message: 'build failed'}}])
+  buf.BufLspServerSet(bnr, lspserver)
+  try
+    :LspExecuteCommand one.build
+    g:WaitForReplies()
+    assert_match('^Error: request workspace/executeCommand failed (build failed',
+		 LastMessage())
+    assert_equal(bnr, bufnr())
+  finally
+    StopAsyncReplyingLspServer(lspserver, bnr)
+    :%bw!
+  endtry
+enddef
+
+def g:Test_LspExecuteCommand_AppliesWorkspaceEdit()
+  silent! edit XExecuteCommandEdit.txt
+  setline(1, ['old text'])
+  var bnr = bufnr()
+  var lspserver = MakeTestLspServer([])
+  lspserver.running = true
+  lspserver.ready = true
+  lspserver.caps = {executeCommandProvider: {commands: ['one.rewrite']}}
+  capabilities.ProcessServerCaps(lspserver, lspserver.caps)
+  var responses: list<dict<any>> = []
+  lspserver.sendResponse = function(CaptureResponse, [responses])
+  lspserver.job = StartStubServerJob([
+    {jsonrpc: '2.0', id: 100, method: 'workspace/applyEdit',
+     params: {edit: {changes: {
+       [util.LspBufnrToUri(bnr)]: [MakeTextEdit(0, 0, 0, 3, 'new')]}}}},
+    {jsonrpc: '2.0', id: 1, result: null}],
+    {out_cb: (_, msg) => {
+      lspserver.data = msg
+      lspserver.processMessage()
+    }})
+  buf.BufLspServerSet(bnr, lspserver)
+  try
+    feedkeys(":LspExecuteCommand one.rewrite\<CR>A!\<Esc>", 'xt')
+    assert_equal(['new text!'], getline(1, '$'))
+    assert_equal([{id: 100, result: {applied: true}, error: {}}], responses)
+  finally
+    StopAsyncReplyingLspServer(lspserver, bnr)
+    :%bw!
+  endtry
+enddef
+
+def g:Test_LspExecuteCommand_Completion()
+  silent! edit XExecuteCommandComplete.txt
+  var requests: list<dict<any>> = []
+  var srv1 = MakeExecuteCommandServer('one', ['one.build', 'shared.run'],
+				      requests)
+  var srv2 = MakeExecuteCommandServer('two', ['two.build', 'shared.run', 5],
+				      requests)
+  buf.BufLspServerSet(bufnr(), srv1)
+  buf.BufLspServerSet(bufnr(), srv2)
+  try
+    assert_equal(['one.build', 'shared.run', 'two.build'],
+		 getcompletion('LspExecuteCommand ', 'cmdline'))
+    assert_equal(['one.build'],
+		 getcompletion('LspExecuteCommand one.', 'cmdline'))
+    assert_equal([], getcompletion('LspExecuteCommand one-', 'cmdline'))
+    assert_equal(['two.build'],
+		 getcompletion('silent LspExe t', 'cmdline'))
+    assert_equal([], getcompletion('LspExecuteCommand one.build ', 'cmdline'))
+
+    srv2.ready = false
+    assert_equal(['one.build', 'shared.run'],
+		 getcompletion('LspExecuteCommand ', 'cmdline'))
+  finally
+    buf.BufLspServerRemove(bufnr(), srv1)
+    buf.BufLspServerRemove(bufnr(), srv2)
+    :%bw!
+  endtry
+enddef
+
+def g:Test_ExecuteCommand_NeedsProvider()
+  var lspserver = MakeTestLspServer([])
+  lspserver.name = 'one'
+  var requests: list<dict<any>> = []
+  lspserver.rpc_a = (method: string, params: any, Cbfunc: func, _ = {}) => {
+    requests->add({method: method, params: params})
+    Cbfunc(lspserver, 'done', {})
+    return 1
+  }
+
+  codeaction.DoCommand(lspserver, {title: 'Apply', command: 'one.apply'})
+  assert_equal([], requests)
+  assert_equal('Warn: Language server "one" does not execute commands, "one.apply" needs a handler (see :help lsp-custom-commands)',
+	       LastMessage())
+
+  lspserver.caps = {executeCommandProvider: {}}
+  capabilities.ProcessServerCaps(lspserver, lspserver.caps)
+  :messages clear
+  codeaction.DoCommand(lspserver,
+    {title: 'Apply', command: 'one.apply', arguments: [1]})
+  assert_equal([{method: 'workspace/executeCommand',
+		 params: {command: 'one.apply', arguments: [1]}}], requests)
+  assert_notmatch('one', execute('messages'))
+enddef
+
 # Returns a stub language server that replies to "textDocument/documentLink"
 # with "links" and to "documentLink/resolve" with "resolved".  The server is a
 # resolve provider only if "resolved" is not empty.  The requests sent to the
@@ -12638,6 +13413,782 @@ def g:Test_WorkspaceDiagnostics_Command()
     g:LspOptionsSet({keepFocusInDiags: true})
     StopWorkspaceDiagServer(lspserver)
     :%bw!
+  endtry
+enddef
+
+def g:Test_OmniComplete_HoldsDocChangesUntilReply()
+  g:LspOptionsSet({incrementalSync: true})
+  silent! edit XOmniCompleteHoldsChanges.c
+  setline(1, ['struct s v = {', '        field: 0,', '};'])
+  var bnr = bufnr()
+  var item = {
+    label: 'field_name',
+    kind: 5,
+    textEdit: {
+      newText: 'field_name',
+      insert: {start: {line: 1, character: 8}, end: {line: 1, character: 10}},
+      replace: {start: {line: 1, character: 8}, end: {line: 1, character: 13}}
+    }
+  }
+  var notifications: list<dict<any>> = []
+  var lspserver = MakeListenedLspServer(notifications)
+  lspserver->extend({
+    running: true,
+    ready: true,
+    isCompletionProvider: true,
+    isCompletionResolveProvider: false,
+    completionLazyDoc: false,
+    completionTriggerChars: [],
+    featureEnabled: (_) => true,
+  })
+  var syncId = lspserver.nextSyncRpcId
+  lspserver.job = StartSteppedStubServerJob([
+    [],
+    [{jsonrpc: '2.0', id: syncId, result: {isIncomplete: false, items: [item]}}]])
+  buf.BufLspServerSet(bnr, lspserver)
+  lspserver.textdocDidOpen(bnr, 'c')
+  lsp.AddBufListener(lspserver, bnr)
+  var doc = DocumentText(bnr)
+  notifications->filter((_, _) => false)
+  var flushes = 0
+  var sentWhilePending: list<string> = []
+  var WaitForReply: func = lspserver.waitForReply
+  lspserver.waitForReply = (id: number, timeout: number): bool => {
+    listener_flush(bnr)
+    flushes += 1
+    sentWhilePending->extend(notifications->mapnew((_, n) => n.method))
+    return WaitForReply(id, timeout)
+  }
+  try
+    completion.OmniComplSet('c', true)
+    completion.BufferInit(lspserver, bnr, 'c')
+    setlocal completeopt=menuone,noinsert,noselect
+    cursor(2, 10)
+    g:FeedOmniCompleteKeys("a\<C-X>\<C-O>\<C-N>\<C-Y>\<Esc>")
+    assert_true(flushes > 0, 'the listener was not flushed during the wait')
+    assert_equal([], sentWhilePending)
+    assert_equal('        field_name: 0,', getline(2))
+    assert_equal({}, lspserver.heldDocChanges)
+    lspserver.flushDocChanges(bnr)
+    assert_true(notifications->len() > 0, 'the held changes were not sent')
+    for notification in notifications
+      assert_equal('textDocument/didChange', notification.method)
+      doc = ApplyContentChanges(doc, notification.params.contentChanges)
+    endfor
+    assert_equal(DocumentText(bnr), doc)
+  finally
+    completion.OmniComplSet('c', false)
+    lsp.RemoveBufListener(bnr)
+    StopAsyncReplyingLspServer(lspserver, bnr)
+    :%bw!
+    g:LspOptionsSet({incrementalSync: true})
+  endtry
+enddef
+
+def FileOpsRpc(messages: list<dict<any>>, replies: dict<dict<any>>,
+	       method: string, params: any, opts: dict<any> = {}): dict<any>
+  messages->add({method: method, params: params->deepcopy(),
+		 timeout: opts->get('timeout', -1)})
+  return replies->get(method, {})->deepcopy()
+enddef
+
+def MakeFileOpsServer(fileOps: dict<any>, replies: dict<dict<any>>,
+		      messages: list<dict<any>>,
+		      caps: dict<any> = {}): dict<any>
+  var lspserver = MakeCapsServer(
+    {workspace: {fileOperations: fileOps}}->extend(caps), messages)
+  lspserver.rpc = function(FileOpsRpc, [messages, replies])
+  return lspserver
+enddef
+
+def FileOpsFilters(glob: string, pattern: dict<any> = {}): dict<any>
+  return {filters: [{pattern: {glob: glob}->extend(pattern)}]}
+enddef
+
+def FileOpsUris(messages: list<dict<any>>, method: string): list<string>
+  return messages->copy()->filter((_, msg) => msg.method == method)
+    ->mapnew((_, msg) => msg.params.files)->flattennew()
+    ->mapnew((_, file) => file.uri)
+enddef
+
+def g:Test_FileOperations_ClientCapabilities()
+  assert_equal({dynamicRegistration: true, didCreate: true, willCreate: true,
+		didRename: true, willRename: true},
+	       capabilities.GetClientCaps().workspace.fileOperations)
+enddef
+
+def g:Test_FileOperations_RenameFile()
+  var dir = 'XFileOpsRename'
+  mkdir(dir)
+  var from = $'{dir}/a.c'
+  var to = $'{dir}/b.c'
+  var user = $'{dir}/user.c'
+  writefile(['#include "a.c"'], user)
+  var messages: list<dict<any>> = []
+  var filters = {filters: [{scheme: 'file',
+			    pattern: {glob: '**/*.c', matches: 'file'}}]}
+    var edit = {documentChanges: [
+    MakeInsertEdit(util.LspFileToUri(user), "// moved\n"),
+    MakeInsertEdit(util.LspFileToUri(from), "// self\n")]}
+  var lspserver = MakeFileOpsServer({willRename: filters, didRename: filters},
+    {'workspace/willRenameFiles': {result: edit}}, messages,
+    {textDocumentSync: {openClose: true, change: 1}})
+  var bnr = SaveTestEdit(from, ['int a;'], [lspserver], [messages])
+  try
+    var files = [{oldUri: util.LspFileToUri(from),
+		  newUri: util.LspFileToUri(to)}]
+    exe $'LspRenameFile {to}'
+    assert_false(filereadable(from))
+    assert_equal(['// self', 'int a;'], readfile(to))
+    assert_equal(bnr, bufnr())
+    assert_equal(fnamemodify(to, ':p'), expand('%:p'))
+    assert_false(&modified)
+    assert_equal(['// moved', '#include "a.c"'],
+		 getbufline(bufnr(user), 1, '$'))
+    assert_true(getbufvar(bufnr(user), '&modified'))
+    assert_equal(['#include "a.c"'], readfile(user))
+
+    messages->filter((_, msg) => msg.method != 'textDocument/didChange')
+    assert_equal(['workspace/willRenameFiles', 'textDocument/didClose',
+		  'workspace/didRenameFiles'], Methods(messages))
+    assert_equal({method: 'workspace/willRenameFiles', params: {files: files},
+		  timeout: 10000}, messages[0])
+    assert_equal({textDocument: {uri: files[0].oldUri}}, messages[1].params)
+    assert_equal({method: 'workspace/didRenameFiles', params: {files: files}},
+		 messages[2])
+    assert_equal({}, lspserver.docBufnrs)
+  finally
+    fileoperations.RemoveServer(lspserver)
+    :%bw!
+    delete(dir, 'rf')
+  endtry
+  assert_false(exists('#LspFileOperations'))
+enddef
+
+def g:Test_FileOperations_RenameFileWithoutInterestedServer()
+  var dir = 'XFileOpsRenameOther'
+  mkdir($'{dir}/sub', 'p')
+  var from = $'{dir}/a.txt'
+  var messages: list<dict<any>> = []
+  var filters = FileOpsFilters('**/*.c')
+  var lspserver = MakeFileOpsServer({willRename: filters, didRename: filters},
+				    {}, messages)
+  writefile(['text'], from)
+  try
+    exe $'silent edit {from}'
+    var bnr = bufnr()
+    exe $'LspRenameFile {dir}/sub'
+    assert_false(filereadable(from))
+    assert_equal(['text'], readfile($'{dir}/sub/a.txt'))
+    assert_equal(fnamemodify($'{dir}/sub/a.txt', ':p'), expand('%:p'))
+
+    exe $'LspRenameFile {dir}/new/'
+    assert_equal(['text'], readfile($'{dir}/new/a.txt'))
+    assert_equal(bnr, bufnr())
+    assert_equal(fnamemodify($'{dir}/new/a.txt', ':p'), expand('%:p'))
+
+    feedkeys($":LspRenameFile\<CR>\<C-U>{dir}/prompted.txt\<CR>", 'xt')
+    assert_equal(['text'], readfile($'{dir}/prompted.txt'))
+    assert_equal(fnamemodify($'{dir}/prompted.txt', ':p'), expand('%:p'))
+
+    feedkeys(":LspRenameFile\<CR>\<C-U>\<CR>", 'xt')
+    assert_equal(fnamemodify($'{dir}/prompted.txt', ':p'), expand('%:p'))
+    assert_equal([], messages)
+  finally
+    fileoperations.RemoveServer(lspserver)
+    :%bw!
+    delete(dir, 'rf')
+  endtry
+enddef
+
+def g:Test_FileOperations_RenameFileErrors()
+  var dir = 'XFileOpsRenameErrors'
+  var locked = $'{dir}/locked'
+  mkdir(locked, 'p')
+  var from = $'{dir}/a.c'
+  var taken = $'{dir}/taken.c'
+  var inLocked = $'{locked}/l.c'
+  writefile(['int a;'], from)
+  writefile(['int t;'], taken)
+  writefile(['int l;'], inLocked)
+  var messages: list<dict<any>> = []
+  var filters = FileOpsFilters('**/*.c')
+  var lspserver = MakeFileOpsServer({willRename: filters, didRename: filters},
+				    {}, messages)
+  try
+    new
+    LspRenameFile XFileOpsUnnamed.c
+    assert_equal('Error: File rename failed, the current buffer is not a file',
+		 LastMessage())
+    bwipe!
+
+    exe $'silent edit {dir}/missing.c'
+    exe $'LspRenameFile {dir}/other.c'
+    assert_match('Error: File rename failed, .*/missing.c does not exist',
+		 LastMessage())
+
+    exe $'silent edit {from}'
+    exe $'LspRenameFile {taken}'
+    assert_match('Error: File rename failed, .*/taken.c already exists',
+		 LastMessage())
+    assert_equal(['int t;'], readfile(taken))
+
+    setfperm(locked, 'r-xr-xr-x')
+    exe $'LspRenameFile {locked}/sub/b.c'
+    assert_match('Error: File rename failed, .*/locked is not writable',
+		 LastMessage())
+    exe $'silent edit {inLocked}'
+    exe $'LspRenameFile {dir}/moved.c'
+    assert_match('Error: File rename failed, .*/locked is not writable',
+		 LastMessage())
+    assert_true(filereadable(inLocked))
+
+    exe $'silent edit {from}'
+    setline(1, 'int changed;')
+    exe $'LspRenameFile {dir}/b.c'
+    assert_match('Error: File rename failed, .*/a.c has unsaved changes',
+		 LastMessage())
+    assert_equal(['int a;'], readfile(from))
+    assert_false(filereadable($'{dir}/b.c'))
+    assert_equal(fnamemodify(from, ':p'), expand('%:p'))
+    assert_equal([], messages)
+  finally
+    setfperm(locked, 'rwxr-xr-x')
+    fileoperations.RemoveServer(lspserver)
+    :%bw!
+    delete(dir, 'rf')
+  endtry
+enddef
+
+def g:Test_FileOperations_RenameFileStopsWhenEditFails()
+  var dir = 'XFileOpsRenameEditFails'
+  mkdir(dir)
+  var from = $'{dir}/a.c'
+  var to = $'{dir}/b.c'
+  var messages1: list<dict<any>> = []
+  var messages2: list<dict<any>> = []
+  var filters = FileOpsFilters('**/*.c')
+  var srv1 = MakeFileOpsServer({willRename: filters, didRename: filters},
+    {'workspace/willRenameFiles': {result: {documentChanges: [{kind: 'move'}]}}},
+    messages1)
+  var srv2 = MakeFileOpsServer({willRename: filters, didRename: filters},
+				{}, messages2)
+  writefile(['int a;'], from)
+  try
+    exe $'silent edit {from}'
+    exe $'LspRenameFile {to}'
+    assert_equal('Error: Unsupported change in workspace edit [move]',
+		 LastMessage())
+    assert_true(filereadable(from))
+    assert_false(filereadable(to))
+    assert_equal(fnamemodify(from, ':p'), expand('%:p'))
+    assert_equal(['workspace/willRenameFiles'], Methods(messages1))
+    assert_equal([], messages2)
+  finally
+    fileoperations.RemoveServer(srv1)
+    fileoperations.RemoveServer(srv2)
+    :%bw!
+    delete(dir, 'rf')
+  endtry
+enddef
+
+def g:Test_FileOperations_FilterMatching()
+  var dir = 'XFileOpsFilters'
+  mkdir($'{dir}/sub', 'p')
+  var messages: list<dict<any>> = []
+  var lspserver = MakeFileOpsServer({didCreate: {filters: [
+      {pattern: {glob: '**/*.{c,h}'}},
+      {pattern: {glob: '**/sub/*.txt', matches: 'file'}},
+      {pattern: {glob: '**/*.MD', options: {ignoreCase: true}}},
+      {scheme: 'file', pattern: {glob: '**/s?heme.yes'}},
+      {scheme: 'untitled', pattern: {glob: '**/*.scheme'}},
+      {pattern: {glob: '**/*.folder', matches: 'folder'}},
+      {pattern: {glob: '**/*.CASE'}},
+      {pattern: {glob: '*.rel'}},
+      {pattern: {glob: 7}},
+      'invalid'
+    ]}}, {}, messages)
+  var matched = ['a.c', 'sub/b.h', 'sub/c.txt', 'readme.md', 'scheme.yes']
+  var unmatched = ['d.txt', 'e.scheme', 'f.folder', 'g.case', 'h.rel', 'i.cpp']
+  try
+    new
+    setline(1, 'text')
+    for fname in unmatched + matched
+      exe $'silent write {dir}/{fname}'
+    endfor
+    assert_equal(matched->mapnew((_, fname) => util.LspFileToUri($'{dir}/{fname}')),
+		 FileOpsUris(messages, 'workspace/didCreateFiles'))
+    assert_equal(['workspace/didCreateFiles'], Methods(messages)->uniq())
+  finally
+    fileoperations.RemoveServer(lspserver)
+    :%bw!
+    delete(dir, 'rf')
+  endtry
+enddef
+
+def g:Test_FileOperations_CreateFile()
+  var dir = 'XFileOpsCreate'
+  mkdir(dir)
+  var fname = $'{dir}/new.c'
+  var copy = $'{dir}/copy.c'
+  var part = $'{dir}/part.c'
+  var existing = $'{dir}/existing.c'
+  writefile(['int e;'], existing)
+  var uri = util.LspFileToUri(fname)
+  var messages: list<dict<any>> = []
+  var filters = FileOpsFilters('**/*.c')
+  var edit = {documentChanges: [MakeInsertEdit(uri, "// header\n")]}
+  var lspserver = MakeFileOpsServer({willCreate: filters, didCreate: filters},
+    {'workspace/willCreateFiles': {result: edit}}, messages)
+  try
+    exe $'silent edit {fname}'
+    setline(1, 'int n;')
+    silent write
+    assert_equal(['// header', 'int n;'], readfile(fname))
+    assert_false(&modified)
+    assert_equal([
+      {method: 'workspace/willCreateFiles', params: {files: [{uri: uri}]},
+       timeout: 1000},
+      {method: 'workspace/didCreateFiles', params: {files: [{uri: uri}]}}],
+      messages)
+
+    messages->filter('0')
+    setline(1, '// changed')
+    silent write
+    exe $'silent write! {existing}'
+    exe $'silent write >> {existing}'
+    assert_equal([], messages)
+
+    exe $'silent write {copy}'
+    exe $'silent :1write {part}'
+    for created in [copy, part]
+      var createdUri = util.LspFileToUri(created)
+      assert_equal([createdUri],
+		   FileOpsUris(messages, 'workspace/willCreateFiles')
+		     ->filter((_, u) => u == createdUri))
+      assert_equal([createdUri],
+		   FileOpsUris(messages, 'workspace/didCreateFiles')
+		     ->filter((_, u) => u == createdUri))
+    endfor
+
+    messages->filter('0')
+    lspserver.features = {fileOperations: false}
+    exe $'silent write {dir}/off.c'
+    lspserver.features = {}
+    lspserver.ready = false
+    exe $'silent write {dir}/notready.c'
+    assert_equal([], messages)
+  finally
+    fileoperations.RemoveServer(lspserver)
+    :%bw!
+    delete(dir, 'rf')
+  endtry
+enddef
+
+def g:Test_FileOperations_CreateFileNoReply()
+  var dir = 'XFileOpsCreateNoReply'
+  mkdir(dir)
+  var fname = $'{dir}/new.c'
+  var uri = util.LspFileToUri(fname)
+  var messages: list<dict<any>> = []
+  var filters = FileOpsFilters('**/*.c')
+  var lspserver = MakeCapsServer(
+    {workspace: {fileOperations: {willCreate: filters, didCreate: filters}}},
+    messages)
+  lspserver.job = StartStubServerJob([])
+  try
+    var id = lspserver.nextSyncRpcId
+    exe $'silent edit {fname}'
+    setline(1, 'int n;')
+    var start = reltime()
+    :write
+    var elapsed = start->reltime()->reltimefloat()
+    assert_inrange(1.0, 5.0, elapsed)
+    assert_match('Warn: No reply to workspace/willCreateFiles from language server "test"',
+		 execute('messages'))
+    assert_equal(['int n;'], readfile(fname))
+    assert_equal([
+      {method: '$/cancelRequest', params: {id: id}},
+      {method: 'workspace/didCreateFiles', params: {files: [{uri: uri}]}}],
+      messages)
+  finally
+    job_stop(lspserver.job)
+    fileoperations.RemoveServer(lspserver)
+    :%bw!
+    delete(dir, 'rf')
+  endtry
+enddef
+
+def g:Test_FileOperations_DynamicRegistration()
+  var dir = 'XFileOpsDynamic'
+  mkdir(dir)
+  var messages: list<dict<any>> = []
+  var responses: list<dict<any>> = []
+  var lspserver = MakeFileOpsServer({}, {}, messages)
+  lspserver.sendResponse = function(CaptureResponse, [responses])
+  var registerOptions = FileOpsFilters('**/*.c')
+  try
+    assert_false(exists('#LspFileOperations'))
+    for registration in [
+	{method: 'workspace/didCreateFiles', registerOptions: registerOptions},
+	{id: 'r', method: 'workspace/didCreateFiles'},
+	{id: 'r', method: 'workspace/didCreateFiles',
+	 registerOptions: {filters: {}}},
+	{id: 'r', method: 'workspace/didCreateFiles',
+	 registerOptions: {filters: [{pattern: {glob: '**/*.c'}}, {}]}},
+	{id: 'r', method: 'workspace/willRenameFiles',
+	 registerOptions: {filters: [{pattern: {glob: '*', matches: 'any'}}]}},
+	{id: 'r', method: 'workspace/willCreateFiles',
+	 registerOptions: {filters: [{scheme: 1, pattern: {glob: '*'}}]}}]
+      var watchers = {id: 'w', method: 'workspace/didChangeWatchedFiles',
+		      registerOptions: {watchers: [{globPattern: '**/*.c'}]}}
+      AssertRequestError(lspserver, responses,
+	{id: 1, method: 'client/registerCapability',
+	 params: {registrations: [watchers, registration]}}, -32602)
+    endfor
+    assert_false(exists('#LspFileOperations'))
+    assert_false(exists('#LspWatchedFiles'))
+
+    responses->filter('0')
+    lspserver.processRequest({id: 2, method: 'client/registerCapability',
+      params: {registrations: [
+	{id: 'create', method: 'workspace/didCreateFiles',
+	 registerOptions: registerOptions},
+	{id: 'create', method: 'workspace/willCreateFiles',
+	 registerOptions: registerOptions}]}})
+    assert_equal([{id: 2, result: null, error: {}}], responses)
+    assert_true(exists('#LspFileOperations#BufWritePre'))
+
+    new
+    setline(1, 'text')
+    exe $'silent write {dir}/a.c'
+    assert_equal(['workspace/willCreateFiles', 'workspace/didCreateFiles'],
+		 Methods(messages))
+
+    messages->filter('0')
+    responses->filter('0')
+    lspserver.processRequest({id: 3, method: 'client/unregisterCapability',
+      params: {unregisterations: [
+	{id: 'create', method: 'workspace/willCreateFiles'},
+	{id: 'other', method: 'workspace/didCreateFiles'}]}})
+    assert_equal([{id: 3, result: null, error: {}}], responses)
+    exe $'silent write {dir}/b.c'
+    assert_equal(['workspace/didCreateFiles'], Methods(messages))
+
+    lspserver.processRequest({id: 4, method: 'client/unregisterCapability',
+      params: {unregisterations: [
+	{id: 'create', method: 'workspace/didCreateFiles'}]}})
+    assert_false(exists('#LspFileOperations'))
+  finally
+    fileoperations.RemoveServer(lspserver)
+    watchedfiles.RemoveServer(lspserver)
+    :%bw!
+    delete(dir, 'rf')
+  endtry
+enddef
+
+const CMDLINE_COMPLETION_REPLY: dict<any> =
+  {isIncomplete: false, items: [], cmdlineCompletion: true}
+
+def g:LspTestCmdlineComplete(arglead: string, cmdline: string,
+			     cursorPos: number): list<string>
+  return ['src/main.c', 'src/make.c', 'other']
+enddef
+
+def g:LspTestCmdlineShellComplete(arglead: string, cmdline: string,
+				  cursorPos: number): list<string>
+  return [system('echo shelled')->trim()]
+enddef
+
+def MakeCmdlineCompletionServer(): dict<any>
+  var lspserver = MakeTestLspServer([])
+  lspserver->extend({
+    running: true,
+    ready: true,
+    isCompletionProvider: true,
+    isCompletionResolveProvider: true,
+    completionLazyDoc: false,
+    completionTriggerChars: [' ', '=', ','],
+    featureEnabled: (_) => true,
+  })
+  buf.BufLspServerSet(bufnr(), lspserver)
+  command! -nargs=1 -complete=customlist,g:LspTestCmdlineComplete
+	\ XLspCmdline echo
+  command! -nargs=1 -complete=customlist,g:LspTestCmdlineShellComplete
+	\ XLspCmdlineShell echo
+  return lspserver
+enddef
+
+def StopCmdlineCompletionServer(lspserver: dict<any>)
+  if lspserver.job->type() == v:t_job
+    job_stop(lspserver.job)
+  endif
+  buf.BufLspServerRemove(bufnr(), lspserver)
+  delcommand XLspCmdline
+  delcommand XLspCmdlineShell
+  :%bw!
+enddef
+
+def PutCursorAfter(text: string)
+  setline(1, text .. '|')
+  cursor(1, text->len() + 1)
+enddef
+
+def CmdlineCompletionItems(lspserver: dict<any>, text: string): list<dict<any>>
+  PutCursorAfter(text)
+  lspserver.omniCompletePending = true
+  completion.CompletionReply(lspserver, CMDLINE_COMPLETION_REPLY->deepcopy(),
+			     {})
+  assert_false(lspserver.omniCompletePending)
+  return lspserver.completeItems
+enddef
+
+def CmdlineCompletionWords(lspserver: dict<any>, text: string): list<string>
+  return CmdlineCompletionItems(lspserver, text)
+    ->mapnew((_, v: dict<any>): string => v.word)
+enddef
+
+def g:Test_CmdlineCompletion_Capability()
+  assert_equal({cmdlineCompletion: true},
+	       capabilities.GetClientCaps().experimental)
+
+  silent! edit XCmdlineCompletionCaps.vim
+  var lspserver = MakeTestLspServer([])
+  lspserver.job = StartStubServerJob([])
+  try
+    lspserver.initServer(bufnr())
+    assert_equal({cmdlineCompletion: true},
+		 lspserver.rpcInitializeRequest.capabilities.experimental)
+  finally
+    job_stop(lspserver.job)
+    :%bw!
+  endtry
+enddef
+
+def g:Test_CmdlineCompletion_MenuItems()
+  silent! edit XCmdlineCompletionItems.vim
+  var lspserver = MakeCmdlineCompletionServer()
+  try
+    assert_equal([
+      {word: 'main.c', abbr: 'src/main.c', kind: 'V',
+       kind_hlgroup: 'LspCompletionKindValue', dup: 1},
+      {word: 'make.c', abbr: 'src/make.c', kind: 'V',
+       kind_hlgroup: 'LspCompletionKindValue', dup: 1},
+    ], CmdlineCompletionItems(lspserver, 'XLspCmdline src/ma'))
+    assert_equal(['src/main.c', 'src/make.c', 'other'],
+		 CmdlineCompletionWords(lspserver, 'XLspCmdline '))
+    assert_equal(['other'], CmdlineCompletionWords(lspserver, 'XLspCmdline o'))
+    assert_equal([], CmdlineCompletionWords(lspserver, 'XLspCmdline SRC/MA'))
+
+    var formats = getcompletion('set fileformat=', 'cmdline')
+    assert_equal(&fileformat, formats[0])
+    assert_equal(formats,
+		 CmdlineCompletionWords(lspserver, '  set fileformat='))
+    assert_equal(['dos'], CmdlineCompletionWords(lspserver, 'set fileformat=d'))
+    assert_equal(['fileformat', 'fileformats'],
+		 CmdlineCompletionWords(lspserver, 'set fileform'))
+
+    lspserver.completeItemsIsIncomplete = true
+    lspserver.completionResolved = [[{}, {}]]
+    CmdlineCompletionItems(lspserver, 'XLspCmdline o')
+    assert_false(lspserver.completeItemsIsIncomplete)
+    assert_equal([], lspserver.completionResolved)
+
+    lspserver.omniCompletePending = true
+    completion.CompletionReply(
+      lspserver, {isIncomplete: false, items: [], cmdlineCompletion: 1}, {})
+    assert_equal([], lspserver.completeItems)
+  finally
+    StopCmdlineCompletionServer(lspserver)
+  endtry
+enddef
+
+def g:Test_CmdlineCompletion_Options()
+  silent! edit XCmdlineCompletionOptions.vim
+  var lspserver = MakeCmdlineCompletionServer()
+  var saveWildOptions = &wildoptions
+  try
+    g:LspOptionsSet({completionMatcher: 'icase'})
+    assert_equal([
+      {word: 'main.c', abbr: 'src/main.c', kind: 'V',
+       kind_hlgroup: 'LspCompletionKindValue', dup: 1, icase: 1},
+      {word: 'make.c', abbr: 'src/make.c', kind: 'V',
+       kind_hlgroup: 'LspCompletionKindValue', dup: 1, icase: 1},
+    ], CmdlineCompletionItems(lspserver, 'XLspCmdline SRC/MA'))
+
+    g:LspOptionsSet({completionMatcher: 'fuzzy'})
+    assert_equal(['main.c', 'make.c'],
+		 CmdlineCompletionWords(lspserver, 'XLspCmdline src/ma'))
+    assert_equal([], CmdlineCompletionWords(lspserver, 'XLspCmdline SRC/MA'))
+    g:LspOptionsSet({completionMatcher: 'case'})
+
+    g:LspOptionsSet({customCompletionKinds: true,
+		     completionKinds: {Value: 'val'}})
+    assert_equal(['val'], CmdlineCompletionItems(lspserver, 'XLspCmdline o')
+      ->mapnew((_, v: dict<any>): string => v.kind))
+    g:LspOptionsSet({customCompletionKinds: false, completionKinds: {}})
+
+    g:LspOptionsSet({condensedCompletionMenu: true})
+    assert_equal([{word: 'main.c', abbr: 'main.c', kind: 'V',
+		   kind_hlgroup: 'LspCompletionKindValue', dup: 1,
+		   info: '    src/main.c'}],
+		 CmdlineCompletionItems(lspserver, 'XLspCmdline src/mai'))
+    g:LspOptionsSet({condensedCompletionMenu: false})
+
+    g:LspOptionsSet({completionLabelMaxWidth: 6})
+    assert_equal([{word: 'main.c', abbr: 'src/m…', kind: 'V',
+		   kind_hlgroup: 'LspCompletionKindValue', dup: 1,
+		   info: '    src/main.c'}],
+		 CmdlineCompletionItems(lspserver, 'XLspCmdline src/mai'))
+    g:LspOptionsSet({completionLabelMaxWidth: 0})
+
+    set wildoptions=fuzzy,pum
+    assert_equal(['fileformat', 'fileformats'],
+		 CmdlineCompletionWords(lspserver, 'set fileform'))
+    assert_equal('fuzzy,pum', &wildoptions)
+  finally
+    &wildoptions = saveWildOptions
+    g:LspOptionsSet({completionMatcher: 'case', customCompletionKinds: false,
+		     completionKinds: {}, condensedCompletionMenu: false,
+		     completionLabelMaxWidth: 0})
+    StopCmdlineCompletionServer(lspserver)
+  endtry
+enddef
+
+def g:Test_CmdlineCompletion_FileNames()
+  silent! edit XCmdlineCompletionFiles.vim
+  var lspserver = MakeCmdlineCompletionServer()
+  mkdir('XCmdlineDir/sub', 'pR')
+  writefile([], 'XCmdlineDir/my file.txt')
+  writefile([], 'XCmdlineDir/plain.txt')
+  try
+    assert_equal([{word: 'plain.txt', abbr: 'XCmdlineDir/plain.txt', kind: 'V',
+		   kind_hlgroup: 'LspCompletionKindValue', dup: 1}],
+		 CmdlineCompletionItems(lspserver, 'edit XCmdlineDir/pl'))
+    assert_equal(['my\ file.txt', 'plain.txt', 'sub/'],
+		 CmdlineCompletionWords(lspserver, 'edit XCmdlineDir/'))
+    assert_equal([{word: 'file.txt', abbr: 'XCmdlineDir/my\ file.txt',
+		   kind: 'V', kind_hlgroup: 'LspCompletionKindValue', dup: 1}],
+		 CmdlineCompletionItems(lspserver, 'edit XCmdlineDir/my\ fi'))
+    assert_equal(['sub/'], CmdlineCompletionWords(lspserver, 'cd XCmdlineDir/s'))
+
+    $XLSP_CMDLINE_DIR = 'XCmdlineDir'->fnamemodify(':p')
+    assert_notequal([], getcompletion('edit $XLSP_CMDLINE_DIR/pl', 'cmdline'))
+    assert_equal([],
+		 CmdlineCompletionWords(lspserver, 'edit $XLSP_CMDLINE_DIR/pl'))
+  finally
+    unlet $XLSP_CMDLINE_DIR
+    StopCmdlineCompletionServer(lspserver)
+  endtry
+enddef
+
+def g:Test_CmdlineCompletion_RunsNoShellCommand()
+  silent! edit XCmdlineCompletionShell.vim
+  var lspserver = MakeCmdlineCompletionServer()
+  try
+    assert_equal(['shelled'], getcompletion('XLspCmdlineShell ', 'cmdline'))
+    assert_equal([], CmdlineCompletionWords(lspserver, 'XLspCmdlineShell '))
+
+    assert_equal([], CmdlineCompletionWords(
+      lspserver, 'edit `touch XCmdlineBacktick`'))
+    assert_equal([], CmdlineCompletionWords(
+      lspserver, 'edit $(touch XCmdlineBacktick)'))
+    assert_false(filereadable('XCmdlineBacktick'))
+
+    assert_notequal([], getcompletion('!', 'cmdline'))
+    assert_equal([], CmdlineCompletionWords(lspserver, '!'))
+    assert_equal([], CmdlineCompletionWords(lspserver, 'terminal '))
+    assert_true(CmdlineCompletionWords(lspserver, '!l')->index('ls') >= 0)
+    assert_true(CmdlineCompletionWords(lspserver, 'terminal l')
+      ->index('ls') >= 0)
+  finally
+    delete('XCmdlineBacktick')
+    StopCmdlineCompletionServer(lspserver)
+  endtry
+enddef
+
+def g:Test_CmdlineCompletion_OmniFuncAndCompleteSource()
+  silent! edit XCmdlineCompletionOmni.vim
+  var lspserver = MakeCmdlineCompletionServer()
+  var ProcessMessage = (_, msg) => {
+    lspserver.data = msg
+    lspserver.processMessage()
+  }
+  try
+    for CompleteFunc in [g:LspOmniFunc, g:LspCompleteSource]
+      PutCursorAfter('XLspCmdline src/ma')
+      lspserver.completeItemsIsIncomplete = true
+      lspserver.job = StartStubServerJob(
+	[{jsonrpc: '2.0', id: lspserver.nextSyncRpcId,
+	  result: CMDLINE_COMPLETION_REPLY}],
+	{out_cb: ProcessMessage})
+      assert_equal(16, CompleteFunc(1, ''))
+      var matches: any = CompleteFunc(0, 'ma')
+      assert_equal(v:t_list, matches->type())
+      assert_equal(['main.c', 'make.c'],
+		   matches->mapnew((_, v: dict<any>): string => v.word))
+      job_stop(lspserver.job)
+    endfor
+  finally
+    StopCmdlineCompletionServer(lspserver)
+  endtry
+enddef
+
+def g:Test_CmdlineCompletion_OmniAcceptSendsNoResolve()
+  silent! edit XCmdlineCompletionAccept.vim
+  var bnr = bufnr()
+  var lspserver = MakeCmdlineCompletionServer()
+  lspserver.completionLazyDoc = true
+  var syncId = lspserver.nextSyncRpcId
+  lspserver.job = StartStubServerJob(
+    [{jsonrpc: '2.0', id: syncId, result: CMDLINE_COMPLETION_REPLY}])
+  try
+    completion.OmniComplSet('vim', true)
+    completion.BufferInit(lspserver, bnr, 'vim')
+    setlocal completeopt=menuone,noinsert,noselect
+    setline(1, 'XLspCmdline src/mak')
+    g:FeedOmniCompleteKeys("A\<C-X>\<C-O>\<C-N>\<C-Y> x\<Esc>")
+    assert_equal(['XLspCmdline src/make.c x'], getline(1, '$'))
+    assert_equal(syncId + 1, lspserver.nextSyncRpcId)
+    assert_equal({}, lspserver.pendingRequests)
+  finally
+    completion.OmniComplSet('vim', false)
+    StopCmdlineCompletionServer(lspserver)
+  endtry
+enddef
+
+def g:Test_CmdlineCompletion_AutoComplete()
+  silent! edit XCmdlineCompletionAuto.vim
+  var lspserver = MakeCmdlineCompletionServer()
+  lspserver.getCompletion = (_, _) => {
+    lspserver.completionRequestPos = completion.CompletionRequestPos()
+  }
+  g:LspCmdlineCompletionServer = lspserver
+  g:LspCmdlineCompletionReply = CMDLINE_COMPLETION_REPLY
+  var saveAutoComplete = g:LspOptionsGet().autoComplete
+  g:LspOptionsSet({autoComplete: true})
+  try
+    setlocal completeopt=menuone,noinsert,noselect
+    inoremap <buffer> <F5> <ScriptCmd>completion.LspComplete()<CR>
+    inoremap <buffer> <F6> <ScriptCmd>completion.CompletionReply(g:LspCmdlineCompletionServer, g:LspCmdlineCompletionReply, {})<CR>
+    inoremap <buffer> <F2> <ScriptCmd>b:matches = complete_info(['items']).items->mapnew((_, v) => v.word)<CR>
+
+    b:matches = ['not set']
+    setline(1, 'XLspCmdline src/ma')
+    feedkeys("A\<F5>\<F6>\<F2>\<C-N>\<C-N>\<C-Y>\<Esc>", 'xt')
+    assert_equal(['main.c', 'make.c'], b:matches)
+    assert_equal(['XLspCmdline src/make.c'], getline(1, '$'))
+
+    b:matches = ['not set']
+    setline(1, 'XLspCmdline')
+    feedkeys("A \<F5>\<F6>\<F2>\<C-N>\<C-Y>\<Esc>", 'xt')
+    assert_equal(['src/main.c', 'src/make.c', 'other'], b:matches)
+    assert_equal(['XLspCmdline src/main.c'], getline(1, '$'))
+  finally
+    g:LspOptionsSet({autoComplete: saveAutoComplete})
+    unlet g:LspCmdlineCompletionServer
+    unlet g:LspCmdlineCompletionReply
+    StopCmdlineCompletionServer(lspserver)
   endtry
 enddef
 
