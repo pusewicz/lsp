@@ -103,6 +103,8 @@ export var lspOptions: dict<any> = {
   # Don't print message when a configured language server is missing.
   ignoreMissingServer: false,
 
+  # TODO-UPDATE-COMMENT: also the quickfix window after ":LspDiag workspace"
+  # ---
   # Focus on the location list window after ":LspDiag show"
   keepFocusInDiags: true,
 

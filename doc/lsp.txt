@@ -2046,7 +2046,8 @@ ignoreMissingServer	|Boolean| option.  Do not print a missing language
 
 						*lsp-opt-keepFocusInDiags*
 keepFocusInDiags     	|Boolean| option.  Focus on the location list window
-			after ":LspDiag show".
+			after ":LspDiag show", and on the quickfix window
+			after ":LspDiag workspace".
 			By default this is set to true.
 
 					*lsp-opt-keepFocusInReferences*
