@@ -12999,6 +12999,75 @@ def g:Test_Completion_AcceptWaitsForResolve()
   endtry
 enddef
 
+def g:Test_OmniComplete_HoldsDocChangesUntilReply()
+  g:LspOptionsSet({incrementalSync: true})
+  silent! edit XOmniCompleteHoldsChanges.c
+  setline(1, ['struct s v = {', '        field: 0,', '};'])
+  var bnr = bufnr()
+  var item = {
+    label: 'field_name',
+    kind: 5,
+    textEdit: {
+      newText: 'field_name',
+      insert: {start: {line: 1, character: 8}, end: {line: 1, character: 10}},
+      replace: {start: {line: 1, character: 8}, end: {line: 1, character: 13}}
+    }
+  }
+  var notifications: list<dict<any>> = []
+  var lspserver = MakeListenedLspServer(notifications)
+  lspserver->extend({
+    running: true,
+    ready: true,
+    isCompletionProvider: true,
+    isCompletionResolveProvider: false,
+    completionLazyDoc: false,
+    completionTriggerChars: [],
+    featureEnabled: (_) => true,
+  })
+  var syncId = lspserver.nextSyncRpcId
+  lspserver.job = StartSteppedStubServerJob([
+    [],
+    [{jsonrpc: '2.0', id: syncId, result: {isIncomplete: false, items: [item]}}]])
+  buf.BufLspServerSet(bnr, lspserver)
+  lspserver.textdocDidOpen(bnr, 'c')
+  lsp.AddBufListener(lspserver, bnr)
+  var doc = DocumentText(bnr)
+  notifications->filter((_, _) => false)
+  var flushes = 0
+  var sentWhilePending: list<string> = []
+  var WaitForReply: func = lspserver.waitForReply
+  lspserver.waitForReply = (id: number, timeout: number): bool => {
+    listener_flush(bnr)
+    flushes += 1
+    sentWhilePending->extend(notifications->mapnew((_, n) => n.method))
+    return WaitForReply(id, timeout)
+  }
+  try
+    completion.OmniComplSet('c', true)
+    completion.BufferInit(lspserver, bnr, 'c')
+    setlocal completeopt=menuone,noinsert,noselect
+    cursor(2, 10)
+    g:FeedOmniCompleteKeys("a\<C-X>\<C-O>\<C-N>\<C-Y>\<Esc>")
+    assert_true(flushes > 0, 'the listener was not flushed during the wait')
+    assert_equal([], sentWhilePending)
+    assert_equal('        field_name: 0,', getline(2))
+    assert_equal({}, lspserver.heldDocChanges)
+    lspserver.flushDocChanges(bnr)
+    assert_true(notifications->len() > 0, 'the held changes were not sent')
+    for notification in notifications
+      assert_equal('textDocument/didChange', notification.method)
+      doc = ApplyContentChanges(doc, notification.params.contentChanges)
+    endfor
+    assert_equal(DocumentText(bnr), doc)
+  finally
+    completion.OmniComplSet('c', false)
+    lsp.RemoveBufListener(bnr)
+    StopAsyncReplyingLspServer(lspserver, bnr)
+    :%bw!
+    g:LspOptionsSet({incrementalSync: true})
+  endtry
+enddef
+
 def FileOpsRpc(messages: list<dict<any>>, replies: dict<dict<any>>,
 	       method: string, params: any, opts: dict<any> = {}): dict<any>
   messages->add({method: method, params: params->deepcopy(),
