@@ -642,7 +642,8 @@ when no keys are pending.
 			in a popup window.
 :LspIncomingCalls	Display the incoming call hierarchy for the current
 			symbol in a window.
-:LspInlayHints		Enable or disable or toggle inlay hints.
+:LspInlayHints		Enable, disable or toggle inlay hints, show the
+			information of an inlay hint or apply its text edits.
 :LspOutgoingCalls	Display the outgoing call hierarchy for the current
 			symbol in a window.
 :LspOutline		Show the list of symbols defined in the current file
@@ -1114,10 +1115,10 @@ the symbol under the cursor.
 			|lsp-opt-popup-Hover| and the global popup options.
 
 							*:LspInlayHints*
-:LspInlayHints {enable | disable | toggle}
-			Enable, disable, or toggle inlay hints globally.
-			Supports the "enable", "disable", and "toggle"
-			arguments.  The argument is required.
+:LspInlayHints {enable | disable | toggle | info | apply}
+			Enable, disable, or toggle inlay hints globally, or
+			act on the inlay hint nearest to the cursor on the
+			cursor line.  The argument is required.
 			When "enable" is specified, sets
 			|lsp-opt-showInlayHints| to true and activates inlay
 			hints for all open buffers whose attached language
@@ -1127,6 +1128,23 @@ the symbol under the cursor.
 			removes all inlay hints from every open buffer.
 			When "toggle" is specified, enables or disables inlay
 			hints depending on the current state.
+			When "info" is specified, shows the tooltip of the
+			inlay hint nearest to the cursor on the cursor line,
+			and the tooltips of the parts of its label, in the
+			same popup or preview window as |:LspHover| (see
+			|lsp-opt-hoverInPreview|); Markdown text is rendered.
+			When "apply" is specified, applies the text edits of
+			that inlay hint to the buffer as one undo step, e.g.
+			to insert an inferred type into the file.  The text
+			properties of the changed lines stay.  When the buffer
+			changed after the inlay hints were received, nothing
+			is applied: the inlay hints are requested again, and
+			the command can be repeated once they are updated.
+			Both send an "inlayHint/resolve" request first when
+			the language server supports it and the inlay hint
+			does not have the tooltips or the text edits yet.  A
+			message is shown when the cursor line has no inlay
+			hint, or the inlay hint has nothing to show or apply.
 
 							*:LspShowSignature*
 :LspShowSignature	Displays the signature of the symbol (e.g. a function
@@ -2389,7 +2407,8 @@ showInlayHints		|Boolean| option.  Show inlay hints from the language
 			when a window shows them.
 			Use |:LspInlayHints| to enable, disable, or toggle
 			hints for the current session without permanently
-			changing this option.
+			changing this option, to show the tooltip of an inlay
+			hint and to apply its text edits.
 
 						*lsp-opt-showSignature*
 showSignature		|Boolean| option.  In insert mode, automatically show
@@ -4307,8 +4326,10 @@ implementation			Used by the |:LspGotoImpl| and the
 						*lsp-features-inlayHint*
 inlayHint			Used to show inlay hints: inferred type
 				annotations and parameter name labels displayed
-				as virtual text in the buffer.  Controlled by
-				|lsp-opt-showInlayHints| and |:LspInlayHints|.
+				as virtual text in the buffer, to show their
+				tooltips and to apply their text edits.
+				Controlled by |lsp-opt-showInlayHints| and
+				|:LspInlayHints|.
 					*lsp-features-inlineCompletion*
 inlineCompletion		Used to show inline completions as ghost text
 				in insert mode.  See |lsp-inline-completion|.

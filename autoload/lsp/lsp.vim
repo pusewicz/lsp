@@ -1392,14 +1392,20 @@ export def Hover(cmdmods: string)
   lspserver.hover(cmdmods)
 enddef
 
+# TODO-UPDATE-COMMENT: also shows the information of an inlay hint and applies its text edits
+# ---
 # Enable or disable inlay hints
-export def InlayHints(ctl: string)
+export def InlayHints(ctl: string, cmdmods: string = '')
   if ctl == 'enable'
     inlayhints.InlayHintsEnable()
   elseif ctl == 'disable'
     inlayhints.InlayHintsDisable()
   elseif ctl == 'toggle'
     inlayhints.InlayHintsToggle()
+  elseif ctl == 'info'
+    inlayhints.InlayHintInfo(cmdmods)
+  elseif ctl == 'apply'
+    inlayhints.InlayHintApply()
   else
     util.ErrMsg($'LspInlayHints - Unsupported argument "{ctl}"')
   endif
@@ -1407,7 +1413,7 @@ enddef
 
 # Command-line completion for the ":LspInlayHints" command
 export def LspInlayHintsComplete(arglead: string, cmdline: string, cursorPos: number): list<string>
-  var l = ['enable', 'disable', 'toggle']
+  var l = ['enable', 'disable', 'toggle', 'info', 'apply']
   return filter(l, (_, val) => val =~ $'^{arglead}')
 enddef
 

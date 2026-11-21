@@ -2652,6 +2652,7 @@ def InlayHintsShow(lspserver: dict<any>, bnr: number, firstLine: number = 1,
 
   lspserver.encodeRange(bnr, param.range)
 
+  var changedtick: number = bnr->getbufvar('changedtick')
   var msg: string
   if lspserver.isClangdInlayHintsProvider
     # clangd-style inlay hints
@@ -2661,8 +2662,19 @@ def InlayHintsShow(lspserver: dict<any>, bnr: number, firstLine: number = 1,
   endif
   AsyncRpcSupersede(lspserver, $'textDocument/inlayHint {bnr}', msg, param,
 		    (_: dict<any>, reply, error) => {
-    inlayhints.InlayHintsReply(lspserver, reply, error, bnr)
+    inlayhints.InlayHintsReply(lspserver, reply, error, bnr, changedtick)
   })
+enddef
+
+def InlayHintResolve(lspserver: dict<any>, hint: dict<any>, Cbfunc: func)
+  AsyncRpcInContext(lspserver, util.RequestContextGet('cursor'),
+		    'inlayHint/resolve', 'inlayHint/resolve', hint,
+		    (_: dict<any>, reply: any, error: dict<any>) => {
+    if !error->empty()
+      return
+    endif
+    Cbfunc(reply->type() == v:t_dict ? reply : {})
+  }, {beforePendingKeys: true})
 enddef
 
 # Recursively decode the parent/children type hierarchy items.
@@ -4016,6 +4028,7 @@ export def NewLspServer(serverParams: dict<any>): dict<any>
     outgoingCalls: function(OutgoingCalls, [lspserver]),
     getOutgoingCalls: function(GetOutgoingCalls, [lspserver]),
     inlayHintsShow: function(InlayHintsShow, [lspserver]),
+    inlayHintResolve: function(InlayHintResolve, [lspserver]),
     typeHierarchy: function(TypeHierarchy, [lspserver]),
     prepareRename: function(PrepareRename, [lspserver]),
     renameSymbol: function(RenameSymbol, [lspserver]),

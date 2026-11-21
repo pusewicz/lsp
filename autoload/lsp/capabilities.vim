@@ -452,6 +452,9 @@ export def ProcessServerCaps(lspserver: dict<any>, caps: dict<any>)
   else
     lspserver.isInlayHintProvider = false
   endif
+  lspserver.isInlayHintResolveProvider = lspserver.isInlayHintProvider
+    && lspserver.caps.inlayHintProvider->type() == v:t_dict
+    && lspserver.caps.inlayHintProvider->get('resolveProvider', false)
 
   # diagnosticProvider
   if lspserver.caps->has_key('diagnosticProvider')
@@ -616,7 +619,10 @@ export def GetClientCaps(watchFiles: bool = true): dict<any>
 	linkSupport: true
       },
       inlayHint: {
-	dynamicRegistration: false
+	dynamicRegistration: false,
+	resolveSupport: {
+	  properties: ['tooltip', 'textEdits', 'label.tooltip']
+	}
       },
       inlineCompletion: {
 	dynamicRegistration: false

@@ -2141,11 +2141,14 @@ def g:Test_InlayHintsReply_RemovesHintsWhenThereAreNone()
   var hint = {position: {line: 0, character: 10}, label: 'a:', kind: 2}
   var Hints = () => prop_list(1, {types: ['LspInlayHintsParam']})->len()
 
-  inlayhints.InlayHintsReply(lspserver, [hint], {}, bufnr())
+  inlayhints.InlayHintsReply(lspserver, [hint], {}, bufnr(),
+			     b:changedtick)
   assert_equal(1, Hints())
-  inlayhints.InlayHintsReply(lspserver, null, {}, bufnr())
+  inlayhints.InlayHintsReply(lspserver, null, {}, bufnr(),
+			     b:changedtick)
   assert_equal(1, Hints())
-  inlayhints.InlayHintsReply(lspserver, [], {}, bufnr())
+  inlayhints.InlayHintsReply(lspserver, [], {}, bufnr(),
+			     b:changedtick)
   assert_equal(0, Hints())
   :%bw!
 enddef
@@ -2163,14 +2166,16 @@ def g:Test_InlayHintsReply_KeepsHintsInInsertMode()
   var hint = {position: {line: 0, character: 10}, label: 'a:', kind: 2}
   var Hints = () => prop_list(1, {types: ['LspInlayHintsParam']})->len()
 
-  inlayhints.InlayHintsReply(lspserver, [hint], {}, bnr)
+  inlayhints.InlayHintsReply(lspserver, [hint], {}, bnr,
+			     b:changedtick)
   assert_equal(1, Hints())
   setbufvar(bnr, 'LspInlayHintsNeedsUpdate', false)
 
   var modeInReply = ''
   timer_start(10, (_) => {
     modeInReply = mode()
-    inlayhints.InlayHintsReply(lspserver, [], {}, bnr)
+    inlayhints.InlayHintsReply(lspserver, [], {}, bnr,
+			     b:changedtick)
     feedkeys("\<Esc>", 't')
   })
   feedkeys('i', 'xt!')
@@ -2179,6 +2184,209 @@ def g:Test_InlayHintsReply_KeepsHintsInInsertMode()
   assert_equal(1, Hints())
   assert_true(bnr->getbufvar('LspInlayHintsNeedsUpdate', false))
   :%bw!
+enddef
+
+def MakeInlayHintResolveServer(resolved: dict<any>,
+			       requests: list<dict<any>>): dict<any>
+  if prop_type_get('LspInlayHintsType')->empty()
+    inlayhints.InitOnce()
+  endif
+  var lspserver = MakeTestLspServer([])
+  lspserver.running = true
+  lspserver.ready = true
+  lspserver.isInlayHintProvider = true
+  lspserver.isInlayHintResolveProvider = true
+  lspserver.inlayHintsShow = (bnr: number, ..._) => {
+    requests->add({method: 'textDocument/inlayHint', params: bnr})
+  }
+  lspserver.rpc_a = (method: string, params: any, Cb: func, _ = {}) => {
+    requests->add({method: method, params: params->deepcopy()})
+    Cb(lspserver, params->deepcopy()->extend(resolved->deepcopy()), {})
+    return requests->len()
+  }
+  setlocal filetype=text
+  buf.BufLspServerSet(bufnr(), lspserver)
+  return lspserver
+enddef
+
+def InlayHintPopupLines(): list<string>
+  var ids = popup_list()
+  assert_equal(1, ids->len())
+  return ids[0]->winbufnr()->getbufline(1, '$')
+enddef
+
+def g:Test_InlayHintInfo_ResolvesOnceAndShowsTooltips()
+  silent! edit XInlayHintInfo.txt
+  setline(1, ['let x = f(1);', 'let y = 2;'])
+  var requests: list<dict<any>> = []
+  var lspserver = MakeInlayHintResolveServer({
+    tooltip: {kind: 'markdown', value: 'The type of x'},
+    label: [{value: ': '}, {value: 'i32', tooltip: 'A 32-bit integer'}]
+  }, requests)
+  var hint = {position: {line: 0, character: 5}, kind: 1, data: 7,
+	      label: [{value: ': '}, {value: 'i32'}]}
+  try
+    inlayhints.InlayHintsReply(lspserver, [hint], {}, bufnr(), b:changedtick)
+
+    cursor(2, 1)
+    assert_equal('Warn: No inlay hint on the current line',
+		 execute('LspInlayHints info')->trim())
+    assert_equal([], requests)
+
+    cursor(1, 1)
+    :LspInlayHints info
+    assert_equal([{method: 'inlayHint/resolve', params: hint}], requests)
+    assert_equal(['The type of x', '- - -', 'A 32-bit integer'],
+		 InlayHintPopupLines())
+    assert_equal('lspgfm', popup_list()[0]->winbufnr()->getbufvar('&filetype'))
+    popup_clear()
+
+    :LspInlayHints info
+    assert_equal(1, requests->len())
+    assert_equal(1, popup_list()->len())
+  finally
+    popup_clear()
+    buf.BufLspServerRemove(bufnr(), lspserver)
+    :%bw!
+  endtry
+enddef
+
+def g:Test_InlayHintInfo_PlainTextTooltipWithoutResolve()
+  silent! edit XInlayHintInfoPlain.txt
+  setline(1, ['f(1, 2);'])
+  var requests: list<dict<any>> = []
+  var lspserver = MakeInlayHintResolveServer({}, requests)
+  var hints = [
+    {position: {line: 0, character: 2}, kind: 2, label: 'a:',
+     tooltip: "first\nparameter"},
+    {position: {line: 0, character: 5}, kind: 2, label: 'b:'}
+  ]
+  try
+    inlayhints.InlayHintsReply(lspserver, hints, {}, bufnr(), b:changedtick)
+
+    cursor(1, 1)
+    :LspInlayHints info
+    assert_equal([], requests)
+    assert_equal(['first', 'parameter'], InlayHintPopupLines())
+    assert_equal('text', popup_list()[0]->winbufnr()->getbufvar('&filetype'))
+    popup_clear()
+
+    cursor(1, 8)
+    assert_equal('Warn: The inlay hint has no information to show',
+		 execute('LspInlayHints info')->trim())
+    assert_equal([{method: 'inlayHint/resolve', params: hints[1]}], requests)
+    assert_equal([], popup_list())
+
+    lspserver.isInlayHintResolveProvider = false
+    execute "normal! 0iab \<Esc>"
+    cursor(1, 6)
+    :LspInlayHints info
+    assert_equal(1, requests->len())
+    assert_equal(['first', 'parameter'], InlayHintPopupLines())
+  finally
+    popup_clear()
+    buf.BufLspServerRemove(bufnr(), lspserver)
+    :%bw!
+  endtry
+enddef
+
+def g:Test_InlayHintApply_ResolvesAndAppliesTextEditsAsOneUndoStep()
+  silent! edit XInlayHintApply.txt
+  setline(1, ['let x = f(1);', 'let y = 2;'])
+  var requests: list<dict<any>> = []
+  var lspserver = MakeInlayHintResolveServer({textEdits: [
+    {range: {start: {line: 0, character: 5}, end: {line: 0, character: 5}},
+     newText: ': i32'},
+    {range: {start: {line: 0, character: 0}, end: {line: 0, character: 3}},
+     newText: 'const'}
+  ]}, requests)
+  var hints = [
+    {position: {line: 0, character: 5}, kind: 1, label: ': i32'},
+    {position: {line: 0, character: 10}, kind: 2, label: 'a:'}
+  ]
+  var Hints = () => prop_list(1)->map((_, p) => p.text)
+  try
+    inlayhints.InlayHintsReply(lspserver, hints, {}, bufnr(), b:changedtick)
+    setlocal undolevels=100
+    assert_equal([': i32', 'a:'], Hints())
+
+    cursor(1, 7)
+    :LspInlayHints apply
+    assert_equal(['const x: i32 = f(1);', 'let y = 2;'], getline(1, '$'))
+    assert_equal(['a:'], Hints())
+    assert_equal([{method: 'inlayHint/resolve', params: hints[0]},
+		  {method: 'textDocument/inlayHint', params: bufnr()}],
+		 requests)
+
+    assert_equal([1, 14], [line('.'), col('.')])
+
+    silent undo
+    assert_equal(['let x = f(1);', 'let y = 2;'], getline(1, '$'))
+  finally
+    buf.BufLspServerRemove(bufnr(), lspserver)
+    :%bw!
+  endtry
+enddef
+
+def g:Test_InlayHintApply_NothingToApplyOrOutOfDate()
+  silent! edit XInlayHintApplyNone.txt
+  setline(1, ['let x = f(1);'])
+  var requests: list<dict<any>> = []
+  var lspserver = MakeInlayHintResolveServer({}, requests)
+  var hint = {position: {line: 0, character: 5}, kind: 1, label: ': i32',
+	      textEdits: [{range: {start: {line: 0, character: 5},
+				   end: {line: 0, character: 5}},
+			   newText: ': i32'}]}
+  var paramHint = {position: {line: 0, character: 10}, kind: 2, label: 'a:'}
+  try
+    inlayhints.InlayHintsReply(lspserver, [hint, paramHint], {}, bufnr(),
+			       b:changedtick)
+
+    cursor(1, 13)
+    assert_equal('Warn: The inlay hint has no text edits to apply',
+		 execute('LspInlayHints apply')->trim())
+    assert_equal([{method: 'inlayHint/resolve', params: paramHint}], requests)
+    assert_equal(['let x = f(1);'], getline(1, '$'))
+
+    cursor(1, 1)
+    setlocal nomodifiable
+    assert_match('the buffer is not modifiable',
+		 execute('LspInlayHints apply'))
+    setlocal modifiable
+    assert_equal(['let x = f(1);'], getline(1, '$'))
+
+    execute "normal! 0iab \<Esc>"
+    cursor(1, 1)
+    assert_match('The inlay hint is out of date',
+		 execute('LspInlayHints apply'))
+    assert_equal(['ab let x = f(1);'], getline(1, '$'))
+    assert_equal({method: 'textDocument/inlayHint', params: bufnr()},
+		 requests[-1])
+
+    inlayhints.InlayHintsReply(lspserver, [hint, paramHint], {}, bufnr(),
+			       b:changedtick - 1)
+    assert_match('The inlay hint is out of date',
+		 execute('LspInlayHints apply'))
+    assert_equal(['ab let x = f(1);'], getline(1, '$'))
+  finally
+    buf.BufLspServerRemove(bufnr(), lspserver)
+    :%bw!
+  endtry
+enddef
+
+def g:Test_InlayHint_ResolveSupportCapability()
+  assert_equal({dynamicRegistration: false, resolveSupport: {
+    properties: ['tooltip', 'textEdits', 'label.tooltip']}},
+    capabilities.GetClientCaps().textDocument.inlayHint)
+
+  var lspserver = MakeTestLspServer([])
+  for [provider, expected] in [[true, false], [{}, false],
+			       [{resolveProvider: true}, true]]
+    lspserver.caps = {inlayHintProvider: provider}
+    capabilities.ProcessServerCaps(lspserver, lspserver.caps)
+    assert_true(lspserver.isInlayHintProvider)
+    assert_equal(expected, lspserver.isInlayHintResolveProvider)
+  endfor
 enddef
 
 # Test that the inlay hints are requested only for the lines shown in a window
