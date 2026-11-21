@@ -1317,6 +1317,36 @@ export def ShowDiagnostics(): void
   diag.ShowAllDiags()
 enddef
 
+def WorkspaceDiagServers(): list<dict<any>>
+  var lspservers: list<dict<any>> = []
+  for ftypeServers in ftypeServerMap->values()
+    for lspserver in ftypeServers
+      if lspserver.running && lspserver.ready
+	  && lspserver.isWorkspaceDiagnosticsProvider
+	  && lspserver.featureEnabled('diagnostics')
+	  && lspservers->indexof((_, s: dict<any>) => s.id == lspserver.id) == -1
+	lspservers->add(lspserver)
+      endif
+    endfor
+  endfor
+  return lspservers
+enddef
+
+export def ShowWorkspaceDiagnostics(
+    lspservers: list<dict<any>> = WorkspaceDiagServers()): void
+  if lspservers->empty()
+    util.ErrMsg('No running language server supports workspace diagnostics')
+    return
+  endif
+
+  for lspserver in lspservers
+    if lspserver.workspaceDiagToken->empty()
+      lspserver.pullWorkspaceDiagnostics()
+    endif
+  endfor
+  diag.ShowWorkspaceDiags(lspservers)
+enddef
+
 # Show the diagnostic message for the current line
 export def LspShowCurrentDiag(atPos: bool)
   diag.ShowCurrentDiag(atPos)
@@ -1986,7 +2016,7 @@ export def LspDiagComplete(arglead: string, cmdline: string, cursorPos: number):
   var wordBegin = -1
   var wordEnd = -1
   var l = ['first', 'current', 'here', 'highlight', 'last', 'next', 'nextWrap',
-           'prev', 'prevWrap', 'show']
+           'prev', 'prevWrap', 'show', 'workspace']
 
   # Skip the command name
   var i = cmdline->stridx(' ', 0)
@@ -2044,6 +2074,8 @@ export def LspDiagCmd(args: string, cmdCount: number, force: bool)
     diag.LspDiagsJump('prevWrap', cmdCount)
   elseif args == 'show'
     ShowDiagnostics()
+  elseif args == 'workspace'
+    ShowWorkspaceDiagnostics()
   else
     util.ErrMsg($':LspDiag - Unsupported argument "{args}"')
   endif

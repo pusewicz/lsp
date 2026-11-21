@@ -299,6 +299,8 @@ export var lspOptions: dict<any> = {
   # in Vim and by other programs.  Needs the fswatch program.
   watchFiles: true,
 
+  workspaceDiagnostics: false,
+
   # list of directories that should never be used as workspace root
   workspaceIgnoredPaths: ['/', $"{$HOME}", $"{$HOME}/.cargo", $"{$HOME}/.cargo/**", $"{$HOME}/.rustup", $"{$HOME}/.rustup/**", $"{$HOME}/pkg/mod", $"{$HOME}/pkg/mod/**"]
 }

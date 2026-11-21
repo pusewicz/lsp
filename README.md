@@ -31,6 +31,7 @@ The following language server protocol (LSP) features are supported:
 * Peek definition, declaration, implementation, type definition and references
 * Display warning and error diagnostics, with their related information and
   unnecessary/deprecated code tags
+* Workspace diagnostics: the diagnostics of all the files of a project in a quickfix list
 * Find all symbol references
 * Document and Workspace symbol search
 * Display code outline
@@ -185,6 +186,7 @@ call LspOptionsSet(#{
         \   completionLabelMaxWidth: 0,
         \   documentationFormat: ['markdown', 'plaintext'],
         \   watchFiles: v:true,
+        \   workspaceDiagnostics: v:false,
 	\ })
 ```
 
@@ -224,6 +226,7 @@ Command|Description
 `:LspDiag prev`|Jump to the previous diagnostic message before the current position.
 `:LspDiag prevWrap`|Jump to the previous diagnostic message before the current position, wrapping to the last message when the first message is reached.
 `:LspDiag show`|Display the diagnostics messages from the language server for the current buffer in the location list of the current window.
+`:LspDiag workspace`|Display the diagnostics messages from the language servers for the whole workspace, also for the files that are not open, in a quickfix list.
 `:LspDocumentLink`|Display the links (e.g. include files and URLs) in the current file in a new location list.
 `:LspDocumentLinkOpen`|Open the target of the link under cursor: a file in Vim, any other URI with the system handler.
 `:LspDocumentSymbol`|Display the symbols in the current file in a popup menu and jump to the selected symbol.

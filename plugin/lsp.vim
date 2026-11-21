@@ -180,6 +180,7 @@ if has('gui_running')
   # Diagnostics
   anoremenu <silent> L&sp.Diagnostics.Current :LspDiag current<CR>
   anoremenu <silent> L&sp.Diagnostics.Show\ All :LspDiag show<CR>
+  anoremenu <silent> L&sp.Diagnostics.Workspace :LspDiag workspace<CR>
   anoremenu <silent> L&sp.Diagnostics.First :LspDiag first<CR>
   anoremenu <silent> L&sp.Diagnostics.Last :LspDiag last<CR>
   anoremenu <silent> L&sp.Diagnostics.Next :LspDiag next<CR>

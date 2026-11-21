@@ -12224,6 +12224,422 @@ def g:Test_Completion_AcceptWaitsForResolve()
   endtry
 enddef
 
+def CaptureRequest(requests: list<dict<any>>, method: string, params: any,
+		   Cb: func, opts: dict<any> = {}): number
+  requests->add({method: method, params: params->deepcopy(), Reply: Cb})
+  return requests->len()
+enddef
+
+def MakeWorkspaceDiagServer(requests: list<dict<any>>,
+			    notifications: list<dict<any>> = []): dict<any>
+  var lspserver = MakeDiagServer('workspace')
+  lspserver.running = true
+  lspserver.ready = true
+  lspserver.caps = {
+    diagnosticProvider: {workspaceDiagnostics: true, identifier: 'stub'}
+  }
+  capabilities.ProcessServerCaps(lspserver, lspserver.caps)
+  lspserver.sendNotification = function(CaptureNotification, [notifications])
+  lspserver.sendResponse = (_, _, _) => {
+  }
+  lspserver.pullDiagnostics = (_) => {
+  }
+  lspserver.rpc_a = function(CaptureRequest, [requests])
+  return lspserver
+enddef
+
+def StopWorkspaceDiagServer(lspserver: dict<any>)
+  if lspserver.workspaceDiagTimer != -1
+    timer_stop(lspserver.workspaceDiagTimer)
+    lspserver.workspaceDiagTimer = -1
+  endif
+  diag.WorkspaceDiagsClear(lspserver)
+  :cclose
+  setqflist([], 'f')
+enddef
+
+def WorkspaceDiagRequests(requests: list<dict<any>>): list<dict<any>>
+  return requests->copy()
+    ->filter((_, request) => request.method == 'workspace/diagnostic')
+enddef
+
+def ReplyToRequest(lspserver: dict<any>, request: dict<any>, result: any,
+		   error: dict<any> = {})
+  var Reply: func = request.Reply
+  Reply(lspserver, result, error)
+enddef
+
+def WorkspaceDiagFullReport(uri: string, resultId: string,
+			    diags: list<dict<any>>): dict<any>
+  var report: dict<any> = {kind: 'full', uri: uri, version: v:null,
+			   items: diags}
+  if !resultId->empty()
+    report.resultId = resultId
+  endif
+  return report
+enddef
+
+def SendWorkspaceDiagPartial(lspserver: dict<any>, token: string, uri: string,
+			     resultId: string)
+  var report = WorkspaceDiagFullReport(uri, resultId,
+				       [MakeLineDiag(0, resultId)])
+  lspserver.processNotif({
+    jsonrpc: '2.0',
+    method: '$/progress',
+    params: {token: token, value: {items: [report]}}
+  })
+enddef
+
+def SortedResultIds(resultIds: list<dict<any>>): list<dict<any>>
+  return resultIds->copy()->sort((a, b) => a.uri ># b.uri ? 1 : -1)
+enddef
+
+def QfTexts(): list<string>
+  return getqflist()->mapnew((_, item) => item.text)
+enddef
+
+def g:Test_WorkspaceDiagnostics_AsksOnlyServersOfferingThem()
+  var requests: list<dict<any>> = []
+  var notifications: list<dict<any>> = []
+  var lspserver = MakeWorkspaceDiagServer(requests, notifications)
+  try
+    var clientCaps = capabilities.GetClientCaps()
+    assert_true(clientCaps.textDocument->has_key('diagnostic'))
+    assert_true(clientCaps.workspace.diagnostics.refreshSupport)
+
+    for provider in [true, {workspaceDiagnostics: false}, {}]
+      lspserver.caps = {diagnosticProvider: provider}
+      capabilities.ProcessServerCaps(lspserver, lspserver.caps)
+      assert_true(lspserver.isDiagnosticsProvider)
+      lspserver.pullWorkspaceDiagnostics()
+    endfor
+    lspserver.caps = {}
+    capabilities.ProcessServerCaps(lspserver, lspserver.caps)
+    lspserver.pullWorkspaceDiagnostics()
+
+    lspserver.caps = {
+      diagnosticProvider: {workspaceDiagnostics: true, identifier: 'stub'}
+    }
+    capabilities.ProcessServerCaps(lspserver, lspserver.caps)
+    lspserver.featureEnabled = (feature: string): bool =>
+      feature != 'diagnostics'
+    lspserver.pullWorkspaceDiagnostics()
+    lspserver.featureEnabled = (_) => true
+    lspserver.ready = false
+    lspserver.pullWorkspaceDiagnostics()
+    assert_equal([], requests)
+    assert_false(lspserver.workspaceDiagWanted)
+
+    lspserver.ready = true
+    lspserver.pullWorkspaceDiagnostics()
+    assert_equal(1, requests->len())
+    assert_equal('workspace/diagnostic', requests[0].method)
+    assert_equal({
+      previousResultIds: [],
+      partialResultToken: 'lsp-workspace-diagnostic-1',
+      identifier: 'stub'
+    }, requests[0].params)
+    assert_true(lspserver.workspaceDiagWanted)
+    assert_equal([], notifications)
+
+    lspserver.caps = {diagnosticProvider: {workspaceDiagnostics: true}}
+    lspserver.pullWorkspaceDiagnostics()
+    assert_equal({
+      previousResultIds: [],
+      partialResultToken: 'lsp-workspace-diagnostic-2'
+    }, requests[1].params)
+    assert_equal([{method: '$/cancelRequest', params: {id: 1}}],
+		 notifications)
+
+    var uri = util.LspFileToUri('XWorkspaceDiagSuperseded.txt')
+    ReplyToRequest(lspserver, requests[0], {items: [
+      WorkspaceDiagFullReport(uri, 'old', [])]})
+    assert_equal([], diag.WorkspaceDiagResultIds(lspserver))
+    assert_equal('lsp-workspace-diagnostic-2', lspserver.workspaceDiagToken)
+  finally
+    StopWorkspaceDiagServer(lspserver)
+  endtry
+enddef
+
+def g:Test_WorkspaceDiagnostics_ListsFilesWithoutBuffer()
+  var dir = 'XWorkspaceDiagFiles'
+  mkdir(dir)
+  writefile(['first', 'ä😀x = 1'], $'{dir}/a.txt')
+  writefile(['one'], $'{dir}/b.txt')
+  var fileA = $'{dir}/a.txt'->fnamemodify(':p')
+  var fileB = $'{dir}/b.txt'->fnamemodify(':p')
+  var fileC = $'{dir}/missing.txt'->fnamemodify(':p')
+  var uriA = util.LspFileToUri(fileA)
+  var uriB = util.LspFileToUri(fileB)
+  var uriC = util.LspFileToUri(fileC)
+  var requests: list<dict<any>> = []
+  var lspserver = MakeWorkspaceDiagServer(requests)
+  lspserver.posEncoding = 16
+  lspserver.needOffsetEncoding = true
+  var diagA: dict<any> = {
+    range: {
+      start: {line: 1, character: 3},
+      end: {line: 1, character: 4}
+    },
+    severity: 2,
+    message: 'unused x'
+  }
+  var QfItems = () => getqflist()->mapnew((_, item) => [
+    item.bufnr->bufname()->fnamemodify(':p'), item.lnum, item.col,
+    item.end_lnum, item.end_col, item.type, item.text])
+  setqflist([], 'f')
+  try
+    lspserver.pullWorkspaceDiagnostics()
+    ReplyToRequest(lspserver, requests[0], {items: [
+      WorkspaceDiagFullReport(uriA, 'a1', [diagA]),
+      WorkspaceDiagFullReport(uriB, 'b1', []),
+      WorkspaceDiagFullReport(uriC, '', [MakeLineDiag(4, 'gone')])]})
+    assert_equal('', lspserver.workspaceDiagToken)
+    assert_notequal(-1, lspserver.workspaceDiagTimer)
+    assert_false(fileA->bufexists())
+
+    diag.ShowWorkspaceDiags([lspserver])
+    assert_equal('Language Server Workspace Diagnostics',
+		 getqflist({title: 0}).title)
+    assert_equal('quickfix', &buftype)
+    assert_equal([
+      [fileA, 2, 7, 2, 8, 'W', 'unused x'],
+      [fileC, 5, 1, 5, 2, 'E', 'gone']], QfItems())
+    assert_false(fileA->bufloaded())
+
+    lspserver.processRequest({jsonrpc: '2.0', id: 1,
+			      method: 'workspace/diagnostic/refresh'})
+    assert_equal(2, requests->len())
+    assert_equal(-1, lspserver.workspaceDiagTimer)
+    assert_equal('lsp-workspace-diagnostic-2',
+		 requests[1].params.partialResultToken)
+    assert_equal([{uri: uriA, value: 'a1'}, {uri: uriB, value: 'b1'}],
+		 SortedResultIds(requests[1].params.previousResultIds))
+
+    ReplyToRequest(lspserver, requests[1], {items: [
+      {kind: 'unchanged', uri: uriA, version: v:null, resultId: 'a2'},
+      WorkspaceDiagFullReport(uriB, '', [MakeLineDiag(0, 'new')]),
+      {kind: 'other', uri: uriC},
+      'invalid']})
+    assert_equal([{uri: uriA, value: 'a2'}],
+		 diag.WorkspaceDiagResultIds(lspserver))
+    g:WaitForAssert(() => assert_equal([
+      [fileA, 2, 7, 2, 8, 'W', 'unused x'],
+      [fileB, 1, 1, 1, 2, 'E', 'new'],
+      [fileC, 5, 1, 5, 2, 'E', 'gone']], QfItems()))
+
+    diag.ShowWorkspaceDiags([lspserver])
+    assert_equal(1, getqflist({nr: '$'}).nr)
+    assert_equal(3, getqflist()->len())
+  finally
+    StopWorkspaceDiagServer(lspserver)
+    :%bw!
+    delete(dir, 'rf')
+  endtry
+enddef
+
+def g:Test_WorkspaceDiagnostics_PartialResults()
+  var requests: list<dict<any>> = []
+  var lspserver = MakeWorkspaceDiagServer(requests)
+  var uri = util.LspFileToUri('XWorkspaceDiagPartial.txt')
+  var progress = g:LspProgress->deepcopy()
+  var Progress = (token: string, resultId: string) =>
+    SendWorkspaceDiagPartial(lspserver, token, uri, resultId)
+  try
+    lspserver.pullWorkspaceDiagnostics()
+    Progress('lsp-workspace-diagnostic-1', 'part')
+    assert_equal([{uri: uri, value: 'part'}],
+		 diag.WorkspaceDiagResultIds(lspserver))
+    assert_equal('lsp-workspace-diagnostic-1', lspserver.workspaceDiagToken)
+    assert_equal(-1, lspserver.workspaceDiagTimer)
+    assert_false(lspserver.supportsWorkDoneProgress)
+    assert_equal(progress, g:LspProgress)
+
+    Progress('lsp-workspace-diagnostic-0', 'stale')
+    ReplyToRequest(lspserver, requests[0], {items: []})
+    Progress('lsp-workspace-diagnostic-1', 'late')
+    assert_equal([{uri: uri, value: 'part'}],
+		 diag.WorkspaceDiagResultIds(lspserver))
+    assert_false(lspserver.supportsWorkDoneProgress)
+  finally
+    StopWorkspaceDiagServer(lspserver)
+  endtry
+enddef
+
+def g:Test_WorkspaceDiagnostics_AsksAgain()
+  var requests: list<dict<any>> = []
+  var lspserver = MakeWorkspaceDiagServer(requests)
+  try
+    lspserver.pullWorkspaceDiagnostics()
+    ReplyToRequest(lspserver, requests[0], v:null)
+    assert_equal(1, requests->len())
+    assert_notequal(-1, lspserver.workspaceDiagTimer)
+    g:WaitForAssert(() => assert_equal(2, requests->len()))
+    assert_equal(-1, lspserver.workspaceDiagTimer)
+
+    for error in [
+	{code: -32802, message: 'server cancelled',
+	 data: {retriggerRequest: true}},
+	{code: -32801, message: 'content modified'}]
+      ReplyToRequest(lspserver, requests[-1], v:null, error)
+      assert_notequal(-1, lspserver.workspaceDiagTimer)
+      lspserver.pullWorkspaceDiagnostics()
+      assert_equal(-1, lspserver.workspaceDiagTimer)
+    endfor
+    assert_equal(4, requests->len())
+
+    var beforeMessages = execute('messages')
+    ReplyToRequest(lspserver, requests[-1], v:null, {code: -32802,
+      message: 'server cancelled', data: {retriggerRequest: false}})
+    assert_equal(-1, lspserver.workspaceDiagTimer)
+    assert_equal(beforeMessages, execute('messages'))
+
+    lspserver.pullWorkspaceDiagnostics()
+    ReplyToRequest(lspserver, requests[-1], v:null, {code: -32603,
+      message: 'failed'})
+    assert_equal(-1, lspserver.workspaceDiagTimer)
+    assert_equal(
+      'Error: request workspace/diagnostic failed (failed, error = InternalError)',
+      LastMessage())
+    assert_equal(5, requests->len())
+  finally
+    StopWorkspaceDiagServer(lspserver)
+  endtry
+enddef
+
+def g:Test_WorkspaceDiagnostics_OpenDocumentKeepsItsOwnDiags()
+  DiagInitOnce()
+  silent! edit XWorkspaceDiagOpen.txt
+  setline(1, ['one', 'two'])
+  var openBnr = bufnr()
+  silent! new XWorkspaceDiagLoaded.txt
+  setline(1, ['three'])
+  var loadedBnr = bufnr()
+  var openUri = util.LspBufnrToUri(openBnr)
+  var loadedUri = util.LspBufnrToUri(loadedBnr)
+  var requests: list<dict<any>> = []
+  var lspserver = MakeWorkspaceDiagServer(requests)
+  buf.BufLspServerSet(openBnr, lspserver)
+  lspserver.textdocDidOpen(openBnr, 'text')
+  var Messages = (bnr: number) => diag.GetDiagsForBuf(bnr)
+    ->mapnew((_, d) => d.message)
+  g:DiagsUpdatedCount = 0
+  augroup TestWorkspaceDiags
+    autocmd!
+    autocmd User LspDiagsUpdated g:DiagsUpdatedCount += 1
+  augroup END
+  setqflist([], 'f')
+  try
+    diag.DiagNotification(lspserver, openUri, [MakeLineDiag(0, 'own')],
+			  'pull')
+    assert_equal(1, g:DiagsUpdatedCount)
+
+    lspserver.pullWorkspaceDiagnostics()
+    ReplyToRequest(lspserver, requests[0], {items: [
+      WorkspaceDiagFullReport(openUri, 'o1', [MakeLineDiag(1, 'workspace')]),
+      WorkspaceDiagFullReport(loadedUri, 'l1', [MakeLineDiag(0, 'loaded')])]})
+    assert_equal(['own'], Messages(openBnr))
+    assert_equal(['loaded'], Messages(loadedBnr))
+    assert_equal(2, g:DiagsUpdatedCount)
+    assert_equal([{uri: loadedUri, value: 'l1'}, {uri: openUri, value: 'o1'}],
+		 SortedResultIds(diag.WorkspaceDiagResultIds(lspserver)))
+
+    diag.ShowWorkspaceDiags([lspserver])
+    assert_equal(['loaded', 'own'], QfTexts())
+
+    lspserver.textdocDidClose(openBnr)
+    diag.ShowWorkspaceDiags([lspserver])
+    assert_equal(['loaded', 'workspace'], QfTexts())
+  finally
+    augroup TestWorkspaceDiags
+      autocmd!
+    augroup END
+    augroup! TestWorkspaceDiags
+    unlet g:DiagsUpdatedCount
+    buf.BufLspServerRemove(openBnr, lspserver)
+    diag.DiagRemoveFile(openBnr)
+    diag.DiagRemoveFile(loadedBnr)
+    StopWorkspaceDiagServer(lspserver)
+    :%bw!
+  endtry
+enddef
+
+def g:Test_WorkspaceDiagnostics_AskedWhenServerIsReady()
+  silent! edit XWorkspaceDiagReady.txt
+  var requests: list<dict<any>> = []
+  var lspserver = MakeWorkspaceDiagServer(requests)
+  var initResult = {
+    capabilities: {diagnosticProvider: {workspaceDiagnostics: true}}
+  }
+  var SentMethods = () => requests->mapnew((_, request) => request.method)
+  try
+    lspserver.ready = false
+    lspserver.initServer(bufnr())
+    ReplyToRequest(lspserver, requests[0], initResult)
+    assert_true(lspserver.ready)
+    assert_equal(['initialize'], SentMethods())
+
+    g:LspOptionsSet({workspaceDiagnostics: true})
+    lspserver.ready = false
+    lspserver.initServer(bufnr())
+    ReplyToRequest(lspserver, requests[1], initResult)
+    assert_equal(['initialize', 'initialize', 'workspace/diagnostic'],
+		 SentMethods())
+
+    g:LspOptionsSet({workspaceDiagnostics: false})
+    lspserver.ready = false
+    lspserver.initServer(bufnr())
+    ReplyToRequest(lspserver, requests[3], initResult)
+    assert_equal('workspace/diagnostic', SentMethods()[-1])
+    assert_equal(5, requests->len())
+  finally
+    g:LspOptionsSet({workspaceDiagnostics: false})
+    StopWorkspaceDiagServer(lspserver)
+    :%bw!
+  endtry
+enddef
+
+def g:Test_WorkspaceDiagnostics_Command()
+  assert_equal(['workspace'], lsp.LspDiagComplete('w', 'LspDiag w', 9))
+  :LspDiag workspace
+  assert_equal(
+    'Error: No running language server supports workspace diagnostics',
+    LastMessage())
+
+  var requests: list<dict<any>> = []
+  var lspserver = MakeWorkspaceDiagServer(requests)
+  var uri = util.LspFileToUri('XWorkspaceDiagCommandOther.txt')
+  setqflist([], 'f')
+  try
+    lsp.ShowWorkspaceDiagnostics([lspserver])
+    assert_equal(1, requests->len())
+    assert_true(lspserver.workspaceDiagWanted)
+    assert_equal('quickfix', &buftype)
+    assert_equal([], QfTexts())
+
+    lsp.ShowWorkspaceDiagnostics([lspserver])
+    assert_equal(1, requests->len())
+
+    ReplyToRequest(lspserver, requests[0], {items: [
+      WorkspaceDiagFullReport(uri, '', [MakeLineDiag(0, 'command')])]})
+    g:WaitForAssert(() => assert_equal(['command'], QfTexts()))
+
+    lsp.ShowWorkspaceDiagnostics([lspserver])
+    assert_equal(2, requests->len())
+    assert_equal(1, getqflist({nr: '$'}).nr)
+
+    :cclose
+    g:LspOptionsSet({keepFocusInDiags: false})
+    lsp.ShowWorkspaceDiagnostics([lspserver])
+    assert_equal('', &buftype)
+    assert_equal(2, requests->len())
+  finally
+    g:LspOptionsSet({keepFocusInDiags: true})
+    StopWorkspaceDiagServer(lspserver)
+    :%bw!
+  endtry
+enddef
+
 # Only here to because the test runner needs it
 def g:StartLangServer(): bool
   return true
