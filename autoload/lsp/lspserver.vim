@@ -1337,6 +1337,9 @@ def TextdocDidClose(lspserver: dict<any>, bnr: number): void
   if lspserver.pendingDocChanges->has_key(bnr)
     lspserver.pendingDocChanges->remove(bnr)
   endif
+  if lspserver.heldDocChanges->has_key(bnr)
+    lspserver.heldDocChanges->remove(bnr)
+  endif
 enddef
 
 def RestartDiagnosticPullTimer(lspserver: dict<any>)
@@ -1492,6 +1495,11 @@ def TextdocDidChange(lspserver: dict<any>, bnr: number,
     return
   endif
 
+  if lspserver.heldDocChanges->has_key(bnr)
+    lspserver.pendingDocChanges[bnr] = true
+    return
+  endif
+
   # A change queued for a full sync is sent now.  The changes the listener
   # passes along don't fit the document of the server then: it is older than
   # the one they were made to, when 'incrementalSync' was set since.
@@ -1600,6 +1608,8 @@ def StopDocChangeTimer(lspserver: dict<any>): void
   ClearMap(lspserver.pendingDocChanges)
 enddef
 
+# TODO-UPDATE-COMMENT: the changes stay queued while HoldDocChanges() holds them back
+# ---
 # Send the changes to the document of buffer "bnr" that the server doesn't
 # have yet: the ones that Vim hasn't passed to the listener of the buffer, and
 # the ones queued by QueueDocChange().  Then the version of the document is
@@ -1609,6 +1619,28 @@ def FlushDocChanges(lspserver: dict<any>, bnr: number): void
   if lspserver.pendingDocChanges->has_key(bnr)
     TextdocDidChange(lspserver, bnr)
   endif
+enddef
+
+def HoldDocChanges(lspserver: dict<any>, bnr: number): void
+  lspserver.heldDocChanges[bnr] = true
+enddef
+
+def ReleaseDocChanges(lspserver: dict<any>, bnr: number): void
+  if !lspserver.heldDocChanges->has_key(bnr)
+    return
+  endif
+  if bnr->bufloaded()
+    bnr->listener_flush()
+  endif
+  lspserver.heldDocChanges->remove(bnr)
+  if !lspserver.pendingDocChanges->has_key(bnr)
+    return
+  endif
+  if !bnr->bufloaded() || !lspserver.docVersions->has_key(bnr)
+    lspserver.pendingDocChanges->remove(bnr)
+    return
+  endif
+  TextdocDidChange(lspserver, bnr)
 enddef
 
 # Send a change notification for buffer "bnr" when setting 'endofline',
@@ -3973,6 +4005,7 @@ export def NewLspServer(serverParams: dict<any>): dict<any>
   var pendingPullBufnrs: dict<bool> = {}
   # The buffers with a change that QueueDocChange() queued
   var pendingDocChanges: dict<bool> = {}
+  var heldDocChanges: dict<bool> = {}
   var workDoneProgressTokens: dict<bool> = {}
   var cachedBufferContent: dict<list<string>> = {}
   var cachedBufferEol: dict<bool> = {}
@@ -4021,6 +4054,7 @@ export def NewLspServer(serverParams: dict<any>): dict<any>
     diagnosticPullTimer: -1,
     pendingPullBufnrs: pendingPullBufnrs,
     pendingDocChanges: pendingDocChanges,
+    heldDocChanges: heldDocChanges,
     docChangeTimer: -1,
     supportsDidOpenClose: false,
     supportsDidSave: false,
@@ -4085,6 +4119,8 @@ export def NewLspServer(serverParams: dict<any>): dict<any>
     textdocEolChanged: function(TextdocEolChanged, [lspserver]),
     queueDocChange: function(QueueDocChange, [lspserver]),
     flushDocChanges: function(FlushDocChanges, [lspserver]),
+    holdDocChanges: function(HoldDocChanges, [lspserver]),
+    releaseDocChanges: function(ReleaseDocChanges, [lspserver]),
     sendInitializedNotif: function(SendInitializedNotif, [lspserver]),
     sendWorkspaceConfig: function(SendWorkspaceConfig, [lspserver]),
     getCompletion: function(GetCompletion, [lspserver]),

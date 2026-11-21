@@ -1352,18 +1352,13 @@ enddef
 # How long omni completion waits for the reply to its request, in milliseconds
 const OMNI_COMPLETE_TIMEOUT = 2000
 
-# Second invocation of the omni complete handlers: wait for the reply to the
-# request sent by OmniCompleteStart() and return the list of matches.  Returns
-# v:none when interrupted by a typed key or when the server doesn't reply in
-# time; the request is then cancelled.  The reply is read from the channel as
-# soon as it arrives, and typed keys are checked for every 10 ms meanwhile.
-def OmniCompleteMatches(lspserver: dict<any>): any
+def OmniCompleteWait(lspserver: dict<any>): bool
   var start = reltime()
   while lspserver.omniCompletePending
     if complete_check()
 	|| start->reltime()->reltimefloat() * 1000 >= OMNI_COMPLETE_TIMEOUT
       OmniCompleteAbandon(lspserver)
-      return v:none
+      return false
     endif
     var id: number = lspserver.supersedableRequests
       ->get('textDocument/completion', {})->get('id', -1)
@@ -1375,6 +1370,26 @@ def OmniCompleteMatches(lspserver: dict<any>): any
       :sleep 1m
     endif
   endwhile
+  return true
+enddef
+
+# Second invocation of the omni complete handlers: wait for the reply to the
+# request sent by OmniCompleteStart() and return the list of matches.  Returns
+# v:none when interrupted by a typed key or when the server doesn't reply in
+# time; the request is then cancelled.  The reply is read from the channel as
+# soon as it arrives, and typed keys are checked for every 10 ms meanwhile.
+def OmniCompleteMatches(lspserver: dict<any>): any
+  if lspserver.omniCompletePending
+    var bnr = bufnr()
+    lspserver.holdDocChanges(bnr)
+    try
+      if !OmniCompleteWait(lspserver)
+	return v:none
+      endif
+    finally
+      lspserver.releaseDocChanges(bnr)
+    endtry
+  endif
 
   var res: list<dict<any>> = lspserver.completeItems
   var prefix = lspserver.omniCompleteKeyword

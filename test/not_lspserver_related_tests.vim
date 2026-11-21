@@ -545,6 +545,8 @@ def MakeTruncatingServer(limit: number, delays: list<number> = []): dict<any>
     # No request to wait for on a channel: the replies come from timers.
     supersedableRequests: {},
     awaitedReplies: {},
+    holdDocChanges: (_) => 0,
+    releaseDocChanges: (_) => 0,
     requests: [],
     replies: 0,
     timers: [],
