@@ -125,7 +125,7 @@ command! -nargs=0 -bar -count LspGotoTypeDef lsp.GotoTypedef(v:false, <q-mods>, 
 command! -nargs=0 -bar LspHighlight call LspDocHighlight(bufnr(), <q-mods>)
 command! -nargs=0 -bar LspHighlightClear call LspDocHighlightClear()
 command! -nargs=? -bar LspHover lsp.Hover(<q-mods>)
-command! -nargs=1 -bar -complete=customlist,lsp.LspInlayHintsComplete LspInlayHints lsp.InlayHints(<q-args>)
+command! -nargs=1 -bar -complete=customlist,lsp.LspInlayHintsComplete LspInlayHints lsp.InlayHints(<q-args>, <q-mods>)
 command! -nargs=0 -bar LspIncomingCalls lsp.IncomingCalls()
 command! -nargs=0 -bar LspOutgoingCalls lsp.OutgoingCalls()
 command! -nargs=? -bar -count -complete=customlist,lsp.LspOutlineComplete LspOutline lsp.Outline(<q-args>, <q-mods>, <count>)

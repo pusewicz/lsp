@@ -45,7 +45,7 @@ The following language server protocol (LSP) features are supported:
 * Highlight current symbol references
 * Formatting code
 * Folding code
-* Inlay hints
+* Inlay hints, with their tooltips and text edits (e.g. insert an inferred type into the file)
 * Document colors, and writing a color another way (e.g. `#ff0000` as `rgb(255 0 0)`)
 * Inline completion (ghost text)
 * Linked editing (e.g. renaming an HTML tag also renames its closing tag)

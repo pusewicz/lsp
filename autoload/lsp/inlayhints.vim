@@ -6,6 +6,8 @@ import './util.vim'
 import './buffer.vim' as buf
 import './options.vim' as opt
 import './protocol.vim'
+import './textedit.vim'
+import './hover.vim'
 
 # Initialize the highlight group and the text property type used for
 # inlay hints.
@@ -29,15 +31,19 @@ export def InitOnce()
 		cmd: 'LspInlayHintsWinScrolled()'}])
 enddef
 
+# TODO-UPDATE-COMMENT: also drops the inlay hints kept for buffer "bnr"
+# ---
 # Clear all the inlay hints text properties in the current buffer
 def InlayHintsClear(bnr: number)
   prop_remove({type: 'LspInlayHintsType', bufnr: bnr, all: true})
   prop_remove({type: 'LspInlayHintsParam', bufnr: bnr, all: true})
+  setbufvar(bnr, 'LspInlayHints', {})
 enddef
 
 # LSP inlay hints reply message handler
 export def InlayHintsReply(lspserver: dict<any>, inlayHints: any,
-                           inlayHintsError: dict<any>, bnr: number)
+                           inlayHintsError: dict<any>, bnr: number,
+                           changedtick: number)
   # Handle inlay hints error
   if !inlayHintsError->empty()
     lspserver.traceLog($'Inlay hints failed: {inlayHintsError.message}')
@@ -59,6 +65,7 @@ export def InlayHintsReply(lspserver: dict<any>, inlayHints: any,
 
   InlayHintsClear(bnr)
 
+  var hints: dict<dict<any>> = {}
   for hint in inlayHints
     var label = ''
     if hint.label->type() == v:t_list
@@ -79,14 +86,20 @@ export def InlayHintsReply(lspserver: dict<any>, inlayHints: any,
 
     var kind = hint->has_key('kind') ? hint.kind->string() : protocol.InlayHintKindType->string()
     try
-      lspserver.decodePosition(bnr, hint.position)
-      var byteIdx = util.GetLineByteFromPos(bnr, hint.position)
+      var pos: dict<number> = hint.position->copy()
+      lspserver.decodePosition(bnr, pos)
+      var byteIdx = util.GetLineByteFromPos(bnr, pos)
+      var propType = ''
       if kind == "'type'" || kind == protocol.InlayHintKindType->string()
-	prop_add(hint.position.line + 1, byteIdx + 1,
-	  {type: 'LspInlayHintsType', text: label, bufnr: bnr})
+	propType = 'LspInlayHintsType'
       elseif kind == "'parameter'" || kind == protocol.InlayHintKindParameter->string()
-	prop_add(hint.position.line + 1, byteIdx + 1,
-	  {type: 'LspInlayHintsParam', text: label, bufnr: bnr})
+	propType = 'LspInlayHintsParam'
+      endif
+      if propType != ''
+	var id = prop_add(pos.line + 1, byteIdx + 1,
+	  {type: propType, text: label, bufnr: bnr})
+	hints[id->string()] = {id: id, type: propType, hint: hint,
+			       resolved: false}
       endif
     catch /E966\|E964/ # Invalid lnum | Invalid col
       # Inlay hints replies arrive asynchronously and the document might have
@@ -94,6 +107,177 @@ export def InlayHintsReply(lspserver: dict<any>, inlayHints: any,
       # line number and column number errors.
     endtry
   endfor
+  setbufvar(bnr, 'LspInlayHints',
+	    {serverId: lspserver.id, changedtick: changedtick, hints: hints})
+enddef
+
+def HintNearCursor(lspserver: dict<any>): dict<any>
+  var shown: dict<any> = bufnr()->getbufvar('LspInlayHints', {})
+  if shown->empty() || shown.serverId != lspserver.id
+    return {}
+  endif
+  var lnum = line('.')
+  var curCol = col('.')
+  var nearest: dict<any> = {}
+  var nearestDist = -1
+  for entry in shown.hints->values()
+    var props = prop_list(lnum, {ids: [entry.id]})
+    if props->empty() || props[0].type != entry.type
+      continue
+    endif
+    var dist = abs(props[0].col - curCol)
+    if nearestDist < 0 || dist < nearestDist
+	|| (dist == nearestDist && entry.id > nearest.id)
+      nearest = entry
+      nearestDist = dist
+    endif
+  endfor
+  return nearest
+enddef
+
+def HintForCommand(): list<dict<any>>
+  var lspserver: dict<any> = buf.CurbufGetServerChecked('inlayHint')
+  if lspserver->empty()
+    return [{}, {}]
+  endif
+  var entry = HintNearCursor(lspserver)
+  if entry->empty()
+    util.WarnMsg('No inlay hint on the current line')
+    return [{}, {}]
+  endif
+  return [lspserver, entry]
+enddef
+
+def HintResolve(lspserver: dict<any>, entry: dict<any>, missing: bool,
+		Cbfunc: func)
+  if !missing || entry.resolved || !lspserver.isInlayHintResolveProvider
+    Cbfunc()
+    return
+  endif
+  lspserver.inlayHintResolve(entry.hint, (resolved: dict<any>) => {
+    if !resolved->empty()
+      entry.hint = resolved
+      entry.resolved = true
+    endif
+    Cbfunc()
+  })
+enddef
+
+def HintTooltips(hint: dict<any>): list<any>
+  var tooltips: list<any> = []
+  if hint->has_key('tooltip')
+    tooltips->add(hint.tooltip)
+  endif
+  if hint.label->type() == v:t_list
+    for part in hint.label
+      if part->has_key('tooltip')
+	tooltips->add(part.tooltip)
+      endif
+    endfor
+  endif
+  return tooltips
+enddef
+
+def HintTooltipMissing(hint: dict<any>): bool
+  if !hint->has_key('tooltip')
+    return true
+  endif
+  if hint.label->type() == v:t_list
+    for part in hint.label
+      if !part->has_key('tooltip')
+	return true
+      endif
+    endfor
+  endif
+  return false
+enddef
+
+def HintInfoShow(hint: dict<any>, cmdmods: string)
+  var texts: list<string> = []
+  var kind = 'text'
+  for tooltip in HintTooltips(hint)
+    var text = ''
+    if tooltip->type() == v:t_string
+      text = tooltip
+    elseif tooltip->type() == v:t_dict
+	&& tooltip->get('value', '')->type() == v:t_string
+      text = tooltip->get('value', '')
+      if tooltip->get('kind', '') == 'markdown'
+	kind = 'lspgfm'
+      endif
+    endif
+    if text !~ '^\_s*$'
+      texts->add(text)
+    endif
+  endfor
+
+  if texts->empty()
+    util.WarnMsg('The inlay hint has no information to show')
+    return
+  endif
+
+  var separator = kind == 'lspgfm' ? '- - -' : ''
+  var lines: list<string> = []
+  for text in texts
+    if !lines->empty()
+      lines->add(separator)
+    endif
+    lines->extend(text->split("\n"))
+  endfor
+  hover.ShowText(lines, kind, cmdmods)
+enddef
+
+def HintApply(lspserver: dict<any>, bnr: number, entry: dict<any>)
+  var edits: any = entry.hint->get('textEdits', [])
+  if edits->type() != v:t_list || edits->empty()
+    util.WarnMsg('The inlay hint has no text edits to apply')
+    return
+  endif
+
+  var decoded: list<dict<any>> = edits->deepcopy()
+  for edit in decoded
+    lspserver.decodeRange(bnr, edit.range)
+  endfor
+  textedit.ApplyTextEditsKeepProps(decoded)
+
+  var shown: dict<any> = bnr->getbufvar('LspInlayHints', {})
+  var key = entry.id->string()
+  if !shown->empty() && shown.hints->get(key, {}) is entry
+    shown.hints->remove(key)
+    prop_remove({id: entry.id, type: entry.type, both: true, bufnr: bnr,
+		 all: true})
+  endif
+  LspInlayHintsUpdateNow(bnr)
+enddef
+
+export def InlayHintInfo(cmdmods: string)
+  var [lspserver, entry] = HintForCommand()
+  if entry->empty()
+    return
+  endif
+  HintResolve(lspserver, entry, HintTooltipMissing(entry.hint), () => {
+    HintInfoShow(entry.hint, cmdmods)
+  })
+enddef
+
+export def InlayHintApply()
+  var [lspserver, entry] = HintForCommand()
+  if entry->empty()
+    return
+  endif
+  if !&modifiable
+    util.ErrMsg('Cannot apply the inlay hint: the buffer is not modifiable')
+    return
+  endif
+  var bnr = bufnr()
+  if bnr->getbufvar('LspInlayHints').changedtick != bnr->getbufvar('changedtick')
+    LspInlayHintsUpdateNow(bnr)
+    util.WarnMsg('The inlay hint is out of date: the inlay hints are being updated, try again')
+    return
+  endif
+  HintResolve(lspserver, entry, !entry.hint->has_key('textEdits'), () => {
+    HintApply(lspserver, bnr, entry)
+  })
 enddef
 
 # The first and the last line of buffer "bnr" shown in the windows of the
