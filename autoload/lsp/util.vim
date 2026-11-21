@@ -278,6 +278,54 @@ export def BufIsEmpty(bnr: number): bool
   return ExecuteInBuffer(bnr, 'echo wordcount().bytes')->trim() == '0'
 enddef
 
+# The first and the last line of buffer "bnr" shown in the windows of the
+# current tab page, and with "margin" true, the lines up to one window height
+# above and below them: [first, last].  An empty List when no window shows the
+# buffer.  When windows show parts of the buffer far apart, the lines between
+# them are included as well.
+export def VisibleLines(bnr: number, margin: bool): list<number>
+  var first = 0
+  var last = 0
+  var lastlnum = 0
+  var tabnr = tabpagenr()
+  for winid in bnr->win_findbuf()
+    if winid->win_id2tabwin()[0] != tabnr
+      continue
+    endif
+    var extra = margin ? winid->winheight() : 0
+    var top = line('w0', winid) - extra
+    var bot = line('w$', winid) + extra
+    if first == 0 || top < first
+      first = top
+    endif
+    if bot > last
+      last = bot
+    endif
+    lastlnum = line('$', winid)
+  endfor
+  if first == 0
+    return []
+  endif
+  return [[first, 1]->max(), [last, lastlnum]->min()]
+enddef
+
+export def ScrolledBufnrs(): list<number>
+  var winids: list<number> = v:event->keys()
+    ->filter((_, k) => k != 'all')->mapnew((_, k) => k->str2nr())
+  if winids->empty()
+    winids = gettabinfo(tabpagenr())[0].windows
+  endif
+
+  var bufnrs: list<number> = []
+  for winid in winids
+    var bnr = winid->winbufnr()
+    if bnr > 0 && bufnrs->index(bnr) == -1
+      bufnrs->add(bnr)
+    endif
+  endfor
+  return bufnrs
+enddef
+
 # Returns a snapshot of the editor state that the reply to an asynchronous
 # request is for, so that a reply arriving after the user moved on can be
 # dropped (see RequestContextMatches()).  "scope" is one of:

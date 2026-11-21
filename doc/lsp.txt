@@ -3844,11 +3844,24 @@ use a language server that advertises semantic tokens support.  When enabled,
 the plugin requests semantic tokens for the current buffer and refreshes them
 after buffer changes (using the |TextChanged| autocommand) with the delay
 configured by |lsp-opt-semanticHighlightDelay|.  If the server supports
-semantic token delta updates, they are used automatically.  When the server
-asks for the semantic tokens to be refreshed, because they changed without an
-edit (e.g. after it finished indexing), they are requested again for the
-buffers shown in a window, and for the other buffers when they are next shown
-in one (|BufWinEnter|).
+semantic token delta updates, they are used automatically.
+
+A language server can also provide the semantic tokens of a range of lines
+("textDocument/semanticTokens/range").  For a server that provides only
+these, the plugin requests the tokens of the lines shown in the windows of the
+current tab page, with a margin of one window height above and below them,
+and requests them again when a window is scrolled past these lines or when
+the buffer changes.  The lines between two windows that show parts of the
+buffer far apart are included.  For a server that also provides the tokens of
+the whole buffer, the lines in view of a buffer that has no semantic
+highlighting yet are requested together with the whole buffer, so that they
+are highlighted without waiting for the larger reply, which then replaces
+them.
+
+When the server asks for the semantic tokens to be refreshed, because they
+changed without an edit (e.g. after it finished indexing), they are requested
+again for the buffers shown in a window, and for the other buffers when they
+are next shown in one (|BufWinEnter|).
 
 Only the semantic token types listed below have built-in highlight groups in
 this plugin.  If a language server returns other token types, they are

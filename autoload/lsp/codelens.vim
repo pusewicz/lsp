@@ -3,6 +3,7 @@ vim9script
 import './buffer.vim' as buf
 import './codeaction.vim'
 import './options.vim' as opt
+import './util.vim'
 
 # Functions related to handling LSP code lens
 
@@ -155,23 +156,10 @@ def CodeLensWinScrolled()
     return
   endif
 
-  # v:event is empty when the autocmd was triggered with :doautocmd
-  var winids: list<number> = v:event->keys()
-    ->filter((_, k) => k != 'all')->mapnew((_, k) => k->str2nr())
-  if winids->empty()
-    winids = gettabinfo(tabpagenr())[0].windows
-  endif
-
-  var bufnrs: list<number> = []
-  for winid in winids
-    var bnr = winid->winbufnr()
-    if bnr > 0 && bufnrs->index(bnr) == -1
-	&& exists($'#LspCodeLens#CursorHold#<buffer={bnr}>')
-      bufnrs->add(bnr)
+  for bnr in util.ScrolledBufnrs()
+    if exists($'#LspCodeLens#CursorHold#<buffer={bnr}>')
+      CodeLensResolveVisible(bnr)
     endif
-  endfor
-  for bnr in bufnrs
-    CodeLensResolveVisible(bnr)
   endfor
 enddef
 

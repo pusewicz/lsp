@@ -1037,16 +1037,64 @@ def WorkspaceConfigGet(lspserver: dict<any>, configItem: dict<any>): dict<any>
   return config
 enddef
 
+def LinesRange(lspserver: dict<any>, bnr: number, firstLine: number,
+	       lastLine: number): dict<any>
+  var lastlnum = bnr->getbufinfo()[0].linecount
+  var rangeEnd: dict<number>
+  if lastLine > 0 && lastLine < lastlnum
+    rangeEnd = {line: lastLine, character: 0}
+  else
+    rangeEnd = {
+      line: lastlnum - 1,
+      character: bnr->getbufline(lastlnum)->get(0, '')->strchars()
+    }
+  endif
+  var range = {
+    start: {line: [firstLine, 1]->max() - 1, character: 0},
+    end: rangeEnd
+  }
+  lspserver.encodeRange(bnr, range)
+  return range
+enddef
+
+def SemanticHighlightRangeUpdate(lspserver: dict<any>, bnr: number,
+				 requestTick: number)
+  var lines = semantichighlight.RangeLinesToRequest(bnr, requestTick,
+						    lspserver.semanticTokensFull)
+  if lines->empty()
+    return
+  endif
+  var params = {
+    textDocument: {uri: util.LspBufnrToUri(bnr)},
+    range: LinesRange(lspserver, bnr, lines[0], lines[1])
+  }
+  AsyncRpcSupersede(lspserver, $'textDocument/semanticTokens/range {bnr}',
+		    'textDocument/semanticTokens/range', params,
+		    (_: dict<any>, reply, error) => {
+    semantichighlight.UpdateRangeTokens(lspserver, reply, error, bnr,
+					requestTick, lines)
+  })
+enddef
+
+# TODO-UPDATE-COMMENT: also requests textDocument/semanticTokens/range
+# ---
 # Update semantic highlighting for buffer "bnr"
 # Request: textDocument/semanticTokens/full or
 #	   textDocument/semanticTokens/full/delta
 def SemanticHighlightUpdate(lspserver: dict<any>, bnr: number)
-  if !lspserver.isSemanticTokensProvider
+  if !lspserver.isSemanticTokensProvider || bnr->getbufinfo()->empty()
     return
   endif
 
   # Capture the current changedtick
   var requestTick = getbufvar(bnr, 'changedtick')
+
+  if lspserver.semanticTokensRange
+    SemanticHighlightRangeUpdate(lspserver, bnr, requestTick)
+    if !lspserver.semanticTokensFull
+      return
+    endif
+  endif
 
   var method = 'textDocument/semanticTokens/full'
   var params: dict<any> = {
@@ -1069,6 +1117,10 @@ def SemanticHighlightUpdate(lspserver: dict<any>, bnr: number)
   AsyncRpcSupersede(lspserver, $'textDocument/semanticTokens {bnr}', method,
 		    params, (_: dict<any>, reply, error) => {
     semantichighlight.UpdateTokens(lspserver, reply, error, bnr, requestTick)
+    if bnr->getbufvar('LspSemanticTokensShown', false)
+      CancelSupersedableRequest(lspserver,
+				$'textDocument/semanticTokens/range {bnr}')
+    endif
   })
 enddef
 
@@ -2660,32 +2712,16 @@ def InlayHintsShow(lspserver: dict<any>, bnr: number, firstLine: number = 1,
     return
   endif
 
-  var binfo = bnr->getbufinfo()
-  if binfo->empty()
+  if bnr->getbufinfo()->empty()
     return
   endif
-  var lastlnum = binfo[0].linecount
   # The range ends at the start of the line after "lastLine", so that it
   # includes the hints at the end of that line, or else at the end of the
   # buffer.
-  var rangeEnd: dict<number>
-  if lastLine > 0 && lastLine < lastlnum
-    rangeEnd = {line: lastLine, character: 0}
-  else
-    rangeEnd = {
-      line: lastlnum - 1,
-      character: bnr->getbufline(lastlnum)->get(0, '')->strchars()
-    }
-  endif
   var param = {
       textDocument: {uri: util.LspBufnrToUri(bnr)},
-      range: {
-	start: {line: [firstLine, 1]->max() - 1, character: 0},
-	end: rangeEnd
-      }
+      range: LinesRange(lspserver, bnr, firstLine, lastLine)
   }
-
-  lspserver.encodeRange(bnr, param.range)
 
   var changedtick: number = bnr->getbufvar('changedtick')
   var msg: string
@@ -4047,6 +4083,8 @@ export def NewLspServer(serverParams: dict<any>): dict<any>
     pendingRequests: pendingRequests,
     awaitedReplies: awaitedReplies,
     supersedableRequests: supersedableRequests,
+    semanticTokensRange: false,
+    semanticTokensFull: false,
     peekSymbolFilePopup: -1,
     peekSymbolPopup: -1,
     processDiagHandler: serverParams.processDiagHandler,

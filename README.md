@@ -52,7 +52,7 @@ The following language server protocol (LSP) features are supported:
 * Inline completion (ghost text)
 * Linked editing (e.g. renaming an HTML tag also renames its closing tag)
 * Visually select symbol block/region
-* Semantic Highlight
+* Semantic Highlight (whole buffer with delta updates, or only the lines in view for servers that provide range requests)
 * Workspace configuration, which can be changed and sent again without a restart of the language server
 * Notify the language servers of changes to the files that they watch, also the changes made outside Vim (with [fswatch](https://github.com/emcrisostomo/fswatch)); a server can be left to watch its own files
 

@@ -280,37 +280,6 @@ export def InlayHintApply()
   })
 enddef
 
-# The first and the last line of buffer "bnr" shown in the windows of the
-# current tab page, and with "margin" true, the lines up to one window height
-# above and below them: [first, last].  An empty List when no window shows the
-# buffer.  When windows show parts of the buffer far apart, the lines between
-# them are included as well.
-def VisibleLines(bnr: number, margin: bool): list<number>
-  var first = 0
-  var last = 0
-  var lastlnum = 0
-  var tabnr = tabpagenr()
-  for winid in bnr->win_findbuf()
-    if winid->win_id2tabwin()[0] != tabnr
-      continue
-    endif
-    var extra = margin ? winid->winheight() : 0
-    var top = line('w0', winid) - extra
-    var bot = line('w$', winid) + extra
-    if first == 0 || top < first
-      first = top
-    endif
-    if bot > last
-      last = bot
-    endif
-    lastlnum = line('$', winid)
-  endfor
-  if first == 0
-    return []
-  endif
-  return [[first, 1]->max(), [last, lastlnum]->min()]
-enddef
-
 # Returns true when the lines of buffer "bnr" shown in a window are within the
 # lines whose inlay hints were requested last.
 def VisibleLinesRequested(bnr: number): bool
@@ -318,7 +287,7 @@ def VisibleLinesRequested(bnr: number): bool
   if requested->empty()
     return false
   endif
-  var visible = VisibleLines(bnr, false)
+  var visible = util.VisibleLines(bnr, false)
   return visible->empty()
     || (visible[0] >= requested[0] && visible[1] <= requested[1])
 enddef
@@ -335,7 +304,7 @@ def InlayHintsTimerCb(lspserver: dict<any>, bnr: number, timerid: number)
     setbufvar(bnr, 'LspInlayHintsNeedsUpdate', true)
     return
   endif
-  var lines = VisibleLines(bnr, true)
+  var lines = util.VisibleLines(bnr, true)
   if lines->empty()
     # Not shown in a window: request the hints when it is
     return
@@ -380,23 +349,10 @@ def LspInlayHintsWinScrolled()
     return
   endif
 
-  # v:event is empty when the autocmd was triggered with :doautocmd
-  var winids: list<number> = v:event->keys()
-    ->filter((_, k) => k != 'all')->mapnew((_, k) => k->str2nr())
-  if winids->empty()
-    winids = gettabinfo(tabpagenr())[0].windows
-  endif
-
-  var bufnrs: list<number> = []
-  for winid in winids
-    var bnr = winid->winbufnr()
-    if bnr > 0 && bufnrs->index(bnr) == -1
-	&& exists($'#LspInlayHints#CursorHold#<buffer={bnr}>')
-      bufnrs->add(bnr)
+  for bnr in util.ScrolledBufnrs()
+    if exists($'#LspInlayHints#CursorHold#<buffer={bnr}>')
+      LspInlayHintsUpdate(bnr)
     endif
-  endfor
-  for bnr in bufnrs
-    LspInlayHintsUpdate(bnr)
   endfor
 enddef
 
