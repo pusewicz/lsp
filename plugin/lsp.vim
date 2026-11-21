@@ -89,6 +89,7 @@ command! -nargs=? -bar LspColorPresentation lsp.ColorPresentation(<q-args>->str2
 command! -nargs=0 -bar LspDocumentLink lsp.DocumentLink()
 command! -nargs=0 -bar LspDocumentLinkOpen lsp.DocumentLinkOpen(<q-mods>)
 command! -nargs=0 -bar LspDocumentSymbol lsp.ShowDocSymbols()
+command! -nargs=* -complete=customlist,lsp.LspExecuteCommandComplete LspExecuteCommand lsp.ExecuteCommand(<q-args>)
 command! -nargs=0 -bar LspFold lsp.FoldDocument()
 
 command! -nargs=0 -bar -bang -range=% LspFormat lsp.TextDocFormat(<range>, <line1>, <line2>, <bang>false)

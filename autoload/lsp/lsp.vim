@@ -1822,6 +1822,94 @@ export def ColorPresentation(choice: number)
   lspserver.colorPresentation(choice)
 enddef
 
+def JsonLines(value: any, indent: string): list<string>
+  var isList: bool = value->type() == v:t_list
+  if (!isList && value->type() != v:t_dict) || value->empty()
+    return [indent .. value->json_encode()]
+  endif
+
+  var lines: list<string> = [indent .. (isList ? '[' : '{')]
+  var keys: list<any> = isList ? range(value->len()) : value->keys()->sort()
+  var itemIndent: string = indent .. '  '
+  for key in keys
+    var itemLines: list<string> = JsonLines(value[key], itemIndent)
+    if !isList
+      itemLines[0] = $'{itemIndent}{key->json_encode()}: {itemLines[0]->strpart(itemIndent->len())}'
+    endif
+    if key != keys[-1]
+      itemLines[-1] ..= ','
+    endif
+    lines->extend(itemLines)
+  endfor
+  lines->add(indent .. (isList ? ']' : '}'))
+  return lines
+enddef
+
+def ShowCommandResult(command: string, result: any)
+  var lines: list<string> = result->type() == v:t_string
+    ? result->split("\n") : JsonLines(result, '')
+  if lines->len() <= 1
+    util.InfoMsg($'{command}: {lines->join()}')
+    return
+  endif
+
+  OpenScratchWindow('LSP-Command-Result')
+  setline(1, lines)
+  :setlocal nomodified
+  :setlocal nomodifiable
+enddef
+
+def ExecutableCommands(): dict<dict<any>>
+  var commands: dict<dict<any>> = {}
+  for lspserver in buf.CurbufGetServers()
+    if !lspserver.running || !lspserver.ready
+      continue
+    endif
+    for command in lspserver.executeCommands
+      if !commands->has_key(command)
+	commands[command] = lspserver
+      endif
+    endfor
+  endfor
+  return commands
+enddef
+
+export def ExecuteCommand(args: string)
+  var command: string = args->matchstr('^\S\+')
+  if command->empty()
+    util.ErrMsg('No command to execute is given')
+    return
+  endif
+
+  var cmd: dict<any> = {command: command}
+  var arguments: string = args->strpart(command->len())->trim()
+  if !arguments->empty()
+    try
+      cmd.arguments = json_decode($'[{arguments}]')
+    catch
+      util.ErrMsg($'The arguments of "{command}" are not JSON values ({v:exception})')
+      return
+    endtry
+  endif
+
+  var commands: dict<dict<any>> = ExecutableCommands()
+  if !commands->has_key(command)
+    util.ErrMsg($'No language server of the current buffer offers the command "{command}"')
+    return
+  endif
+
+  commands[command].executeCommand(cmd, function(ShowCommandResult, [command]))
+enddef
+
+export def LspExecuteCommandComplete(arglead: string, cmdline: string, cursorPos: number): list<string>
+  var before: string = cmdline->strpart(0, cursorPos - arglead->len())
+  if before !~# '\<LspE\a*\s\+$'
+    return []
+  endif
+  return ExecutableCommands()->keys()->sort()
+    ->filter((_, command) => command->stridx(arglead) == 0)
+enddef
+
 # Perform a workspace wide symbol lookup
 # Uses LSP "workspace/symbol" request
 export def SymbolSearch(queryArg: string, cmdmods: string)

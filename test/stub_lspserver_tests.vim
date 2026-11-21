@@ -8592,6 +8592,251 @@ def g:Test_LspColorPresentation()
   endtry
 enddef
 
+def MakeExecuteCommandServer(name: string, commands: list<any>,
+			     requests: list<dict<any>>,
+			     reply: dict<any> = {}): dict<any>
+  var lspserver = MakeTestLspServer([])
+  lspserver.name = name
+  lspserver.running = true
+  lspserver.ready = true
+  lspserver.caps = {executeCommandProvider: {commands: commands}}
+  capabilities.ProcessServerCaps(lspserver, lspserver.caps)
+  lspserver.rpc_a = (method: string, params: any, Cbfunc: func, opts: dict<any> = {}) => {
+    requests->add({server: name, method: method, params: params->deepcopy(),
+		   opts: opts->copy()})
+    Cbfunc(lspserver, reply->get('result', null), reply->get('error', {}))
+    return requests->len()
+  }
+  return lspserver
+enddef
+
+def g:Test_LspExecuteCommand_RoutesToOfferingServer()
+  silent! edit XExecuteCommandRoute.txt
+  var requests: list<dict<any>> = []
+  var srv1 = MakeExecuteCommandServer('one', ['one.build', 'shared.run'],
+				      requests)
+  var srv2 = MakeExecuteCommandServer('two', ['two.build', 'shared.run'],
+				      requests)
+  buf.BufLspServerSet(bufnr(), srv1)
+  buf.BufLspServerSet(bufnr(), srv2)
+  try
+    :LspExecuteCommand two.build
+    assert_equal([{server: 'two', method: 'workspace/executeCommand',
+		   params: {command: 'two.build'},
+		   opts: {beforePendingKeys: true}}], requests)
+
+    requests->filter('0')
+    :LspExecuteCommand shared.run "a | b", 2, [3, null], {"jobs": 4}
+    assert_equal([{server: 'one', method: 'workspace/executeCommand',
+		   params: {command: 'shared.run',
+			    arguments: ['a | b', 2, [3, null], {jobs: 4}]},
+		   opts: {beforePendingKeys: true}}], requests)
+
+    requests->filter('0')
+    srv1.ready = false
+    :LspExecuteCommand shared.run
+    assert_equal(['two'], requests->mapnew((_, r) => r.server))
+  finally
+    buf.BufLspServerRemove(bufnr(), srv1)
+    buf.BufLspServerRemove(bufnr(), srv2)
+    :%bw!
+  endtry
+enddef
+
+def g:Test_LspExecuteCommand_ReportsUsageErrors()
+  silent! edit XExecuteCommandErrors.txt
+  var requests: list<dict<any>> = []
+  var lspserver = MakeExecuteCommandServer('one', ['one.build'], requests)
+  buf.BufLspServerSet(bufnr(), lspserver)
+  try
+    :LspExecuteCommand
+    assert_equal('Error: No command to execute is given', LastMessage())
+
+    :LspExecuteCommand other.build
+    assert_equal('Error: No language server of the current buffer offers the command "other.build"',
+		 LastMessage())
+
+    :LspExecuteCommand one.build {"jobs": 4
+    assert_match('^Error: The arguments of "one.build" are not JSON values (.*E491:',
+		 LastMessage())
+
+    assert_equal([], requests)
+
+    :new
+    :LspExecuteCommand one.build
+    assert_equal('Error: No language server of the current buffer offers the command "one.build"',
+		 LastMessage())
+    :bw!
+    assert_equal([], requests)
+  finally
+    buf.BufLspServerRemove(bufnr(), lspserver)
+    :%bw!
+  endtry
+enddef
+
+def g:Test_LspExecuteCommand_ShowsResult()
+  silent! edit XExecuteCommandResult.txt
+  var requests: list<dict<any>> = []
+  var reply: dict<any> = {}
+  var lspserver = MakeExecuteCommandServer('one', ['one.build'], requests,
+					   reply)
+  buf.BufLspServerSet(bufnr(), lspserver)
+  var bnr = bufnr()
+  try
+    :LspExecuteCommand one.build
+    assert_notmatch('one\.build', execute('messages'))
+    assert_equal(1, requests->len())
+
+    reply.result = 'built 3 targets'
+    :LspExecuteCommand one.build
+    assert_equal('Info: one.build: built 3 targets', LastMessage())
+
+    reply.result = 0
+    :LspExecuteCommand one.build
+    assert_equal('Info: one.build: 0', LastMessage())
+
+    reply.result = []
+    :LspExecuteCommand one.build
+    assert_equal('Info: one.build: []', LastMessage())
+    assert_equal(bnr, bufnr())
+
+    reply.result = {targets: ['a', {name: 'b', ok: true}], count: 2,
+		    empty: {}}
+    :LspExecuteCommand one.build
+    assert_equal('LSP-Command-Result', bufname())
+    assert_equal(['{',
+		  '  "count": 2,',
+		  '  "empty": {},',
+		  '  "targets": [',
+		  '    "a",',
+		  '    {',
+		  '      "name": "b",',
+		  '      "ok": true',
+		  '    }',
+		  '  ]',
+		  '}'], getline(1, '$'))
+    assert_false(&modifiable)
+    :close
+
+    reply.result = "first\nsecond"
+    :LspExecuteCommand one.build
+    assert_equal('LSP-Command-Result', bufname())
+    assert_equal(['first', 'second'], getline(1, '$'))
+    :close
+  finally
+    buf.BufLspServerRemove(bnr, lspserver)
+    :%bw!
+  endtry
+enddef
+
+def g:Test_LspExecuteCommand_ReportsErrorReply()
+  silent! edit XExecuteCommandFails.txt
+  var bnr = bufnr()
+  var lspserver = MakeTestLspServer([])
+  lspserver.running = true
+  lspserver.ready = true
+  lspserver.caps = {executeCommandProvider: {commands: ['one.build']}}
+  capabilities.ProcessServerCaps(lspserver, lspserver.caps)
+  lspserver.job = StartStubServerJob([{jsonrpc: '2.0', id: 1,
+    error: {code: -32603, message: 'build failed'}}])
+  buf.BufLspServerSet(bnr, lspserver)
+  try
+    :LspExecuteCommand one.build
+    g:WaitForReplies()
+    assert_match('^Error: request workspace/executeCommand failed (build failed',
+		 LastMessage())
+    assert_equal(bnr, bufnr())
+  finally
+    StopAsyncReplyingLspServer(lspserver, bnr)
+    :%bw!
+  endtry
+enddef
+
+def g:Test_LspExecuteCommand_AppliesWorkspaceEdit()
+  silent! edit XExecuteCommandEdit.txt
+  setline(1, ['old text'])
+  var bnr = bufnr()
+  var lspserver = MakeTestLspServer([])
+  lspserver.running = true
+  lspserver.ready = true
+  lspserver.caps = {executeCommandProvider: {commands: ['one.rewrite']}}
+  capabilities.ProcessServerCaps(lspserver, lspserver.caps)
+  var responses: list<dict<any>> = []
+  lspserver.sendResponse = function(CaptureResponse, [responses])
+  lspserver.job = StartStubServerJob([
+    {jsonrpc: '2.0', id: 100, method: 'workspace/applyEdit',
+     params: {edit: {changes: {
+       [util.LspBufnrToUri(bnr)]: [MakeTextEdit(0, 0, 0, 3, 'new')]}}}},
+    {jsonrpc: '2.0', id: 1, result: null}],
+    {out_cb: (_, msg) => {
+      lspserver.data = msg
+      lspserver.processMessage()
+    }})
+  buf.BufLspServerSet(bnr, lspserver)
+  try
+    feedkeys(":LspExecuteCommand one.rewrite\<CR>A!\<Esc>", 'xt')
+    assert_equal(['new text!'], getline(1, '$'))
+    assert_equal([{id: 100, result: {applied: true}, error: {}}], responses)
+  finally
+    StopAsyncReplyingLspServer(lspserver, bnr)
+    :%bw!
+  endtry
+enddef
+
+def g:Test_LspExecuteCommand_Completion()
+  silent! edit XExecuteCommandComplete.txt
+  var requests: list<dict<any>> = []
+  var srv1 = MakeExecuteCommandServer('one', ['one.build', 'shared.run'],
+				      requests)
+  var srv2 = MakeExecuteCommandServer('two', ['two.build', 'shared.run', 5],
+				      requests)
+  buf.BufLspServerSet(bufnr(), srv1)
+  buf.BufLspServerSet(bufnr(), srv2)
+  try
+    assert_equal(['one.build', 'shared.run', 'two.build'],
+		 getcompletion('LspExecuteCommand ', 'cmdline'))
+    assert_equal(['one.build'],
+		 getcompletion('LspExecuteCommand one.', 'cmdline'))
+    assert_equal([], getcompletion('LspExecuteCommand one-', 'cmdline'))
+    assert_equal(['two.build'],
+		 getcompletion('silent LspExe t', 'cmdline'))
+    assert_equal([], getcompletion('LspExecuteCommand one.build ', 'cmdline'))
+
+    srv2.ready = false
+    assert_equal(['one.build', 'shared.run'],
+		 getcompletion('LspExecuteCommand ', 'cmdline'))
+  finally
+    buf.BufLspServerRemove(bufnr(), srv1)
+    buf.BufLspServerRemove(bufnr(), srv2)
+    :%bw!
+  endtry
+enddef
+
+def g:Test_ExecuteCommand_NeedsProvider()
+  var lspserver = MakeTestLspServer([])
+  lspserver.name = 'one'
+  var requests: list<dict<any>> = []
+  lspserver.rpc_a = (method: string, params: any, Cbfunc: func, _ = {}) => {
+    requests->add({method: method, params: params})
+    Cbfunc(lspserver, 'done', {})
+    return 1
+  }
+
+  codeaction.DoCommand(lspserver, {title: 'Apply', command: 'one.apply'})
+  assert_equal([], requests)
+  assert_equal('Warn: Language server "one" does not execute commands, "one.apply" needs a handler (see :help lsp-custom-commands)',
+	       LastMessage())
+
+  lspserver.caps = {executeCommandProvider: {}}
+  capabilities.ProcessServerCaps(lspserver, lspserver.caps)
+  :messages clear
+  codeaction.DoCommand(lspserver,
+    {title: 'Apply', command: 'one.apply', arguments: [1]})
+  assert_equal([{method: 'workspace/executeCommand',
+		 params: {command: 'one.apply', arguments: [1]}}], requests)
+  assert_notmatch('one', execute('messages'))
+enddef
+
 # Returns a stub language server that replies to "textDocument/documentLink"
 # with "links" and to "documentLink/resolve" with "resolved".  The server is a
 # resolve provider only if "resolved" is not empty.  The requests sent to the

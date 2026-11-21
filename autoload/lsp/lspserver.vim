@@ -3682,9 +3682,11 @@ def FoldingRangesUpdate(lspserver: dict<any>, bnr: number)
   }, {handleError: false})
 enddef
 
+# TODO-UPDATE-COMMENT: takes "ResultCb", which gets a result that is not null
+# ---
 # process the 'workspace/executeCommand' reply from the LSP server
 # Result: any | null
-def WorkspaceExecuteReply(lspserver: dict<any>, execReply: any,
+def WorkspaceExecuteReply(lspserver: dict<any>, ResultCb: func, execReply: any,
                           execError: dict<any> = {})
   # Handle workspace execute command error
   if !execError->empty()
@@ -3692,13 +3694,23 @@ def WorkspaceExecuteReply(lspserver: dict<any>, execReply: any,
     return
   endif
 
+  # TODO-UPDATE-COMMENT: a result that is not null goes to "ResultCb"
+  # ---
   # Nothing to do for the reply
+  if ResultCb != null_function && execReply->type() != v:t_none
+    ResultCb(execReply)
+  endif
 enddef
 
+# TODO-UPDATE-COMMENT: a server that is not an execute command provider gets no request, and "ResultCb" gets a result that is not null
+# ---
 # Request the LSP server to execute a command
 # Request: workspace/executeCommand
 # Params: ExecuteCommandParams
-def ExecuteCommand(lspserver: dict<any>, cmd: dict<any>)
+def ExecuteCommand(lspserver: dict<any>, cmd: dict<any>,
+		   ResultCb: func = null_function)
+  # TODO-UPDATE-COMMENT: answered, the capability is checked below
+  # ---
   # Need to check for lspserver.caps.executeCommandProvider?
   var params: dict<any> = {}
   params.command = cmd->get('command', '')
@@ -3706,12 +3718,16 @@ def ExecuteCommand(lspserver: dict<any>, cmd: dict<any>)
     # No specific command to execute received from the server
     return
   endif
+  if !lspserver.isExecuteCommandProvider
+    util.WarnMsg($'Language server "{lspserver.name}" does not execute commands, "{params.command}" needs a handler (see :help lsp-custom-commands)')
+    return
+  endif
   if cmd->has_key('arguments')
     params.arguments = cmd.arguments
   endif
 
   lspserver.rpc_a('workspace/executeCommand', params,
-		  (_: dict<any>, reply, error) => WorkspaceExecuteReply(lspserver, reply, error),
+		  (_: dict<any>, reply, error) => WorkspaceExecuteReply(lspserver, ResultCb, reply, error),
 		  {beforePendingKeys: true})
 enddef
 
@@ -3893,6 +3909,8 @@ export def NewLspServer(serverParams: dict<any>): dict<any>
     job: v:none,
     data: '',
     caps: {},
+    isExecuteCommandProvider: false,
+    executeCommands: [],
     callHierarchyType: '',
     completionTriggerChars: [],
     onTypeFormattingTriggers: [],
