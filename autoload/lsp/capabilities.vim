@@ -353,6 +353,13 @@ export def ProcessServerCaps(lspserver: dict<any>, caps: dict<any>)
   else
     lspserver.isExecuteCommandProvider = false
   endif
+  lspserver.executeCommands = []
+  var executeCommandProvider: any = lspserver.caps->get('executeCommandProvider')
+  if executeCommandProvider->type() == v:t_dict
+      && executeCommandProvider->get('commands')->type() == v:t_list
+    lspserver.executeCommands = executeCommandProvider.commands
+      ->copy()->filter((_, command) => command->type() == v:t_string)
+  endif
 
   # selectionRangeProvider
   if lspserver.caps->has_key('selectionRangeProvider')

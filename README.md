@@ -39,6 +39,7 @@ The following language server protocol (LSP) features are supported:
 * Signature help
 * Code action
 * Code lens
+* Run the commands that a language server offers (`workspace/executeCommand`)
 * Display Call hierarchy
 * Display Type hierarchy
 * Highlight current symbol references
@@ -227,6 +228,7 @@ Command|Description
 `:LspDocumentLink`|Display the links (e.g. include files and URLs) in the current file in a new location list.
 `:LspDocumentLinkOpen`|Open the target of the link under cursor: a file in Vim, any other URI with the system handler.
 `:LspDocumentSymbol`|Display the symbols in the current file in a popup menu and jump to the selected symbol.
+`:LspExecuteCommand`|Have a language server of the current file run one of the commands that it offers (`workspace/executeCommand`), with optional JSON arguments.
 `:LspFold`|Fold the current file.
 `:LspFormat`|Format a range of lines in the current file using the language server. The **shiftwidth** and **expandtab** values set for the current buffer are used when format is applied.  The default range is the entire file.
 `:LspGotoDeclaration`|Go to the declaration of the keyword under cursor.

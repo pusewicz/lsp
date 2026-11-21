@@ -608,6 +608,9 @@ when no keys are pending.
 :LspDocumentLinkOpen	Open the target of the link under cursor.
 :LspDocumentSymbol	Display the symbols in the current file in a popup
 			menu and jump to the location of a selected symbol.
+:LspExecuteCommand {command} [{arguments}]
+			Have a language server of the current buffer run one
+			of the commands that it offers.
 :LspFold		Create folds for the current buffer using
 			language-server folding ranges.
 :LspFormat		Format a range of lines in the current file using the
@@ -1321,6 +1324,40 @@ Commands to modify, rename, or format your code using the language server.
 			menu.  Uses the "textDocument/documentColor" and
 			"textDocument/colorPresentation" requests, also when
 			|lsp-opt-showDocumentColors| is not set.
+
+						*:LspExecuteCommand*
+:LspExecuteCommand {command} [{arguments}]
+			Have a language server run {command}, one of the
+			commands that it lists in the "commands" of its
+			"executeCommandProvider" capability
+			(see |:LspServer| show capabilities).  What a command
+			does is up to the language server; refer to its
+			documentation.  Command-line completion offers the
+			commands of the language servers of the current
+			buffer.  When several language servers serve the
+			buffer, the first one that offers {command} runs it.
+
+			{arguments} are the arguments of the command: JSON
+			values separated by commas.  Each value is one
+			argument, so a JSON array is one argument that is an
+			array.  For example: >
+
+			    :LspExecuteCommand server.restart
+			    :LspExecuteCommand build.target "all", {"jobs": 4}
+<
+			This command cannot be followed by another command
+			with "|", and a '"' does not start a comment: both
+			are part of {arguments}.
+
+			A result that is not null is displayed: a short one
+			as a message, and a multi-line text, a list or a
+			dict in a scratch window.  The changes that the
+			language server makes with a "workspace/applyEdit"
+			request while it runs the command are applied.  Uses
+			the "workspace/executeCommand" request.
+
+			This command does not use the handlers registered
+			with |LspRegisterCmdHandler()|.
 
 							*:LspFold*
 :LspFold		Create folds for the current buffer.
@@ -3778,7 +3815,10 @@ contains the LSP Command interface fields.  Refer to the LSP specification for
 more information about the "Command" interface.
 
 If no custom handler is registered for a command, then the command is sent
-to the server using the standard |workspace/executeCommand| request.
+to the server using the standard "workspace/executeCommand" request.  A
+language server without the "executeCommandProvider" capability cannot run
+a command: then a warning names the command, which needs a custom handler.
+To run a command of a language server yourself, use |:LspExecuteCommand|.
 If a registered handler throws an exception, the plugin reports an error
 message and continues running.
 
