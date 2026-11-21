@@ -30,7 +30,7 @@ def g:Test_LspServerConfigSet_RegisteredServer()
   var logfile = tempname()
   g:LspAddServer([{
     name: 'configset',
-    filetype: 'lspconfigset',
+    filetype: ['lspconfigset', 'lspconfigset2'],
     path: 'sh',
     args: ['-c', 'head -c 1 >"$2"; printf "%s" "$1"; exec cat >>"$2"', 'sh',
 	   EncodeLspMessage({jsonrpc: '2.0', id: 1,
