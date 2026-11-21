@@ -303,6 +303,8 @@ export var lspOptions: dict<any> = {
   workspaceIgnoredPaths: ['/', $"{$HOME}", $"{$HOME}/.cargo", $"{$HOME}/.cargo/**", $"{$HOME}/.rustup", $"{$HOME}/.rustup/**", $"{$HOME}/pkg/mod", $"{$HOME}/pkg/mod/**"]
 }
 
+export const lspOptionDefaults: dict<any> = lspOptions->deepcopy()
+
 # set the LSP plugin options from the user provided option values
 export def OptionsSet(opts: dict<any>)
   lspOptions->extend(opts)
