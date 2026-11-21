@@ -769,6 +769,9 @@ export def GetClientCaps(watchFiles: bool = true): dict<any>
 	}
       }
     },
+    experimental: {
+      cmdlineCompletion: true
+    },
     # This is the way clangd expects to be informated about supported encodings:
     # https://clangd.llvm.org/extensions#utf-8-offsets
     offsetEncoding: ['utf-32', 'utf-16', 'utf-8']

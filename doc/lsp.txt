@@ -2869,6 +2869,31 @@ reply adds, such as an import, are applied when the item is accepted.  When
 the reply has not arrived yet, Vim waits for it, as long as for the reply to
 any other request, counted from when the request was sent.
 
+						*lsp-cmdline-completion*
+A language server for Vim script cannot know the option values, file names,
+buffer names and user-command arguments of this Vim.  As an extension to the
+protocol, the plugin sets "cmdlineCompletion" to |true| in its "experimental"
+client capabilities, and a language server (vim9ls) can then reply to a
+completion request with "cmdlineCompletion" set to |true| in the completion
+list.  The plugin then completes the text of the line before the cursor as
+Vim does on the command line (|i_CTRL-X_CTRL-V|, |getcompletion()| with
+"cmdline").  This applies to the plugin's auto-completion, to omni completion
+and to |g:LspCompleteSource()|.
+
+The matches keep the order Vim gives them, with the "Value" kind (see
+|lsp-opt-customCompletionKinds|).  A match can start before the keyword
+before the cursor: for "src/ma" the menu shows "src/main.c" and "main.c" is
+inserted.  A match that does not start with the text typed is not shown; the
+"completionMatcher" option set to "icase" ignores case in this comparison.
+Special characters in a file name are escaped with a backslash.
+
+Vim's completion runs in the |sandbox|, because it runs for text as it is
+typed: a shell command in backticks is not executed, and a user command whose
+completion function calls |system()| gets no matches.  The names of all the
+shell commands (after ":!" or ":terminal" with nothing typed) are not listed,
+because Vim takes more than 100 milliseconds to collect them; they are
+completed after the first character.
+
 						       *g:LspCompleteSource()*
 Vim's own auto-completion ('autocomplete', |ins-autocompletion|) and
 |i_CTRL-N| collect matches from the sources in the 'complete' option.  To
