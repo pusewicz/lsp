@@ -3070,7 +3070,7 @@ def g:Test_LspDiagsSubcmd()
   new XLspDiagsSubCmd.raku
 
   feedkeys(":LspDiag \<C-A>\<CR>", 'xt')
-  assert_equal('LspDiag first current here highlight last next nextWrap prev prevWrap show', @:)
+  assert_equal('LspDiag first current here highlight last next nextWrap prev prevWrap show workspace', @:)
   feedkeys(":LspDiag highlight \<C-A>\<CR>", 'xt')
   assert_equal('LspDiag highlight enable disable toggle', @:)
   assert_equal(['Error: :LspDiag - Unsupported argument "xyz"'],
