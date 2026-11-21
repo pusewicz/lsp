@@ -1468,9 +1468,13 @@ Commands to modify, rename, or format your code using the language server.
 			that the rename needs, e.g. to the imports and the
 			includes that name the file
 			("workspace/willRenameFiles").  The changes are made
-			to the buffers of the files and are not written.  The
-			reply is waited for, at most 10 seconds; CTRL-C stops
-			the wait and the rename.  After the rename, the
+			to the buffers of the files and are not written,
+			except the changes to the renamed file, which are
+			written to it.  The reply is waited for, at most 10
+			seconds: a warning then tells that the file is
+			renamed without the changes of that language server.
+			CTRL-C stops the wait and the rename.  After the
+			rename, the
 			language servers that registered for it are told
 			about it ("workspace/didRenameFiles").  The language
 			servers attached to the buffer get the document
@@ -1499,9 +1503,10 @@ Commands to modify, rename, or format your code using the language server.
 			and are told about the new file after the write
 			("workspace/didCreateFiles").  The reply is waited
 			for, at most one second, and the changes are written
-			with the file.  As Vim has no command to delete a
-			file, the language servers are not asked or told
-			about deleted files.
+			with the file.  The language servers are not asked or
+			told about the files that a workspace edit creates,
+			renames or deletes, and Vim has no command to delete
+			a file.
 
 							*:LspSelectionExpand*
 :LspSelectionExpand	Start a character-wise visual selection using the

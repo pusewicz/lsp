@@ -105,9 +105,16 @@ def SendWill(method: string, files: list<dict<string>>, path: string,
 	     isFolder: bool, timeout: number): bool
   for lspserver in InterestedServers(method, path, isFolder)
     var reply: dict<any> = lspserver.rpc(method, {files: files},
-					 {timeout: timeout})
-    if reply->empty() || reply.result->type() != v:t_dict
-	|| reply.result->empty()
+      {timeout: timeout, handleError: false})
+    if reply->empty()
+      util.WarnMsg($'No reply to {method} from language server "{lspserver.name}"')
+      continue
+    endif
+    if reply->has_key('error')
+      util.ErrMsg($'request {method} failed ({reply.error->get("message", "")})')
+      continue
+    endif
+    if reply.result->type() != v:t_dict || reply.result->empty()
       continue
     endif
     if !textedit.ApplyWorkspaceEdit(reply.result, lspserver).applied
@@ -204,6 +211,10 @@ export def ProcessServerCaps(lspserver: dict<any>, caps: dict<any>)
   DropEmptyEntry(lspserver)
 enddef
 
+def RegistrationKey(method: string, id: string): string
+  return $"{method}\n{id}"
+enddef
+
 export def ParseRegistrations(registrations: list<any>): dict<any>
   var regs: dict<dict<any>> = {}
   for registration in registrations
@@ -221,7 +232,7 @@ export def ParseRegistrations(registrations: list<any>): dict<any>
     if filters->indexof((_, filter) => filter->empty()) != -1
       return {error: $'{method} registration has a filter that is not valid'}
     endif
-    regs[id] = {method: method, filters: filters}
+    regs[RegistrationKey(method, id)] = {method: method, filters: filters}
   endfor
   return {error: '', regs: regs}
 enddef
@@ -240,12 +251,14 @@ export def Unregister(lspserver: dict<any>, unregistrations: list<any>)
   endif
   var dynamic: dict<any> = servers[lspserver.id].dynamic
   for unregistration in unregistrations
-    if unregistration->type() == v:t_dict
-	&& unregistration->get('method')->type() == v:t_string
-	&& unregistration->get('id')->type() == v:t_string
-	&& dynamic->has_key(unregistration.id)
-	&& dynamic[unregistration.id].method ==# unregistration.method
-      dynamic->remove(unregistration.id)
+    if unregistration->type() != v:t_dict
+	|| unregistration->get('method')->type() != v:t_string
+	|| unregistration->get('id')->type() != v:t_string
+      continue
+    endif
+    var key: string = RegistrationKey(unregistration.method, unregistration.id)
+    if dynamic->has_key(key)
+      dynamic->remove(key)
     endif
   endfor
   DropEmptyEntry(lspserver)
@@ -334,6 +347,14 @@ export def RenameFile(name: string)
   if !failureReason->empty()
     util.ErrMsg(failureReason)
     return
+  endif
+
+  if bnr->getbufvar('&modified')
+    try
+      util.ExecuteInBuffer(bnr, 'silent write!')
+    catch
+      util.ErrMsg(v:exception)
+    endtry
   endif
 
   SendDid(DID_RENAME, files, oldPath, false)

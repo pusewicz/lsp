@@ -12556,8 +12556,9 @@ def g:Test_FileOperations_RenameFile()
   var messages: list<dict<any>> = []
   var filters = {filters: [{scheme: 'file',
 			    pattern: {glob: '**/*.c', matches: 'file'}}]}
-  var edit = {documentChanges: [MakeInsertEdit(util.LspFileToUri(user),
-					       "// moved\n")]}
+    var edit = {documentChanges: [
+    MakeInsertEdit(util.LspFileToUri(user), "// moved\n"),
+    MakeInsertEdit(util.LspFileToUri(from), "// self\n")]}
   var lspserver = MakeFileOpsServer({willRename: filters, didRename: filters},
     {'workspace/willRenameFiles': {result: edit}}, messages,
     {textDocumentSync: {openClose: true, change: 1}})
@@ -12567,13 +12568,16 @@ def g:Test_FileOperations_RenameFile()
 		  newUri: util.LspFileToUri(to)}]
     exe $'LspRenameFile {to}'
     assert_false(filereadable(from))
-    assert_equal(['int a;'], readfile(to))
+    assert_equal(['// self', 'int a;'], readfile(to))
     assert_equal(bnr, bufnr())
     assert_equal(fnamemodify(to, ':p'), expand('%:p'))
     assert_false(&modified)
     assert_equal(['// moved', '#include "a.c"'],
 		 getbufline(bufnr(user), 1, '$'))
+    assert_true(getbufvar(bufnr(user), '&modified'))
+    assert_equal(['#include "a.c"'], readfile(user))
 
+    messages->filter((_, msg) => msg.method != 'textDocument/didChange')
     assert_equal(['workspace/willRenameFiles', 'textDocument/didClose',
 		  'workspace/didRenameFiles'], Methods(messages))
     assert_equal({method: 'workspace/willRenameFiles', params: {files: files},
@@ -12826,9 +12830,11 @@ def g:Test_FileOperations_CreateFileNoReply()
     exe $'silent edit {fname}'
     setline(1, 'int n;')
     var start = reltime()
-    silent write
+    :write
     var elapsed = start->reltime()->reltimefloat()
     assert_inrange(1.0, 5.0, elapsed)
+    assert_match('Warn: No reply to workspace/willCreateFiles from language server "test"',
+		 execute('messages'))
     assert_equal(['int n;'], readfile(fname))
     assert_equal([
       {method: '$/cancelRequest', params: {id: id}},
@@ -12875,9 +12881,9 @@ def g:Test_FileOperations_DynamicRegistration()
     responses->filter('0')
     lspserver.processRequest({id: 2, method: 'client/registerCapability',
       params: {registrations: [
-	{id: 'did', method: 'workspace/didCreateFiles',
+	{id: 'create', method: 'workspace/didCreateFiles',
 	 registerOptions: registerOptions},
-	{id: 'will', method: 'workspace/willCreateFiles',
+	{id: 'create', method: 'workspace/willCreateFiles',
 	 registerOptions: registerOptions}]}})
     assert_equal([{id: 2, result: null, error: {}}], responses)
     assert_true(exists('#LspFileOperations#BufWritePre'))
@@ -12892,15 +12898,15 @@ def g:Test_FileOperations_DynamicRegistration()
     responses->filter('0')
     lspserver.processRequest({id: 3, method: 'client/unregisterCapability',
       params: {unregisterations: [
-	{id: 'will', method: 'workspace/willCreateFiles'},
-	{id: 'did', method: 'workspace/willCreateFiles'}]}})
+	{id: 'create', method: 'workspace/willCreateFiles'},
+	{id: 'other', method: 'workspace/didCreateFiles'}]}})
     assert_equal([{id: 3, result: null, error: {}}], responses)
     exe $'silent write {dir}/b.c'
     assert_equal(['workspace/didCreateFiles'], Methods(messages))
 
     lspserver.processRequest({id: 4, method: 'client/unregisterCapability',
       params: {unregisterations: [
-	{id: 'did', method: 'workspace/didCreateFiles'}]}})
+	{id: 'create', method: 'workspace/didCreateFiles'}]}})
     assert_false(exists('#LspFileOperations'))
   finally
     fileoperations.RemoveServer(lspserver)
