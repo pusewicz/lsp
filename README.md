@@ -32,7 +32,7 @@ The following language server protocol (LSP) features are supported:
 * Display warning and error diagnostics, with their related information and
   unnecessary/deprecated code tags
 * Find all symbol references
-* Document and Workspace symbol search
+* Document and Workspace symbol search; the position of a workspace symbol that the server sends without one is resolved when you jump to it
 * Display code outline
 * Rename symbol
 * Display type and documentation on hover

@@ -1482,6 +1482,229 @@ def g:Test_TagFunc_RegexpFlagMatchesSymbolNames()
   endtry
 enddef
 
+def MakeWorkspaceSymbolServer(symbols: list<dict<any>>, resolved: dict<any>,
+			      requests: list<dict<any>>): dict<any>
+  var lspserver = MakeTestLspServer([])
+  lspserver.running = true
+  lspserver.ready = true
+  lspserver.isWorkspaceSymbolProvider = true
+  lspserver.isWorkspaceSymbolResolveProvider = true
+  var Reply = (method: string, params: any): any => {
+    requests->add({method: method, params: params->deepcopy()})
+    if method == 'workspaceSymbol/resolve'
+      return resolved->get(params.name, null)->deepcopy()
+    endif
+    return symbols->deepcopy()
+  }
+  lspserver.rpc_a = (method: string, params: any, Cbfunc: func, _ = {}) => {
+    Cbfunc(lspserver, Reply(method, params), {})
+    return requests->len()
+  }
+  lspserver.rpc = (method: string, params: any, _ = {}) => {
+    return {result: Reply(method, params)}
+  }
+  return lspserver
+enddef
+
+def WorkspaceSymbolTestRange(lnum: number, character: number): dict<any>
+  var pos = {line: lnum - 1, character: character}
+  return {start: pos, end: pos->copy()}
+enddef
+
+def g:Test_WorkspaceSymbolResolve_Capabilities()
+  assert_equal({properties: ['location.range']},
+	       capabilities.GetClientCaps().workspace.symbol.resolveSupport)
+  for [caps, provider, resolveProvider] in [
+      [{}, false, false],
+      [{workspaceSymbolProvider: false}, false, false],
+      [{workspaceSymbolProvider: true}, true, false],
+      [{workspaceSymbolProvider: {}}, true, false],
+      [{workspaceSymbolProvider: {resolveProvider: false}}, true, false],
+      [{workspaceSymbolProvider: {resolveProvider: true}}, true, true]]
+    var lspserver: dict<any> = {caps: caps, forceOffsetEncoding: ''}
+    capabilities.ProcessServerCaps(lspserver, caps)
+    assert_equal(provider, lspserver.isWorkspaceSymbolProvider, caps->string())
+    assert_equal(resolveProvider, lspserver.isWorkspaceSymbolResolveProvider,
+		 caps->string())
+  endfor
+enddef
+
+def g:Test_SymbolSearch_ResolvesOnlyThePickedSymbol()
+  var target = 'XWsSymbolTarget.txt'
+  writefile(['one', 'two', '  three', 'four'], target)
+  silent! edit XWsSymbolSource.txt
+  var srcBnr = bufnr()
+  var uri = util.LspFileToUri(target->fnamemodify(':p'))
+  var symbols = [
+    {name: 'SymRanged', kind: 12,
+     location: {uri: uri, range: WorkspaceSymbolTestRange(2, 1)}},
+    {name: 'SymLazy', kind: 12, location: {uri: uri}, data: {id: 7}},
+    {name: 'SymOther', kind: 12, location: {uri: uri}, data: {id: 8}},
+    {name: 'SymNull', kind: 12, location: {uri: uri}},
+    {name: 'SymStillLazy', kind: 12, location: {uri: uri}}
+  ]
+  var resolved = {
+    SymLazy: symbols[1]->extendnew({
+      location: {uri: uri, range: WorkspaceSymbolTestRange(3, 2)}}),
+    SymStillLazy: symbols[4]
+  }
+  var requests: list<dict<any>> = []
+  var srv = MakeWorkspaceSymbolServer(symbols, resolved, requests)
+  buf.BufLspServerSet(srcBnr, srv)
+  try
+    :LspSymbolSearch Sym
+    var popupLines = srv.workspaceSymbolPopup->winbufnr()->getbufline(1, '$')
+    assert_equal(['SymRanged', 'SymLazy', 'SymOther', 'SymNull',
+		  'SymStillLazy'],
+		 popupLines->mapnew((_, line) => line->matchstr('^\S\+')))
+    assert_equal(5, popupLines->filter((_, line) =>
+      line =~ '^\S\+ \[Function\] XWsSymbolTarget.txt')->len())
+    assert_equal(['workspace/symbol'], requests->mapnew((_, r) => r.method))
+
+    feedkeys("\<Down>\<CR>", 'xt')
+    assert_equal(['workspace/symbol', 'workspaceSymbol/resolve'],
+		 requests->mapnew((_, r) => r.method))
+    assert_equal(symbols[1], requests[1].params)
+    assert_equal(target, expand('%:t'))
+    assert_equal([3, 3], [line('.'), col('.')])
+
+    buf.BufLspServerSet(bufnr(), srv)
+    requests->filter((_, _) => false)
+    feedkeys(":LspSymbolSearch Sym\<CR>\<CR>", 'xt')
+    assert_equal(['workspace/symbol'], requests->mapnew((_, r) => r.method))
+    assert_equal(target, expand('%:t'))
+    assert_equal([2, 2], [line('.'), col('.')])
+
+    for keys in ["\<Down>\<Down>\<Down>\<CR>", "\<C-End>\<CR>"]
+      cursor(4, 2)
+      requests->filter((_, _) => false)
+      feedkeys($":LspSymbolSearch Sym\<CR>{keys}", 'xt')
+      assert_equal(['workspace/symbol', 'workspaceSymbol/resolve'],
+		   requests->mapnew((_, r) => r.method), keys)
+      assert_equal(target, expand('%:t'), keys)
+      assert_equal([1, 1], [line('.'), col('.')], keys)
+    endfor
+  finally
+    buf.BufLspServerRemove(srcBnr, srv)
+    :%bw!
+    delete(target)
+  endtry
+enddef
+
+def g:Test_SymbolSearch_ResolvesSingleSymbol()
+  var target = 'XWsSymbolTarget.txt'
+  writefile(['one', "\U1F600\U1F600 two"], target)
+  silent! edit XWsSymbolSource.txt
+  var srcBnr = bufnr()
+  var uri = util.LspFileToUri(target->fnamemodify(':p'))
+  var symbols = [{name: 'SymLazy', kind: 12, location: {uri: uri}}]
+  var resolved = {
+    SymLazy: symbols[0]->extendnew({
+      location: {uri: uri, range: WorkspaceSymbolTestRange(2, 5)}})
+  }
+  var requests: list<dict<any>> = []
+  var srv = MakeWorkspaceSymbolServer(symbols, resolved, requests)
+  srv.posEncoding = 16
+  srv.needOffsetEncoding = true
+  buf.BufLspServerSet(srcBnr, srv)
+  try
+    :LspSymbolSearch SymLazy
+    assert_equal(['workspace/symbol', 'workspaceSymbol/resolve'],
+		 requests->mapnew((_, r) => r.method))
+    assert_equal(symbols[0], requests[1].params)
+    assert_equal(target, expand('%:t'))
+    assert_equal([2, 4], [line('.'), charcol('.')])
+    assert_equal(-1, srv.workspaceSymbolPopup->winbufnr())
+  finally
+    buf.BufLspServerRemove(srcBnr, srv)
+    :%bw!
+    delete(target)
+  endtry
+enddef
+
+def g:Test_SymbolSearch_NoResolveProviderOpensFileStart()
+  var target = 'XWsSymbolTarget.txt'
+  writefile(['one', 'two', 'three'], target)
+  silent! edit XWsSymbolSource.txt
+  var srcBnr = bufnr()
+  var uri = util.LspFileToUri(target->fnamemodify(':p'))
+  var symbols = [{name: 'SymLazy', kind: 12, location: {uri: uri}}]
+  var requests: list<dict<any>> = []
+  var srv = MakeWorkspaceSymbolServer(symbols, {}, requests)
+  srv.isWorkspaceSymbolResolveProvider = false
+  buf.BufLspServerSet(srcBnr, srv)
+  try
+    :LspSymbolSearch SymLazy
+    assert_equal(['workspace/symbol'], requests->mapnew((_, r) => r.method))
+    assert_equal(target, expand('%:t'))
+    assert_equal([1, 1], [line('.'), col('.')])
+
+    buf.BufLspServerSet(bufnr(), srv)
+    cursor(3, 2)
+    symbols->add({name: 'SymSecond', kind: 12, location: {uri: uri}})
+    requests->filter((_, _) => false)
+    feedkeys(":LspSymbolSearch Sym\<CR>\<Down>\<CR>", 'xt')
+    assert_equal(['workspace/symbol'], requests->mapnew((_, r) => r.method))
+    assert_equal(target, expand('%:t'))
+    assert_equal([1, 1], [line('.'), col('.')])
+  finally
+    buf.BufLspServerRemove(srcBnr, srv)
+    :%bw!
+    delete(target)
+  endtry
+enddef
+
+def g:Test_TagFunc_ResolvesSymbolWithoutRange()
+  var fname = 'XTagFuncResolve.txt'
+  writefile(['MyFirst', '  MySecond', 'MyThird'], fname)
+  silent! execute 'edit' fname
+  var uri = util.LspBufnrToUri(bufnr())
+  var symbols = [
+    {name: 'MyFirst', kind: 12,
+     location: {uri: uri, range: WorkspaceSymbolTestRange(1, 0)}},
+    {name: 'MySecond', kind: 12, location: {uri: uri}},
+    {name: 'MyThird', kind: 12, location: {uri: uri}}
+  ]
+  var resolved = {
+    MySecond: symbols[1]->extendnew({
+      location: {uri: uri, range: WorkspaceSymbolTestRange(2, 2)}})
+  }
+  var requests: list<dict<any>> = []
+  var srv = MakeWorkspaceSymbolServer(symbols, resolved, requests)
+  try
+    cursor(3, 1)
+    var tags = srv.tagFunc('MySecond', '', {})
+    assert_equal([['MySecond', '/\%2l\%3c/']],
+		 tags->mapnew((_, tag) => [tag.name, tag.cmd]))
+    assert_equal(['workspace/symbol', 'workspaceSymbol/resolve'],
+		 requests->mapnew((_, r) => r.method))
+    assert_equal(symbols[1], requests[1].params)
+
+    requests->filter((_, _) => false)
+    tags = srv.tagFunc('MyFirst', '', {})
+    assert_equal([['MyFirst', '/\%1l\%1c/']],
+		 tags->mapnew((_, tag) => [tag.name, tag.cmd]))
+    assert_equal(['workspace/symbol'], requests->mapnew((_, r) => r.method))
+
+    requests->filter((_, _) => false)
+    tags = srv.tagFunc('^My', 'r', {})
+    assert_equal([['MyFirst', '/\%1l\%1c/'], ['MySecond', '/\%1l\%1c/'],
+		  ['MyThird', '/\%1l\%1c/']],
+		 tags->mapnew((_, tag) => [tag.name, tag.cmd]))
+    assert_equal(['workspace/symbol'], requests->mapnew((_, r) => r.method))
+
+    requests->filter((_, _) => false)
+    srv.isWorkspaceSymbolResolveProvider = false
+    tags = srv.tagFunc('MySecond', '', {})
+    assert_equal([['MySecond', '/\%1l\%1c/']],
+		 tags->mapnew((_, tag) => [tag.name, tag.cmd]))
+    assert_equal(['workspace/symbol'], requests->mapnew((_, r) => r.method))
+  finally
+    :%bw!
+    delete(fname)
+  endtry
+enddef
+
 # Test that a "$/cancelRequest" notification from the server is accepted
 # quietly.
 def g:Test_ProcessNotif_CancelRequestIsIgnored()

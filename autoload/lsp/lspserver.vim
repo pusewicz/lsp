@@ -3450,18 +3450,81 @@ def WorkspaceQuerySymbolsReply(lspserver: dict<any>, query: string,
 
   if firstCall && symInfo->len() == 1
     # If there is only one symbol, then jump to the symbol location
-    var symLoc: dict<any> = symInfo[0]->get('location', {})
-    if !symLoc->empty()
-      # Decode the position encoding in the symbol location
-      if lspserver.needOffsetEncoding
-	lspserver.decodeLocation(symLoc)
-      endif
-      symbol.GotoSymbol(lspserver, symLoc, false, cmdmods)
+    if symInfo[0]->has_key('location')
+      WorkspaceSymbolLocation(lspserver, symInfo[0], (location: dict<any>) => {
+	symbol.GotoSymbol(lspserver, location, false, cmdmods)
+      })
     endif
   else
     # Note: decoding position encoding delayed until jumping to location
     symbol.WorkspaceSymbolPopup(lspserver, query, symInfo, cmdmods)
   endif
+enddef
+
+def WorkspaceSymbolHasRange(sym: dict<any>): bool
+  var location: any = sym->get('location', {})
+  return location->type() == v:t_dict
+    && location->get('range', 0)->type() == v:t_dict
+enddef
+
+def WorkspaceSymbolFileStart(sym: dict<any>): dict<any>
+  var pos = {line: 0, character: 0}
+  return {uri: sym.location.uri, range: {start: pos, end: pos->copy()}}
+enddef
+
+def WorkspaceSymbolLocation(lspserver: dict<any>, sym: dict<any>,
+			    Cbfunc: func)
+  if WorkspaceSymbolHasRange(sym)
+    var location: dict<any> = sym.location->deepcopy()
+    if lspserver.needOffsetEncoding
+      lspserver.decodeLocation(location)
+    endif
+    Cbfunc(location)
+    return
+  endif
+
+  var fileStart = WorkspaceSymbolFileStart(sym)
+  if !lspserver.isWorkspaceSymbolResolveProvider
+    Cbfunc(fileStart)
+    return
+  endif
+
+  var reqctx = util.RequestContextGet('cursor')
+  var id = lspserver.rpc_a('workspaceSymbol/resolve', sym,
+			   (_: dict<any>, result: any, _) => {
+    if !util.RequestContextMatches(reqctx)
+      return
+    endif
+    if result->type() != v:t_dict || !WorkspaceSymbolHasRange(result)
+      Cbfunc(fileStart)
+      return
+    endif
+
+    var location: dict<any> = result.location
+    if lspserver.needOffsetEncoding
+      lspserver.decodeLocation(location)
+    endif
+    Cbfunc(location)
+  }, {beforePendingKeys: true})
+  if id < 0
+    Cbfunc(fileStart)
+  endif
+enddef
+
+def WorkspaceSymbolLocationSync(lspserver: dict<any>,
+				sym: dict<any>): dict<any>
+  if WorkspaceSymbolHasRange(sym)
+    return sym.location
+  endif
+  if lspserver.isWorkspaceSymbolResolveProvider
+    var reply = lspserver.rpc('workspaceSymbol/resolve', sym,
+			      {handleError: false})
+    var resolved: any = reply->get('result', {})
+    if resolved->type() == v:t_dict && WorkspaceSymbolHasRange(resolved)
+      return resolved.location
+    endif
+  endif
+  return WorkspaceSymbolFileStart(sym)
 enddef
 
 # Return the LSP WorkspaceFolder interface for the directory "dirName"
@@ -3802,14 +3865,17 @@ def TagFunc(lspserver: dict<any>, pat: string, flags: string, info: dict<any>): 
     endif
 
     for sym in wsReply.result
-      if !sym->has_key('location') || !sym.location->has_key('range')
+      if !sym->has_key('location')
 	continue
       endif
       var name = sym->get('name', '')
       if isRegexp ? name !~ pat : name != pat
 	continue
       endif
-      taglocations->add(sym.location->extendnew({name: name}))
+      var location: dict<any> = isRegexp && !WorkspaceSymbolHasRange(sym)
+	? WorkspaceSymbolFileStart(sym)
+	: WorkspaceSymbolLocationSync(lspserver, sym)
+      taglocations->add(location->extendnew({name: name}))
     endfor
 
     if taglocations->empty()
@@ -4034,6 +4100,7 @@ export def NewLspServer(serverParams: dict<any>): dict<any>
     openDocumentLink: function(OpenDocumentLink, [lspserver]),
     resolveDocumentLink: function(ResolveDocumentLink, [lspserver]),
     workspaceQuery: function(WorkspaceQuerySymbols, [lspserver]),
+    workspaceSymbolLocation: function(WorkspaceSymbolLocation, [lspserver]),
     addWorkspaceFolder: function(AddWorkspaceFolder, [lspserver]),
     removeWorkspaceFolder: function(RemoveWorkspaceFolder, [lspserver]),
     linkedEditingRangesUpdate: function(LinkedEditingRangesUpdate, [lspserver]),
