@@ -275,7 +275,9 @@ To add a language server, the following information is needed:
 			documentation for the values that will be accepted in
 			this notification.  This configuration is also used to
 			respond to the "workspace/configuration" request
-			message from the language server.
+			message from the language server.  To change it
+			for a registered language server, use
+			|g:LspServerConfigSet()|.
 						*lsp-cfg-rootSearch*
 	rootSearch	(Optional) a List of file and directory names used to
 			locate the root path or uri of the workspace.  The
@@ -521,6 +523,23 @@ initializing.
 The g:LspServerRunning({filetype}) function returns |v:true| if one or more
 language servers registered for {filetype} are currently running.
 
+			    *LspServerConfigSet()* *g:LspServerConfigSet()*
+The g:LspServerConfigSet({name}, {config}) function replaces the
+"workspaceConfig" (|lsp-cfg-workspaceConfig|) of all the registered language
+servers with the name {name} with a copy of the |Dict| {config}.  It returns
+the number of these servers, which is 0 when no server has this name.  A
+server that is running and ready gets {config} immediately as the "settings"
+in a "workspace/didChangeConfiguration" notification, also when {config} is
+empty, and its subsequent "workspace/configuration" requests are answered
+from {config}.  A server that is not running, or that is not ready yet, gets
+{config} when it starts.  The new value stays in effect when the server is
+restarted with |:LspServer| restart.  The settings that a language server
+reads from "initializationOptions" cannot be changed with this function:
+change them where the server is registered and restart Vim.  Example: >
+
+    g:LspServerConfigSet('gopls', {gopls: {staticcheck: true}})
+<
+
 ==============================================================================
 							*lsp-commands*
 5. Commands~
@@ -642,7 +661,8 @@ when no keys are pending.
 :LspSelectionExpand	Expand the current symbol range visual selection
 :LspSelectionShrink	Shrink the current symbol range visual selection
 :LspServer		Command to display the status and messages from a
-			language server and to restart the language server.
+			language server, to restart the language server and
+			to send it the workspace configuration again.
 :LspShowAllServers	Display the status of all the registered language
 			servers.
 :LspShowReferences	Display the list of references to the keyword under
@@ -1647,7 +1667,7 @@ Commands to control language server processes, monitor their status, and
 manage workspace folder scope.
 
 						*:LspServer*
-:LspServer { debug | restart | show | start | stop | trace }
+:LspServer { debug | reconfigure | restart | show | start | stop | trace }
 			Command to display and control the language server for
 			the current buffer.  Each argument has additional
 			sub-commands which are described below.
@@ -1675,6 +1695,25 @@ manage workspace folder scope.
 			    MS-Windows, the %TEMP%/lsp-<server-name>.log and
 			    %TEMP%/lsp-<server-name>.err% files are used. See
 			    |lsp-debug| for more information.
+
+			reconfigure
+			    Send the workspace configuration
+			    (|lsp-cfg-workspaceConfig|) again to the language
+			    servers of the current buffer that are running and
+			    ready, as the "settings" in a
+			    "workspace/didChangeConfiguration" notification,
+			    and show the number of language servers it was
+			    sent to.  A language server that gets its settings
+			    with the "workspace/configuration" request sends
+			    that request again when it receives this
+			    notification.  To change the workspace
+			    configuration of a language server, use
+			    |g:LspServerConfigSet()|, which also sends this
+			    notification.  A language server that reads its
+			    settings only from "initializationOptions" at
+			    startup ignores this notification: change these
+			    options where the language server is registered
+			    and restart Vim.
 
 			restart
 			    Restart (stop and then start) the language server

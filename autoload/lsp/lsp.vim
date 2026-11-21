@@ -1120,6 +1120,40 @@ def RestartServer()
   AddBuffersToLsp(ftype)
 enddef
 
+def ServerReconfigure()
+  var lspservers: list<dict<any>> = buf.CurbufGetServers()
+  if lspservers->empty()
+    util.WarnMsg($'No Lsp servers found for "{@%}"')
+    return
+  endif
+
+  var told: number = 0
+  for lspserver in lspservers
+    if lspserver.running && lspserver.ready
+      lspserver.sendWorkspaceConfig()
+      told += 1
+    endif
+  endfor
+  util.InfoMsg($'Sent the workspace configuration to {told} language server{told == 1 ? '' : 's'}')
+enddef
+
+export def ServerConfigSet(name: string, config: dict<any>): number
+  var seen: dict<bool> = {}
+  for lspservers in ftypeServerMap->values()
+    for lspserver in lspservers
+      if lspserver.name != name || seen->has_key(lspserver.id)
+	continue
+      endif
+      seen[lspserver.id] = true
+      lspserver.workspaceConfig = config->deepcopy()
+      if lspserver.running && lspserver.ready
+	lspserver.sendWorkspaceConfig()
+      endif
+    endfor
+  endfor
+  return seen->len()
+enddef
+
 # Add the LSP server for files with 'filetype' as "ftype".
 def AddServerForFiltype(lspserver: dict<any>, ftype: string, omnicompl: bool)
   LspAddServer(ftype, lspserver)
@@ -2071,7 +2105,7 @@ enddef
 export def LspServerComplete(arglead: string, cmdline: string, cursorPos: number): list<string>
   var wordBegin = -1
   var wordEnd = -1
-  var l = ['debug', 'restart', 'show', 'trace', 'stop', 'start']
+  var l = ['debug', 'reconfigure', 'restart', 'show', 'trace', 'stop', 'start']
 
   # Skip the command name
   var i = cmdline->stridx(' ', 0)
@@ -2106,6 +2140,8 @@ export def LspServerCmd(args: string)
     else
       util.ErrMsg('Argument required for ":LspServer debug"')
     endif
+  elseif args == 'reconfigure'
+    ServerReconfigure()
   elseif args == 'restart'
     RestartServer()
   elseif args->stridx('show') == 0

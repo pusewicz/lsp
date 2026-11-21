@@ -46,6 +46,10 @@ def g:LspServerRunning(ftype: string): bool
   return lsp.ServerRunning(ftype)
 enddef
 
+def g:LspServerConfigSet(name: string, config: dict<any>): number
+  return lsp.ServerConfigSet(name, config)
+enddef
+
 def g:LspEnable()
   lsp.LspEnable()
 enddef
