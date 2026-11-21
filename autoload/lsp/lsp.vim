@@ -1230,12 +1230,17 @@ enddef
 export def ConfigCheck()
   var lines: list<string> = configcheck.ConfigProblems(opt.lspOptions,
     opt.lspOptionDefaults, serverEntries)
+  var bname: string = 'LSP-Config-Check'
   if lines->empty()
-    util.InfoMsg('The LSP configuration is good')
-    return
+    var good: string = 'The LSP configuration is good'
+    util.InfoMsg(good)
+    if scratchBufnrs->get(bname, -1)->bufwinid() == -1
+      return
+    endif
+    lines = [good]
   endif
 
-  OpenScratchWindow('LSP-Config-Check')
+  OpenScratchWindow(bname)
   setline(1, lines)
   :setlocal nomodified
   :setlocal nomodifiable

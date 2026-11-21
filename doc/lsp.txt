@@ -1378,7 +1378,8 @@ Commands to modify, rename, or format your code using the language server.
 			language server entries given to LspAddServer()
 			(|lsp-server-add|), as they are now.  When there are
 			no problems, a message says that the configuration is
-			good.  If not, each problem is shown on one line of a
+			good, and an open "LSP-Config-Check" window shows the
+			same.  If not, each problem is shown on one line of a
 			scratch buffer named "LSP-Config-Check", with the name
 			of the option, or the name of the server and the key: >
 

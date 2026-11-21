@@ -109,7 +109,7 @@ Field|Description
 `filetype`|One or more file types supported by the LSP server.  This can be a String or a List. To specify multiple multiple file types, use a List.
 `path`|complete path to the LSP server executable (without any arguments).
 `args`|a list of command-line arguments passed to the LSP server. Each argument is a separate List item.
-`initializationOptions`|User provided initialization options. May be of any type. For example the *intelephense* PHP language server accept several options here with the License Key among others. 
+`initializationOptions`|User provided initialization options, in a Dict. For example the *intelephense* PHP language server accept several options here with the License Key among others. 
 `customNotificationHandlers`|A dictionary of notifications and functions that can be specified to add support for custom language server notifications.
 `customRequestHandlers`|A dictionary of request handlers and functions that can be specified to add support for custom language server requests replies.
 `features`|A dictionary of booleans that can be specified to toggle what things a given LSP is providing (folding, goto definition, etc) This is useful when running multiple servers in one buffer.

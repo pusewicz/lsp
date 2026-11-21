@@ -123,6 +123,7 @@ const popupOptionTypes: list<string> = [
 const typeNames: dict<string> = {
   [v:t_bool]: 'a Boolean',
   [v:t_dict]: 'a Dict',
+  [v:t_float]: 'a Float',
   [v:t_func]: 'a Funcref',
   [v:t_list]: 'a List',
   [v:t_none]: 'null',
@@ -136,7 +137,7 @@ def TypeProblem(name: string, value: any, types: list<number>): string
   endif
   var actual: string = typeNames->get(value->type()->string(), typename(value))
   var expected: string = types
-    ->mapnew((_, t) => typeNames[t->string()])
+    ->mapnew((_, t) => typeNames->get(t->string(), $'type {t}'))
     ->join(' or ')
   return $'"{name}" is {actual}, expected {expected}'
 enddef

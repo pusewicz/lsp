@@ -3292,7 +3292,7 @@ def g:Test_ConfigCheck_OptionProblems()
     '"outlineWinSize" is a String, expected a Number',
     '"popupBorderFoo" is not a known option',
     '"popupBorderHover" is a String, expected a Boolean',
-    '"popupOpacityPeek" is float, expected a Number',
+    '"popupOpacityPeek" is a Float, expected a Number',
     '"workspaceIgnoredPaths" is a String, expected a List',
   ], configcheck.OptionProblems({
     autoComplet: true,
@@ -3520,13 +3520,22 @@ def g:Test_ConfigCheck_Command()
     endfor
     assert_equal(1, getbufinfo()
       ->filter((_, b) => b.name =~ 'LSP-Config-Check$')->len())
-  finally
+
     opt.lspOptions->remove('xConfigCheckOption')
+    g:LspAddServer([{name: 'xcheck', filetype: 'xconfigcheck', path: 'sh',
+      args: ['-c', 'exit'], traceLevel: 'verbose'}])
+    :wincmd p
+    :messages clear
+    :LspConfigCheck
+    assert_equal('Info: The LSP configuration is good',
+      execute('messages')->split("\n")[-1])
+    assert_equal('LSP-Config-Check', bufname())
+    assert_equal(['The LSP configuration is good'], getline(1, '$'))
+  finally
+    opt.lspOptions->filter((k, _) => k != 'xConfigCheckOption')
     :%bw!
   endtry
 
-  g:LspAddServer([{name: 'xcheck', filetype: 'xconfigcheck', path: 'sh',
-    args: ['-c', 'exit'], traceLevel: 'verbose'}])
   :messages clear
   :LspConfigCheck
   assert_equal('Info: The LSP configuration is good',
