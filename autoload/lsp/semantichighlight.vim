@@ -736,6 +736,8 @@ export def BufferInit(lspserver: dict<any>, bnr: number)
     return
   endif
 
+  # TODO-UPDATE-COMMENT: only the lines in view for a server without full requests
+  # ---
   # Highlight all the semantic tokens
   AddBufferListener(bnr)
   LspUpdateSemanticHighlight(bnr)
