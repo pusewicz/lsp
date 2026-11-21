@@ -217,6 +217,7 @@ Command|Description
 `:LspCodeLens`|Display a list of code lens commands and apply a selected code lens command to the current file.
 `:LspCodeLensRun`|Run the code lens command for the current line, or a selected one when the line has several.
 `:LspColorPresentation`|Write the color under the cursor another way (e.g. `#ff0000` as `rgb(255 0 0)`), chosen from the ones the language server offers.
+`:LspConfigCheck`|Report the problems in the plugin options and in the language server entries: unknown or misspelled names, values of the wrong type, language servers that are not executable.
 `:LspDiag current`|Display the diagnostic message for the current line.
 `:LspDiag first`|Jump to the first diagnostic message for the current buffer.
 `:LspDiag here`|Jump to the next diagnostic message in the current line.

@@ -486,7 +486,7 @@ Additionally the following configurations can be made:
 
 						*lsp-cfg-traceLevel*
 	traceLevel	(Optional) set the debug trace level for this language
-			server.  Supported values are: "off", "debug" and
+			server.  Supported values are: "off", "messages" and
 			"verbose".  By default this is set to "off".
 
 The language servers are added using the LspAddServer() function. This
@@ -592,6 +592,8 @@ when no keys are pending.
 :LspColorPresentation [N]
 			Write the color under the cursor another way, chosen
 			from the ones the language server offers.
+:LspConfigCheck		Report the problems in the plugin options and in the
+			language server entries.
 :LspDiag current	Display the diagnostic message for the current line.
 :LspDiag first		Jump to the first diagnostic message for the current
 			buffer.
@@ -1370,6 +1372,43 @@ Commands to modify, rename, or format your code using the language server.
 			menu.  Uses the "textDocument/documentColor" and
 			"textDocument/colorPresentation" requests, also when
 			|lsp-opt-showDocumentColors| is not set.
+
+						*:LspConfigCheck*
+:LspConfigCheck		Check the plugin options (|lsp-options|) and the
+			language server entries given to LspAddServer()
+			(|lsp-server-add|), as they are now.  When there are
+			no problems, a message says that the configuration is
+			good.  If not, each problem is shown on one line of a
+			scratch buffer named "LSP-Config-Check", with the name
+			of the option, or the name of the server and the key: >
+
+		option "autoComplet" is not a known option
+		option "outlineWinSize" is a String, expected a Number
+		server "clangd": "args" is a String, expected a List
+		server "clangd": "features.hovr" is not a known feature
+<
+			The command reports:
+			- an option or a server key that the plugin does not
+			  know, e.g. a misspelled name
+			- a value of the wrong type, also in a |List| or a
+			  |Dict| value
+			- a value that is not one of the permitted values,
+			  e.g. for |lsp-opt-completionMatcher|,
+			  |lsp-cfg-traceLevel| or |lsp-cfg-forceOffsetEncoding|
+			- a server entry without "filetype" or "path"
+			- a "path" that is not executable, unless
+			  |lsp-opt-ignoreMissingServer| is set
+			- a name in "features" that is not in |lsp-features|
+
+			LspAddServer() uses the same rules.  It shows only the
+			problems that prevent the registration of a server.
+			For the other problems it ignores the key or uses the
+			default value, and shows nothing.
+
+			A server without a name is shown with the name of its
+			executable, or with its position ("#3") when it has no
+			path.  An entry that is given again with the same name
+			and file types replaces the earlier one in the check.
 
 						*:LspExecuteCommand*
 :LspExecuteCommand {command} [{arguments}]
@@ -4417,6 +4456,12 @@ documentColor			Used to show the colors in a buffer when
 					*lsp-features-documentFormatting*
 documentFormatting		Used by the |:LspFormat| command, and
 				'formatexpr'
+				*lsp-features-documentOnTypeFormatting*
+documentOnTypeFormatting	Used to format the text while you type when
+				|lsp-opt-onTypeFormatting| is set.
+				*lsp-features-documentRangeFormatting*
+documentRangeFormatting		Used by the |:LspFormat| command with a range,
+				and 'formatexpr'
 					*lsp-features-documentHighlight*
 documentHighlight		Used by the |:LspHighlight| and the
 				|:LspHighlightClear| commands.
@@ -4488,6 +4533,7 @@ watchFiles			Used to send the language server the changes
 				files itself, like rust-analyzer, then does
 				that, while the other language servers still
 				use the client's file watching.
+					*lsp-features-workspaceSymbol*
 workspaceSymbol			Used by the |:LspSymbolSearch| command.
 
 ==============================================================================
