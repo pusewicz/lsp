@@ -1615,6 +1615,17 @@ def g:Test_SymbolSearch_ResolvesSingleSymbol()
     assert_equal(target, expand('%:t'))
     assert_equal([2, 4], [line('.'), charcol('.')])
     assert_equal(-1, srv.workspaceSymbolPopup->winbufnr())
+
+    :%bw!
+    silent! edit XWsSymbolSource.txt
+    buf.BufLspServerSet(bufnr(), srv)
+    symbols->add({name: 'SymRanged', kind: 12,
+      location: {uri: uri, range: WorkspaceSymbolTestRange(2, 5)}})
+    requests->filter((_, _) => false)
+    feedkeys(":LspSymbolSearch Sym\<CR>\<Down>\<CR>", 'xt')
+    assert_equal(['workspace/symbol'], requests->mapnew((_, r) => r.method))
+    assert_equal(target, expand('%:t'))
+    assert_equal([2, 4], [line('.'), charcol('.')])
   finally
     buf.BufLspServerRemove(srcBnr, srv)
     :%bw!
@@ -1649,6 +1660,49 @@ def g:Test_SymbolSearch_NoResolveProviderOpensFileStart()
     assert_equal([1, 1], [line('.'), col('.')])
   finally
     buf.BufLspServerRemove(srcBnr, srv)
+    :%bw!
+    delete(target)
+  endtry
+enddef
+
+def g:Test_SymbolSearch_ResolveReplyArrivesLater()
+  var target = 'XWsSymbolTarget.txt'
+  writefile(['one', 'two', '  three'], target)
+  silent! edit XWsSymbolSource.txt
+  var srcBnr = bufnr()
+  var uri = util.LspFileToUri(target->fnamemodify(':p'))
+  var symbols = [
+    {name: 'SymFirst', kind: 12, location: {uri: uri}},
+    {name: 'SymSecond', kind: 12, location: {uri: uri}, data: 2}
+  ]
+  var resolved = symbols[1]->extendnew({
+    location: {uri: uri, range: WorkspaceSymbolTestRange(3, 2)}})
+  var notifications: list<dict<any>> = []
+  var lspserver = MakeAsyncReplyingLspServer([], notifications)
+  lspserver.isWorkspaceSymbolProvider = true
+  lspserver.isWorkspaceSymbolResolveProvider = true
+  job_stop(lspserver.job)
+  try
+    lspserver.job = StartSteppedStubServerJob([
+      [{jsonrpc: '2.0', id: 1, result: symbols}],
+      [{jsonrpc: '2.0', id: 2, result: resolved}]])
+    feedkeys(":LspSymbolSearch Sym\<CR>\<Down>\<CR>", 'xt')
+    assert_equal('XWsSymbolSource.txt', expand('%:t'))
+    assert_equal({'2': 'workspaceSymbol/resolve'}, lspserver.pendingRequests)
+    g:WaitForAssert(() => assert_equal(target, expand('%:t')))
+    assert_equal([3, 3], [line('.'), col('.')])
+    assert_equal({}, lspserver.pendingRequests)
+
+    job_stop(lspserver.job)
+    buf.BufLspServerSet(bufnr(), lspserver)
+    cursor(1, 1)
+    lspserver.job = StartSteppedStubServerJob([
+      [{jsonrpc: '2.0', id: 1, result: [symbols[1]]}],
+      [{jsonrpc: '2.0', id: 2, result: resolved}]])
+    exe "normal :LspSymbolSearch SymSecond\<CR>rX"
+    assert_equal(['one', 'two', '  Xhree'], getline(1, '$'))
+  finally
+    StopAsyncReplyingLspServer(lspserver, srcBnr)
     :%bw!
     delete(target)
   endtry

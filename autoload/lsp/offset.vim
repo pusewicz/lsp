@@ -91,6 +91,9 @@ export def DecodePosition(lspserver: dict<any>, bnr: number, pos: dict<number>)
     # LSP client plugin also uses utf-32 encoding
     return
   endif
+  if pos.character <= 0
+    return
+  endif
 
   :silent! bnr->bufload()
   var lines: list<string> = bnr->getbufline(pos.line + 1)
